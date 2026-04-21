@@ -31,6 +31,13 @@ class RepresentationConfig:
     primary: str = "pitch_class"
     alternative: str | None = "pitch_class_duration"
     duration_bins: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0)
+    metrical_levels: tuple[str, ...] = (
+        "downbeat",
+        "beat",
+        "offbeat",
+        "subbeat",
+        "unknown",
+    )
 
 
 @dataclass(frozen=True)
@@ -112,6 +119,14 @@ class TransformerConfig:
     lr_scheduler_patience: int = 2
     min_learning_rate: float = 1e-5
     tie_input_output_embeddings: bool = True
+    use_relative_position_bias: bool = False
+    relative_attention_num_buckets: int = 32
+    relative_attention_max_distance: int = 256
+    generation_num_prompts: int = 3
+    generation_prompt_length: int = 16
+    generation_max_new_tokens: int = 32
+    generation_temperature: float = 1.0
+    generation_top_k: int = 8
 
 
 @dataclass(frozen=True)

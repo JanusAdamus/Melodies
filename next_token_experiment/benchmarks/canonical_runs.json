@@ -1,0 +1,108 @@
+[
+  {
+    "run_id": "cpu_baseline_smoke",
+    "profile": "cpu_baseline",
+    "purpose": "Quick reproducibility check for the thesis-safe baseline pipeline.",
+    "comparison_group": "baseline_vs_research",
+    "expected_budget_class": "smoke",
+    "run_name": "cpu_baseline_smoke",
+    "representation": "pitch_class",
+    "context_length": 128,
+    "max_files": 8,
+    "max_windows": {
+      "train": 64,
+      "validation": 16,
+      "test": 16
+    },
+    "seed": 7,
+    "notes": [
+      "Use for pipeline sanity checks and regression protection.",
+      "Not intended as final evidence for thesis comparison."
+    ]
+  },
+  {
+    "run_id": "cpu_baseline_full",
+    "profile": "cpu_baseline",
+    "purpose": "Canonical CPU-feasible baseline run for formal comparison.",
+    "comparison_group": "baseline_vs_research",
+    "expected_budget_class": "full",
+    "run_name": "cpu_baseline_full",
+    "representation": "pitch_class",
+    "context_length": 128,
+    "max_files": 64,
+    "max_windows": {
+      "train": 1024,
+      "validation": 256,
+      "test": 256
+    },
+    "seed": 7,
+    "notes": [
+      "Primary thesis comparison run.",
+      "Keeps conservative representation and CPU-friendly capacity."
+    ]
+  },
+  {
+    "run_id": "research_richer_events_smoke",
+    "profile": "research_richer_events",
+    "purpose": "Quick validation of the richer-event transformer research track.",
+    "comparison_group": "baseline_vs_research",
+    "expected_budget_class": "smoke",
+    "run_name": "research_richer_events_smoke",
+    "representation": "event_pitch_duration_metrical",
+    "context_length": 256,
+    "max_files": 8,
+    "max_windows": {
+      "train": 64,
+      "validation": 16,
+      "test": 16
+    },
+    "seed": 7,
+    "notes": [
+      "Smoke run for representation-rich research configuration.",
+      "Includes relative position bias and reproducible continuations."
+    ],
+    "config_overrides": {
+      "hardware": {
+        "dataloader_workers": 0,
+        "pin_memory": false,
+        "precision": "fp32"
+      },
+      "windows": {
+        "max_context_length": 128,
+        "min_window_length": 32,
+        "train_stride": 64,
+        "eval_stride": 128
+      },
+      "transformer": {
+        "max_epochs": 4,
+        "early_stopping_patience": 2,
+        "batch_size": 16,
+        "gradient_accumulation_steps": 1,
+        "generation_num_prompts": 2,
+        "generation_prompt_length": 16,
+        "generation_max_new_tokens": 16
+      }
+    }
+  },
+  {
+    "run_id": "research_richer_events_full",
+    "profile": "research_richer_events",
+    "purpose": "Canonical research run for measuring whether richer events justify additional cost.",
+    "comparison_group": "baseline_vs_research",
+    "expected_budget_class": "full",
+    "run_name": "research_richer_events_full",
+    "representation": "event_pitch_duration_metrical",
+    "context_length": 256,
+    "max_files": 64,
+    "max_windows": {
+      "train": 1024,
+      "validation": 256,
+      "test": 256
+    },
+    "seed": 7,
+    "notes": [
+      "Main research comparison run against the CPU baseline.",
+      "Used to assess whether richer representation and longer context earn their cost."
+    ]
+  }
+]

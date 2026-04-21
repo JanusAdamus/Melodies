@@ -16,6 +16,10 @@ def validate_representation_config(config: RepresentationConfig) -> list[str]:
         issues.append("Alternative representation is not supported.")
     if tuple(sorted(config.duration_bins)) != config.duration_bins:
         issues.append("Duration bins must be monotonic increasing.")
+    if not config.metrical_levels:
+        issues.append("Metrical levels cannot be empty.")
+    if len(set(config.metrical_levels)) != len(config.metrical_levels):
+        issues.append("Metrical levels must be unique.")
     return issues
 
 

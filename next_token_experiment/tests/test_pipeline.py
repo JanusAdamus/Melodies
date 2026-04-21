@@ -25,6 +25,7 @@ from next_token_experiment.data.dataset import build_dataset_bundle
 from next_token_experiment.data.preprocess import prepare_corpus
 from next_token_experiment.data.tokenizer import build_tokenizer
 from next_token_experiment.data.validation import validate_dataset_bundle, validate_prepared_pieces
+from next_token_experiment.experiment.runner import run_small_transformer_experiment
 from next_token_experiment.experiment.splits import assign_piece_splits
 
 
@@ -94,6 +95,30 @@ class PipelineTests(unittest.TestCase):
             canon_records = [record for record in bundle.manifest if record.title == "Canon in D"]
             self.assertEqual(len(canon_records), 2)
             self.assertEqual(len({record.split for record in canon_records}), 1)
+
+    def test_runner_persists_slice_metrics_and_generations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_scale_score(root / "canon_standard.musicxml", "Canon in D", "Johann Pachelbel", [60, 62, 64, 65] * 8)
+            write_scale_score(root / "fur_elise.musicxml", "Fur Elise", "Beethoven", [69, 68, 69, 68, 69, 64, 67, 65] * 4)
+            write_scale_score(root / "clair_de_lune.musicxml", "Clair de Lune", "Debussy", [60, 63, 67, 70] * 8)
+            write_scale_score(root / "waltz.musicxml", "Waltz in A Minor", "Chopin", [57, 60, 64, 69] * 8)
+
+            config = build_test_config(str(root))
+            result = run_small_transformer_experiment(
+                config=config,
+                run_name="pipeline_test",
+                max_files=4,
+                max_windows_per_split={"train": 8, "validation": 4, "test": 4},
+            )
+
+            transformer_root = Path(result["result_dir"]) / "transformer"
+            self.assertTrue((transformer_root / "validation_slice_metrics.json").exists())
+            self.assertTrue((transformer_root / "test_slice_metrics.json").exists())
+            self.assertTrue((transformer_root / "generated_continuations.json").exists())
+            self.assertIn("top_3_accuracy", result["test_summary"]["summary"])
+            self.assertIn("token_rarity", result["test_summary"]["slice_metrics"])
+            self.assertIn("generated_continuations", result)
 
 
 if __name__ == "__main__":

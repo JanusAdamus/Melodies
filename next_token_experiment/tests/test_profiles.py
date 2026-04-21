@@ -12,6 +12,7 @@ class ProfileTests(unittest.TestCase):
         self.assertTrue(profile_requires_scope_validation("cpu_baseline"))
         self.assertEqual(validate_experiment_scope(config), [])
         self.assertEqual(config.hardware.target_device, "cpu")
+        self.assertFalse(config.transformer.use_relative_position_bias)
         self.assertEqual(config.storage.results_root, "artifacts/next_token_experiment/results")
 
     def test_gpu_profile_requests_cuda_and_is_marked_as_extension(self) -> None:

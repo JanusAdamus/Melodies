@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import warnings
 
@@ -19,10 +20,31 @@ try:
 except Exception:  # pragma: no cover - depende del entorno.
     pass
 
+REST_EVENT_LABEL = "REST"
+
 
 def _duration_to_bin_index(duration: float, duration_bins: tuple[float, ...]) -> int:
     closest = min(duration_bins, key=lambda item: abs(item - duration))
     return duration_bins.index(closest)
+
+
+def _metrical_position_label(beat: float | None) -> str:
+    if beat is None:
+        return "unknown"
+
+    beat_value = float(beat)
+    if math.isclose(beat_value, 1.0, abs_tol=1e-3):
+        return "downbeat"
+
+    nearest_integer = round(beat_value)
+    if math.isclose(beat_value, float(nearest_integer), abs_tol=1e-3):
+        return "beat"
+
+    half_beat = beat_value * 2.0
+    if math.isclose(half_beat, round(half_beat), abs_tol=1e-3):
+        return "offbeat"
+
+    return "subbeat"
 
 
 def build_representation_vocabulary(config: RepresentationConfig, representation: str | None = None) -> list[str]:
@@ -36,6 +58,14 @@ def build_representation_vocabulary(config: RepresentationConfig, representation
         for pitch_class in PITCH_CLASS_NAMES:
             for duration in config.duration_bins:
                 values.append(f"{pitch_class}|dur={duration:g}")
+        return values
+    if target == "event_pitch_duration_metrical":
+        values = []
+        pitch_labels = PITCH_CLASS_NAMES + [REST_EVENT_LABEL]
+        for pitch_label in pitch_labels:
+            for duration in config.duration_bins:
+                for metrical_level in config.metrical_levels:
+                    values.append(f"{pitch_label}|dur={duration:g}|metric={metrical_level}")
         return values
     raise ValueError(f"Unsupported representation: {target}")
 
@@ -65,6 +95,21 @@ def build_representation_tokens(
                 raise ValueError("Found an event without representative pitch class.")
             duration_index = _duration_to_bin_index(float(event.duration), config.duration_bins)
             token = int(event.representative_pitch_class) * n_bins + duration_index
+            tokens.append(token)
+        return tokens, vocabulary
+
+    if target == "event_pitch_duration_metrical":
+        n_duration_bins = len(config.duration_bins)
+        n_metrical_levels = len(config.metrical_levels)
+        metrical_lookup = {label: index for index, label in enumerate(config.metrical_levels)}
+        rest_index = len(PITCH_CLASS_NAMES)
+
+        for event in events:
+            duration_index = _duration_to_bin_index(float(event.duration), config.duration_bins)
+            metrical_label = _metrical_position_label(event.beat)
+            metrical_index = metrical_lookup.get(metrical_label, metrical_lookup["unknown"])
+            pitch_index = rest_index if event.representative_pitch_class is None else int(event.representative_pitch_class)
+            token = (pitch_index * n_duration_bins * n_metrical_levels) + (duration_index * n_metrical_levels) + metrical_index
             tokens.append(token)
         return tokens, vocabulary
 
@@ -153,6 +198,7 @@ def preprocess_score_file(
                 list(score.recurse().getElementsByClass("TimeSignature"))
             ),
             "part_count": len(score.parts) if score.parts else 1,
+            "contains_rests": any(event.kind == "rest" for event in events),
         },
     )
 

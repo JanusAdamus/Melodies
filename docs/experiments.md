@@ -30,6 +30,11 @@ Se usa para una comparación acotada de predicción de siguiente token entre:
 - HDP-HMM truncado;
 - Transformer autoregresivo pequeño.
 
+Ahora se divide en dos pistas:
+
+- `cpu_baseline`: comparación conservadora y reproducible.
+- `research_richer_events`: primera pista seria para ampliar representación y capacidad del transformer.
+
 Sus resultados se escriben en:
 
 - `artifacts/next_token_experiment/results/`

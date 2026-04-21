@@ -15,8 +15,11 @@ def build_result_file_plan(results_root: str, model_name: str) -> dict[str, str]
         "config": str(root / "config.json"),
         "train_log": str(root / "train_log.csv"),
         "validation_metrics": str(root / "validation_metrics.csv"),
+        "validation_slice_metrics": str(root / "validation_slice_metrics.json"),
         "test_piece_metrics": str(root / "test_piece_metrics.csv"),
+        "test_slice_metrics": str(root / "test_slice_metrics.json"),
         "test_summary": str(root / "test_summary.json"),
+        "generated_continuations": str(root / "generated_continuations.json"),
     }
 
 

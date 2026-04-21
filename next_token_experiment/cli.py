@@ -9,7 +9,7 @@ from .protocol import validate_experiment_scope
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run bounded next-token transformer experiments.")
+    parser = argparse.ArgumentParser(description="Run baseline or research next-token transformer experiments.")
     parser.add_argument("--profile", choices=list_profiles(), required=True, help="Named experiment profile.")
     parser.add_argument("--run-name", default=None, help="Optional run directory name.")
     parser.add_argument("--corpus-root", default=None, help="Override corpus root directory.")

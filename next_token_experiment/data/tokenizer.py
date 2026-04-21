@@ -12,7 +12,7 @@ PAD_TOKEN = "<PAD>"
 
 
 def supported_representations() -> tuple[str, ...]:
-    return ("pitch_class", "pitch_class_duration")
+    return ("pitch_class", "pitch_class_duration", "event_pitch_duration_metrical")
 
 
 def estimate_vocabulary_size(config: RepresentationConfig) -> int:
@@ -22,6 +22,8 @@ def estimate_vocabulary_size(config: RepresentationConfig) -> int:
         return len(PITCH_CLASS_NAMES)
     if config.primary == "pitch_class_duration":
         return len(PITCH_CLASS_NAMES) * len(config.duration_bins)
+    if config.primary == "event_pitch_duration_metrical":
+        return (len(PITCH_CLASS_NAMES) + 1) * len(config.duration_bins) * len(config.metrical_levels)
     raise ValueError(f"Unsupported representation: {config.primary}")
 
 
@@ -72,3 +74,18 @@ def build_tokenizer(config: RepresentationConfig, representation: str | None = N
         representation=target,
         musical_vocabulary=vocabulary,
     )
+
+
+def describe_representation(config: RepresentationConfig, representation: str | None = None) -> dict[str, object]:
+    """Return a compact description of the active symbolic representation."""
+
+    tokenizer = build_tokenizer(config, representation=representation)
+    return {
+        "representation": tokenizer.representation,
+        "musical_vocab_size": tokenizer.musical_vocab_size,
+        "vocab_size_with_special_tokens": tokenizer.vocab_size,
+        "bos_token_id": tokenizer.bos_token_id,
+        "pad_token_id": tokenizer.pad_token_id,
+        "duration_bins": list(config.duration_bins),
+        "metrical_levels": list(config.metrical_levels),
+    }

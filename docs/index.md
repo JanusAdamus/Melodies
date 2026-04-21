@@ -17,6 +17,10 @@ recomendada para orientarte es corta:
 - [`project-structure.md`](project-structure.md)
 - [`experiments.md`](experiments.md)
 - [`transformer.md`](transformer.md)
+- [`transformer-roadmap.md`](transformer-roadmap.md)
+- [`codex-multiagent-transformer-benchmark-prompt.md`](codex-multiagent-transformer-benchmark-prompt.md)
+- [`transformer-benchmark-suite.md`](transformer-benchmark-suite.md)
+- [`transformer-comparison-analysis.md`](transformer-comparison-analysis.md)
 - [`artifact-policy.md`](artifact-policy.md)
 
 ## Baselines

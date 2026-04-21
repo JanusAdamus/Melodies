@@ -16,10 +16,11 @@ from .config import (
     WindowConfig,
 )
 
-SUPPORTED_REPRESENTATIONS = {"pitch_class", "pitch_class_duration"}
+SUPPORTED_REPRESENTATIONS = {"pitch_class", "pitch_class_duration", "event_pitch_duration_metrical"}
 PRIMARY_VOCAB_SIZE = {
     "pitch_class": 12,
     "pitch_class_duration": 60,
+    "event_pitch_duration_metrical": 325,
 }
 
 
@@ -66,6 +67,7 @@ def build_default_experiment_config() -> ExperimentConfig:
             "Single-corpus experiment for thesis comparability.",
             "Primary representation is pitch_class.",
             "Transformer remains intentionally small and CPU-feasible.",
+            "Any richer representation or larger model belongs to the research track, not the thesis baseline.",
             "Generated results are stored under artifacts/.",
         ),
     )
@@ -85,8 +87,8 @@ def validate_experiment_scope(config: ExperimentConfig) -> list[str]:
     if config.representation.primary != "pitch_class":
         issues.append("The first comparison must keep pitch_class as the main representation.")
 
-    if config.representation.alternative not in {None, "pitch_class_duration"}:
-        issues.append("Only pitch_class_duration is allowed as the secondary representation.")
+    if config.representation.alternative not in {None, "pitch_class_duration", "pitch_class"}:
+        issues.append("Only pitch_class_duration or pitch_class are allowed as secondary representations in the baseline track.")
 
     if config.preprocessing.include_rests:
         issues.append("Version 1 should exclude rests to keep the comparison simple.")
@@ -124,6 +126,9 @@ def validate_experiment_scope(config: ExperimentConfig) -> list[str]:
 
     if config.transformer.architecture != "decoder_only":
         issues.append("The first Transformer should be decoder-only for simplicity.")
+
+    if config.transformer.use_relative_position_bias:
+        issues.append("Relative position bias belongs to the research track, not the thesis baseline.")
 
     if config.transformer.n_layers < 2 or config.transformer.n_layers > 4:
         issues.append("Transformer depth must stay between 2 and 4 layers.")
