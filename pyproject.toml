@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "melodies-thesis"
+version = "0.1.0"
+description = "Repositorio de tesis para analisis de musica simbolica con HMM, HDP-HMM y experimentos de next-token."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Janus Adamuz" },
+]
+dependencies = [
+  "jupyter>=1.0",
+  "matplotlib>=3.8",
+  "music21>=9.1",
+  "networkx>=3.2",
+  "numpy>=1.26",
+  "openpyxl>=3.1",
+  "pandas>=2.2",
+  "scipy>=1.13",
+  "seaborn>=0.13",
+  "torch>=2.3",
+]
+
+[project.optional-dependencies]
+dev = []
+
+[project.scripts]
+melodies-analyze = "src.cli.main:main"
+melodies-library = "src.cli.library_analysis:main"
+melodies-multicorpus = "src.cli.multicorpus_analysis:main"
+melodies-classic-limited = "src.cli.classic_limited_analysis:main"
+melodies-next-token = "next_token_experiment.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "next_token_experiment*", "examples*"]
