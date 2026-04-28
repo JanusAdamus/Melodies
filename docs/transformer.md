@@ -48,6 +48,28 @@ La motivacion tecnica se apoya en dos resultados fuertes de la literatura:
   representacion cambia sustancialmente el modelado:
   https://arxiv.org/abs/2002.00212
 
+## Decision Actual del Proyecto
+
+La decision tecnica actual ya no es "hacer crecer el baseline". La decision es:
+
+- mantener `decoder-only`;
+- congelar `cpu_baseline` como referencia metodologica;
+- mover la investigacion hacia `event_pitch_duration_metrical`;
+- usar `relative position bias` como mejora principal para musica;
+- usar una ruta de atencion `auto` solo en el track research, con fallback seguro.
+
+En otras palabras: la eficiencia elegida para esta etapa no viene de cambiar de
+familia arquitectonica, sino de mejorar representacion, contexto y el path de
+atencion del mismo decoder.
+
+## Opciones Descartadas por Ahora
+
+- `MoE`, `DeepSeek-style` y otras rutas de escala industrial;
+- arquitecturas exoticas de atencion eficiente;
+- trucos de KV cache orientados a serving;
+- `encoder-only` y `encoder-decoder` como arquitectura principal;
+- tareas de captioning o texto-musica como eje metodologico.
+
 ## Perfiles
 
 ### `cpu_baseline`
@@ -73,6 +95,8 @@ Pensado para:
 - usar una representacion `event_pitch_duration_metrical`;
 - permitir rests y estructura metrica;
 - ampliar contexto y capacidad del decoder.
+- activar `relative position bias`;
+- permitir una ruta `auto` de atencion acelerada en GPU sin tocar el baseline.
 
 ## Nueva Representacion de Investigacion
 
@@ -135,3 +159,5 @@ Lo siguiente que todavia falta despues de esta etapa es:
 - comparar sesgo relativo contra otras variantes para contexto largo;
 - comparacion formal entre `pitch_class`, `pitch_class_duration` y
   `event_pitch_duration_metrical`.
+- medir cuando la ruta `auto` de atencion realmente mejora costo en GPU y
+  cuando solo debe caer de vuelta a `eager`.

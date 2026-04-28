@@ -144,6 +144,7 @@ def _extract_summary_row(spec: BenchmarkRunSpec, result_dir: str | Path) -> dict
         "n_layers": transformer.get("n_layers"),
         "d_model": transformer.get("d_model"),
         "n_heads": transformer.get("n_heads"),
+        "attention_implementation": transformer.get("attention_implementation"),
         "use_relative_position_bias": transformer.get("use_relative_position_bias"),
         "n_train_pieces": dataset.get("n_train_pieces"),
         "n_validation_pieces": dataset.get("n_validation_pieces"),
@@ -164,6 +165,8 @@ def _extract_summary_row(spec: BenchmarkRunSpec, result_dir: str | Path) -> dict
         "parameter_count": test_summary.get("parameter_count", fit_summary.get("parameter_count")),
         "device": runtime.get("device"),
         "actual_precision": runtime.get("actual_precision"),
+        "attention_implementation_effective": runtime.get("attention_implementation_effective"),
+        "flash_attention_candidate": runtime.get("flash_attention_candidate"),
         "seed": runtime.get("seed", spec.seed),
         "result_dir": str(result_root),
         "status": "completed",
@@ -179,6 +182,7 @@ def _build_markdown_summary(rows: list[dict[str, Any]]) -> str:
         "profile",
         "representation",
         "context_length",
+        "attention_implementation",
         "nll_per_token",
         "accuracy",
         "top_3_accuracy",
@@ -310,4 +314,3 @@ def execute_benchmark_suite(
     collected = collect_benchmark_suite(resolved_specs, results_root=results_root)
     collected["executed_runs"] = executed
     return collected
-

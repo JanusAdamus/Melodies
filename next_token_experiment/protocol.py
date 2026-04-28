@@ -127,6 +127,9 @@ def validate_experiment_scope(config: ExperimentConfig) -> list[str]:
     if config.transformer.architecture != "decoder_only":
         issues.append("The first Transformer should be decoder-only for simplicity.")
 
+    if config.transformer.attention_implementation != "eager":
+        issues.append("The baseline experiment must keep eager attention for strict reproducibility.")
+
     if config.transformer.use_relative_position_bias:
         issues.append("Relative position bias belongs to the research track, not the thesis baseline.")
 

@@ -14,6 +14,7 @@ class ProfileExtensionTests(unittest.TestCase):
         self.assertEqual(config.windows.max_context_length, 256)
         self.assertEqual(config.transformer.n_layers, 6)
         self.assertEqual(config.transformer.d_model, 256)
+        self.assertEqual(config.transformer.attention_implementation, "auto")
         self.assertTrue(config.transformer.use_relative_position_bias)
         self.assertIn("track:research", config.notes)
 

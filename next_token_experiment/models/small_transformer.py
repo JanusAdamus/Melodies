@@ -122,6 +122,7 @@ class SmallTransformerStudySpec:
     lr_scheduler_patience: int
     min_learning_rate: float
     tie_input_output_embeddings: bool
+    attention_implementation: str
     use_relative_position_bias: bool
     relative_attention_num_buckets: int
     relative_attention_max_distance: int
@@ -172,6 +173,7 @@ class CausalSelfAttention(nn.Module):
         d_model: int,
         n_heads: int,
         dropout: float,
+        attention_implementation: str = "eager",
         use_relative_position_bias: bool = False,
         relative_attention_num_buckets: int = 32,
         relative_attention_max_distance: int = 256,
@@ -185,10 +187,18 @@ class CausalSelfAttention(nn.Module):
         self.head_dim = self.d_model // self.n_heads
         self.scale = self.head_dim ** -0.5
         self.dropout = nn.Dropout(dropout)
+        self.dropout_probability = float(dropout)
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
+        self.attention_implementation_requested = str(attention_implementation).lower()
+        if self.attention_implementation_requested not in {"eager", "sdpa", "auto"}:
+            raise ValueError(
+                "attention_implementation must be one of {'eager', 'sdpa', 'auto'}."
+            )
+        self.sdpa_available = hasattr(F, "scaled_dot_product_attention")
+        self.attention_implementation_effective = self._resolve_attention_implementation()
         self.relative_position_bias = (
             RelativePositionBias(
                 n_heads=n_heads,
@@ -200,6 +210,13 @@ class CausalSelfAttention(nn.Module):
         )
         self._causal_mask: torch.Tensor | None = None
 
+    def _resolve_attention_implementation(self) -> str:
+        if self.attention_implementation_requested == "eager":
+            return "eager"
+        if self.sdpa_available:
+            return "sdpa"
+        return "eager"
+
     def _get_causal_mask(self, sequence_length: int, device: torch.device) -> torch.Tensor:
         mask = self._causal_mask
         if mask is None or mask.device != device or mask.size(0) < sequence_length:
@@ -210,23 +227,93 @@ class CausalSelfAttention(nn.Module):
             self._causal_mask = mask
         return mask[:sequence_length, :sequence_length]
 
+    def _build_attention_bias(
+        self,
+        sequence_length: int,
+        attention_mask: torch.Tensor,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        bias = torch.zeros(
+            attention_mask.size(0),
+            1,
+            sequence_length,
+            sequence_length,
+            device=device,
+            dtype=dtype,
+        )
+        causal_mask = self._get_causal_mask(sequence_length, device)
+        bias = bias.masked_fill(causal_mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+        bias = bias.masked_fill(~attention_mask[:, None, None, :], float("-inf"))
+        if self.relative_position_bias is not None:
+            bias = bias + self.relative_position_bias(sequence_length, sequence_length, device).to(dtype)
+        return bias
+
+    def _forward_eager(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attention_mask: torch.Tensor,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor:
+        sequence_length = hidden_states.size(1)
+        attention_scores = torch.matmul(query, key.transpose(-2, -1)) * self.scale
+        attention_scores = attention_scores + self._build_attention_bias(
+            sequence_length=sequence_length,
+            attention_mask=attention_mask,
+            device=hidden_states.device,
+            dtype=attention_scores.dtype,
+        )
+        attention_probs = torch.softmax(attention_scores.float(), dim=-1).to(query.dtype)
+        attention_probs = self.dropout(attention_probs)
+        attention_output = torch.matmul(attention_probs, value)
+        return attention_output
+
+    def _forward_sdpa(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attention_mask: torch.Tensor,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor:
+        sequence_length = hidden_states.size(1)
+        bias = self._build_attention_bias(
+            sequence_length=sequence_length,
+            attention_mask=attention_mask,
+            device=hidden_states.device,
+            dtype=query.dtype,
+        )
+        return F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=bias,
+            dropout_p=self.dropout_probability if self.training else 0.0,
+            is_causal=False,
+        )
+
+    def describe_runtime(self, device: torch.device) -> dict[str, bool | str]:
+        return {
+            "attention_implementation_requested": self.attention_implementation_requested,
+            "attention_implementation_effective": self.attention_implementation_effective,
+            "sdpa_available": bool(self.sdpa_available),
+            "flash_attention_candidate": bool(
+                device.type == "cuda" and self.attention_implementation_effective == "sdpa"
+            ),
+        }
+
     def forward(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         query = self.q_proj(hidden_states).view(batch_size, sequence_length, self.n_heads, self.head_dim).transpose(1, 2)
         key = self.k_proj(hidden_states).view(batch_size, sequence_length, self.n_heads, self.head_dim).transpose(1, 2)
         value = self.v_proj(hidden_states).view(batch_size, sequence_length, self.n_heads, self.head_dim).transpose(1, 2)
 
-        attention_scores = torch.matmul(query, key.transpose(-2, -1)) * self.scale
-        causal_mask = self._get_causal_mask(sequence_length, hidden_states.device)
-        attention_scores = attention_scores.masked_fill(causal_mask.unsqueeze(0).unsqueeze(0), float("-inf"))
-        attention_scores = attention_scores.masked_fill(~attention_mask[:, None, None, :], float("-inf"))
-
-        if self.relative_position_bias is not None:
-            attention_scores = attention_scores + self.relative_position_bias(sequence_length, sequence_length, hidden_states.device)
-
-        attention_probs = torch.softmax(attention_scores.float(), dim=-1).to(query.dtype)
-        attention_probs = self.dropout(attention_probs)
-        attention_output = torch.matmul(attention_probs, value)
+        if self.attention_implementation_effective == "sdpa":
+            attention_output = self._forward_sdpa(query, key, value, attention_mask, hidden_states)
+        else:
+            attention_output = self._forward_eager(query, key, value, attention_mask, hidden_states)
         attention_output = attention_output.transpose(1, 2).contiguous().view(batch_size, sequence_length, self.d_model)
         attention_output = self.out_proj(attention_output)
         return attention_output * attention_mask.unsqueeze(-1).to(attention_output.dtype)
@@ -241,6 +328,7 @@ class TransformerBlock(nn.Module):
         n_heads: int,
         ff_dim: int,
         dropout: float,
+        attention_implementation: str,
         use_relative_position_bias: bool,
         relative_attention_num_buckets: int,
         relative_attention_max_distance: int,
@@ -251,6 +339,7 @@ class TransformerBlock(nn.Module):
             d_model=d_model,
             n_heads=n_heads,
             dropout=dropout,
+            attention_implementation=attention_implementation,
             use_relative_position_bias=use_relative_position_bias,
             relative_attention_num_buckets=relative_attention_num_buckets,
             relative_attention_max_distance=relative_attention_max_distance,
@@ -290,6 +379,7 @@ class SmallTransformerLM(nn.Module):
         ff_dim: int,
         dropout: float,
         tie_input_output_embeddings: bool,
+        attention_implementation: str,
         use_relative_position_bias: bool,
         relative_attention_num_buckets: int,
         relative_attention_max_distance: int,
@@ -311,6 +401,7 @@ class SmallTransformerLM(nn.Module):
                     n_heads=n_heads,
                     ff_dim=ff_dim,
                     dropout=dropout,
+                    attention_implementation=attention_implementation,
                     use_relative_position_bias=use_relative_position_bias,
                     relative_attention_num_buckets=relative_attention_num_buckets,
                     relative_attention_max_distance=relative_attention_max_distance,
@@ -353,6 +444,16 @@ class SmallTransformerLM(nn.Module):
 
     def parameter_count(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters())
+
+    def describe_attention_runtime(self, device: torch.device) -> dict[str, bool | str]:
+        if not self.blocks:
+            return {
+                "attention_implementation_requested": "unknown",
+                "attention_implementation_effective": "unknown",
+                "sdpa_available": False,
+                "flash_attention_candidate": False,
+            }
+        return self.blocks[0].attn.describe_runtime(device)
 
 
 class SmallTransformerNextTokenModel(NextTokenModel):
@@ -407,6 +508,7 @@ class SmallTransformerNextTokenModel(NextTokenModel):
             ff_dim=spec.ff_dim,
             dropout=spec.dropout,
             tie_input_output_embeddings=spec.tie_input_output_embeddings,
+            attention_implementation=spec.attention_implementation,
             use_relative_position_bias=spec.use_relative_position_bias,
             relative_attention_num_buckets=spec.relative_attention_num_buckets,
             relative_attention_max_distance=spec.relative_attention_max_distance,
@@ -468,6 +570,7 @@ class SmallTransformerNextTokenModel(NextTokenModel):
         raise ValueError(f"Unsupported precision: {hardware.precision}")
 
     def describe_runtime(self) -> dict[str, int | bool | str]:
+        attention_runtime = self.model.describe_attention_runtime(self.device)
         return {
             "device": str(self.device),
             "device_type": self.device.type,
@@ -480,6 +583,12 @@ class SmallTransformerNextTokenModel(NextTokenModel):
             "deterministic": bool(self.hardware.deterministic),
             "gradient_accumulation_steps": int(self.spec.gradient_accumulation_steps),
             "effective_batch_size": int(self.spec.batch_size * self.spec.gradient_accumulation_steps),
+            "attention_implementation_requested": str(self.spec.attention_implementation),
+            "attention_implementation_effective": str(
+                attention_runtime["attention_implementation_effective"]
+            ),
+            "sdpa_available": bool(attention_runtime["sdpa_available"]),
+            "flash_attention_candidate": bool(attention_runtime["flash_attention_candidate"]),
             "use_relative_position_bias": bool(self.spec.use_relative_position_bias),
             "relative_attention_num_buckets": int(self.spec.relative_attention_num_buckets),
             "relative_attention_max_distance": int(self.spec.relative_attention_max_distance),

@@ -222,6 +222,7 @@ def run_small_transformer_experiment(
         lr_scheduler_patience=effective_config.transformer.lr_scheduler_patience,
         min_learning_rate=effective_config.transformer.min_learning_rate,
         tie_input_output_embeddings=effective_config.transformer.tie_input_output_embeddings,
+        attention_implementation=effective_config.transformer.attention_implementation,
         use_relative_position_bias=effective_config.transformer.use_relative_position_bias,
         relative_attention_num_buckets=effective_config.transformer.relative_attention_num_buckets,
         relative_attention_max_distance=effective_config.transformer.relative_attention_max_distance,

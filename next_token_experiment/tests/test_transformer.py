@@ -121,6 +121,7 @@ class TransformerTests(unittest.TestCase):
             lr_scheduler_patience=config.transformer.lr_scheduler_patience,
             min_learning_rate=config.transformer.min_learning_rate,
             tie_input_output_embeddings=config.transformer.tie_input_output_embeddings,
+            attention_implementation=config.transformer.attention_implementation,
             use_relative_position_bias=config.transformer.use_relative_position_bias,
             relative_attention_num_buckets=config.transformer.relative_attention_num_buckets,
             relative_attention_max_distance=config.transformer.relative_attention_max_distance,
@@ -156,6 +157,7 @@ class TransformerTests(unittest.TestCase):
         self.assertGreater(test_result["summary"]["parameter_count"], 0)
         self.assertEqual(continuation_a, continuation_b)
         self.assertEqual(len(continuation_a), 8)
+        self.assertEqual(model.describe_runtime()["attention_implementation_effective"], "eager")
 
     def test_relative_position_bias_mode_runs(self) -> None:
         config = build_config()
@@ -230,6 +232,7 @@ class TransformerTests(unittest.TestCase):
             lr_scheduler_patience=config.transformer.lr_scheduler_patience,
             min_learning_rate=config.transformer.min_learning_rate,
             tie_input_output_embeddings=config.transformer.tie_input_output_embeddings,
+            attention_implementation=config.transformer.attention_implementation,
             use_relative_position_bias=config.transformer.use_relative_position_bias,
             relative_attention_num_buckets=config.transformer.relative_attention_num_buckets,
             relative_attention_max_distance=config.transformer.relative_attention_max_distance,
@@ -251,6 +254,71 @@ class TransformerTests(unittest.TestCase):
         fit_result = model.fit(dataloaders["train"], dataloaders["validation"])
         self.assertGreaterEqual(fit_result["summary"]["epochs_completed"], 1)
         self.assertTrue(model.describe_runtime()["use_relative_position_bias"])
+
+    def test_auto_attention_falls_back_safely_on_cpu(self) -> None:
+        config = build_config()
+        tokenizer = build_tokenizer(config.representation)
+        pattern = [0, 2, 4, 5] * 8
+        dataset = WindowedSequenceDataset(
+            pieces=[make_piece("train_1", pattern)],
+            tokenizer=tokenizer,
+            split="train",
+            max_context_length=config.windows.max_context_length,
+            stride=config.windows.train_stride,
+            min_window_length=config.windows.min_window_length,
+        )
+        dataloaders = build_dataloaders(
+            tokenizer=tokenizer,
+            config=config,
+            train_dataset=dataset,
+            validation_dataset=dataset,
+            test_dataset=dataset,
+        )
+        spec = SmallTransformerStudySpec(
+            architecture=config.transformer.architecture,
+            n_layers=config.transformer.n_layers,
+            d_model=config.transformer.d_model,
+            n_heads=config.transformer.n_heads,
+            ff_dim=config.transformer.ff_dim,
+            dropout=config.transformer.dropout,
+            learning_rate=config.transformer.learning_rate,
+            weight_decay=config.transformer.weight_decay,
+            batch_size=config.transformer.batch_size,
+            max_epochs=1,
+            early_stopping_patience=1,
+            gradient_accumulation_steps=config.transformer.gradient_accumulation_steps,
+            grad_clip_norm=config.transformer.grad_clip_norm,
+            label_smoothing=config.transformer.label_smoothing,
+            lr_scheduler_factor=config.transformer.lr_scheduler_factor,
+            lr_scheduler_patience=config.transformer.lr_scheduler_patience,
+            min_learning_rate=config.transformer.min_learning_rate,
+            tie_input_output_embeddings=config.transformer.tie_input_output_embeddings,
+            attention_implementation="auto",
+            use_relative_position_bias=True,
+            relative_attention_num_buckets=16,
+            relative_attention_max_distance=64,
+            generation_num_prompts=config.transformer.generation_num_prompts,
+            generation_prompt_length=config.transformer.generation_prompt_length,
+            generation_max_new_tokens=config.transformer.generation_max_new_tokens,
+            generation_temperature=config.transformer.generation_temperature,
+            generation_top_k=config.transformer.generation_top_k,
+        )
+        model = SmallTransformerNextTokenModel(
+            spec=spec,
+            vocab_size=tokenizer.vocab_size,
+            bos_token_id=tokenizer.bos_token_id,
+            pad_token_id=tokenizer.pad_token_id,
+            max_context_length=config.windows.max_context_length,
+            cpu_threads=1,
+            seed=7,
+        )
+        fit_result = model.fit(dataloaders["train"], dataloaders["validation"])
+        runtime = model.describe_runtime()
+
+        self.assertGreaterEqual(fit_result["summary"]["epochs_completed"], 1)
+        self.assertEqual(runtime["attention_implementation_requested"], "auto")
+        self.assertIn(runtime["attention_implementation_effective"], {"eager", "sdpa"})
+        self.assertFalse(runtime["flash_attention_candidate"])
 
 
 if __name__ == "__main__":

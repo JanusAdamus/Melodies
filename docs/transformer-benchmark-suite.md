@@ -21,6 +21,15 @@ Las corridas base son:
 - `research_richer_events_smoke`
 - `research_richer_events_full`
 
+Las ablaciones canonicas adicionales son:
+
+- `research_pitch_duration_smoke`
+- `research_pitch_duration_full`
+- `research_richer_events_absolute_smoke`
+- `research_richer_events_absolute_full`
+- `research_richer_events_context128_smoke`
+- `research_richer_events_context128_full`
+
 Cada entrada del manifiesto fija:
 
 - `run_id`
@@ -35,6 +44,13 @@ Cada entrada del manifiesto fija:
 - `max_windows`
 - `seed`
 - `notes`
+
+Los grupos comparativos esperados son:
+
+- `baseline_vs_research`
+- `representation_ablation`
+- `position_ablation`
+- `context_ablation`
 
 ## Script de uso
 
@@ -89,6 +105,7 @@ La tabla consolidada resume por corrida, al menos:
 
 - perfil y representacion;
 - longitud de contexto y tamano del modelo;
+- implementacion de atencion pedida y ruta efectiva registrada;
 - uso o no de sesgo posicional relativo;
 - numero de piezas y ventanas por split;
 - `nll_per_token`, `perplexity`, `accuracy`, `top_3_accuracy`, `top_5_accuracy`;
@@ -102,10 +119,11 @@ Usa la suite en este orden:
 
 1. corre o consolida las `smoke`;
 2. valida que las tablas se llenan correctamente;
-3. corre las `full`;
-4. usa `summary.csv` y `summary.md` como base del primer analisis formal
-   baseline vs research;
-5. pasa despues al estudio de representacion y de contexto largo.
+3. corre las `full` de `baseline_vs_research`;
+4. corre las `full` de `representation_ablation`, `position_ablation` y
+   `context_ablation`;
+5. usa `summary.csv` y `summary.md` como base del primer analisis formal;
+6. pasa despues a cualquier intento de contexto `512+`.
 
 ## Relacion con la tesis
 

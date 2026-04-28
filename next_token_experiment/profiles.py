@@ -66,6 +66,7 @@ def build_profile_config(
                 lr_scheduler_patience=2,
                 min_learning_rate=1e-5,
                 tie_input_output_embeddings=True,
+                attention_implementation="eager",
                 use_relative_position_bias=False,
             ),
             notes=config.notes + ("profile:cpu_baseline", PROFILE_DESCRIPTIONS["cpu_baseline"]),
@@ -103,6 +104,7 @@ def build_profile_config(
                 lr_scheduler_patience=3,
                 min_learning_rate=1e-5,
                 tie_input_output_embeddings=True,
+                attention_implementation="eager",
                 use_relative_position_bias=False,
             ),
             notes=config.notes + ("profile:gpu_extended", PROFILE_DESCRIPTIONS["gpu_extended"]),
@@ -157,6 +159,7 @@ def build_profile_config(
                 lr_scheduler_patience=3,
                 min_learning_rate=1e-5,
                 tie_input_output_embeddings=True,
+                attention_implementation="auto",
                 use_relative_position_bias=True,
                 relative_attention_num_buckets=64,
                 relative_attention_max_distance=512,
@@ -172,6 +175,7 @@ def build_profile_config(
                 "representation:event_pitch_duration_metrical",
                 PROFILE_DESCRIPTIONS["research_richer_events"],
                 "Inspired by Music Transformer and beat-aware symbolic representations.",
+                "Attention path may use torch SDPA on supported GPU runtimes with eager fallback elsewhere.",
             ),
         )
 
