@@ -9,6 +9,7 @@ import pandas as pd
 
 from src.data.multicorpus import (
     CorpusSource,
+    build_asap_catalog,
     build_multicorpus_catalog,
     build_pdmx_catalog,
     parse_symbtr_filename,
@@ -103,6 +104,66 @@ class MultiCorpusTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(set(catalog["source_type"]), {"generic", "symbtr"})
+
+    def test_build_asap_catalog_uses_metadata_and_deduplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            piece_dir = root / "Bach" / "Prelude" / "bwv_846"
+            piece_dir.mkdir(parents=True)
+            score_path = piece_dir / "xml_score.musicxml"
+            score_path.write_text(SIMPLE_MUSICXML, encoding="utf-8")
+            pd.DataFrame(
+                [
+                    {
+                        "composer": "Bach",
+                        "title": "Prelude BWV 846",
+                        "folder": "Bach/Prelude/bwv_846",
+                        "xml_score": "Bach/Prelude/bwv_846/xml_score.musicxml",
+                    },
+                    {
+                        "composer": "Bach",
+                        "title": "Prelude BWV 846",
+                        "folder": "Bach/Prelude/bwv_846",
+                        "xml_score": "Bach/Prelude/bwv_846/xml_score.musicxml",
+                    },
+                ]
+            ).to_csv(root / "metadata.csv", index=False)
+
+            catalog = build_asap_catalog(root)
+            self.assertEqual(len(catalog), 1)
+            self.assertEqual(catalog.iloc[0]["source_type"], "asap")
+            self.assertEqual(catalog.iloc[0]["composer"], "Bach")
+            self.assertEqual(catalog.iloc[0]["title"], "Prelude BWV 846")
+
+    def test_build_multicorpus_catalog_deduplicates_same_piece(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            generic = root / "generic"
+            asap = root / "asap"
+            generic.mkdir(parents=True)
+            (generic / "Bach_Prelude_BWV_846.musicxml").write_text(SIMPLE_MUSICXML, encoding="utf-8")
+
+            asap_score_dir = asap / "Bach" / "Prelude" / "bwv_846"
+            asap_score_dir.mkdir(parents=True)
+            (asap_score_dir / "xml_score.musicxml").write_text(SIMPLE_MUSICXML, encoding="utf-8")
+            pd.DataFrame(
+                [
+                    {
+                        "composer": "Bach",
+                        "title": "Bach Prelude Bwv 846",
+                        "folder": "Bach/Prelude/bwv_846",
+                        "xml_score": "Bach/Prelude/bwv_846/xml_score.musicxml",
+                    }
+                ]
+            ).to_csv(asap / "metadata.csv", index=False)
+
+            catalog = build_multicorpus_catalog(
+                [
+                    CorpusSource(name="Generic", source_type="generic", root_dir=generic),
+                    CorpusSource(name="ASAP", source_type="asap", root_dir=asap),
+                ]
+            )
+            self.assertEqual(len(catalog), 1)
 
 
 if __name__ == "__main__":

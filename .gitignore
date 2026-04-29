@@ -4,6 +4,7 @@
 .env
 .idea/
 .mypy_cache/
+.mplconfig/
 .pytest_cache/
 .ruff_cache/
 .venv/

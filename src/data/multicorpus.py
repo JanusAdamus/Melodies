@@ -25,6 +25,16 @@ def _slug_to_title(text: str) -> str:
     return cleaned.title() if cleaned else ""
 
 
+def _normalize_dedupe_text(text: object) -> str:
+    if not isinstance(text, str):
+        return ""
+    normalized = text.strip().lower()
+    normalized = re.sub(r"(?:\.(?:musicxml|mxl|xml)|(?:musicxml|mxl|xml))$", "", normalized)
+    normalized = re.sub(r"[_\-\s]+", " ", normalized)
+    normalized = re.sub(r"[^\w\s]", "", normalized)
+    return normalized.strip()
+
+
 def _limit_paths(paths: list[Path], file_limit: int | None) -> list[Path]:
     if file_limit is None:
         return paths
@@ -242,6 +252,50 @@ def build_jazzmus_catalog(root_dir: str | Path, file_limit: int | None = None) -
     return pd.DataFrame(rows)
 
 
+def build_asap_catalog(root_dir: str | Path, file_limit: int | None = None) -> pd.DataFrame:
+    """Construye un catalogo enriquecido para ASAP a partir de su metadata.csv."""
+
+    root = Path(root_dir)
+    metadata_path = root / "metadata.csv"
+    if not metadata_path.exists():
+        return build_generic_catalog(root, source_name="ASAP", file_limit=file_limit)
+
+    metadata = pd.read_csv(metadata_path)
+    if "xml_score" not in metadata.columns:
+        return build_generic_catalog(root, source_name="ASAP", file_limit=file_limit)
+
+    unique_scores = metadata.dropna(subset=["xml_score"]).drop_duplicates(subset=["xml_score"]).copy()
+    if file_limit is not None:
+        unique_scores = unique_scores.head(file_limit).copy()
+
+    rows: list[dict[str, object]] = []
+    for _, meta in unique_scores.iterrows():
+        relative_score = str(meta.get("xml_score", "")).strip()
+        if not relative_score:
+            continue
+        score_path = root / relative_score
+        if not score_path.exists():
+            continue
+        row = classify_score(score_path)
+        title = str(meta.get("title", "")).strip()
+        composer = str(meta.get("composer", "")).strip()
+        row.update(
+            {
+                "title": title or row.get("title"),
+                "composer": composer or row.get("composer"),
+                "source_name": "ASAP",
+                "source_type": "asap",
+                "genre_family": "classical_piano",
+                "style_system": "western_tonal",
+                "modal_system": "",
+                "asap_folder": str(meta.get("folder", "")).strip(),
+                "ingest_note": "Catalogado desde metadata.csv de ASAP, deduplicando por xml_score.",
+            }
+        )
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def build_generic_catalog(root_dir: str | Path, source_name: str = "generic", file_limit: int | None = None) -> pd.DataFrame:
     rows = []
     for path in _limit_paths(iter_musicxml_files(root_dir), file_limit):
@@ -268,6 +322,8 @@ def build_source_catalog(
     source_type = source.source_type.lower()
     if source_type == "symbtr":
         return build_symbtr_catalog(source.root_dir, file_limit=file_limit)
+    if source_type == "asap":
+        return build_asap_catalog(source.root_dir, file_limit=file_limit)
     if source_type == "pdmx":
         return build_pdmx_catalog(source.root_dir, file_limit=file_limit)
     if source_type == "jazzmus":
@@ -278,6 +334,36 @@ def build_source_catalog(
             return build_jazzmus_catalog(prepared_dir, file_limit=file_limit)
         return build_jazzmus_catalog(root, file_limit=file_limit)
     return build_generic_catalog(source.root_dir, source_name=source.name, file_limit=file_limit)
+
+
+def deduplicate_multicorpus_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
+    """Elimina repetidos aproximados por compositor y titulo, conservando la version mas informativa."""
+
+    if catalog.empty:
+        return catalog
+
+    deduped = catalog.copy()
+    deduped["composer_norm"] = deduped.get("composer", pd.Series(index=deduped.index, dtype="object")).map(_normalize_dedupe_text)
+    deduped["title_norm"] = deduped.get("title", pd.Series(index=deduped.index, dtype="object")).map(_normalize_dedupe_text)
+    deduped["filename_norm"] = deduped.get("filename", pd.Series(index=deduped.index, dtype="object")).map(_normalize_dedupe_text)
+
+    deduped["dedupe_key"] = deduped["composer_norm"] + "||" + deduped["title_norm"]
+    missing_key = deduped["dedupe_key"].str.strip("|") == ""
+    deduped.loc[missing_key, "dedupe_key"] = deduped.loc[missing_key, "filename_norm"]
+
+    deduped["has_error"] = deduped.get("error", pd.Series(index=deduped.index, dtype="object")).fillna("").ne("")
+    deduped["note_count_rank"] = pd.to_numeric(deduped.get("note_count", 0), errors="coerce").fillna(-1)
+    deduped["measure_count_rank"] = pd.to_numeric(deduped.get("measure_count", 0), errors="coerce").fillna(-1)
+    deduped["duration_rank"] = pd.to_numeric(deduped.get("duration_quarters", 0), errors="coerce").fillna(-1)
+
+    deduped = deduped.sort_values(
+        ["has_error", "note_count_rank", "measure_count_rank", "duration_rank", "source_name", "title"],
+        ascending=[True, False, False, False, True, True],
+    )
+    deduped["duplicate_group_size"] = deduped.groupby("dedupe_key")["dedupe_key"].transform("size")
+    deduped["duplicate_rank"] = deduped.groupby("dedupe_key").cumcount() + 1
+    deduped = deduped.drop_duplicates(subset=["dedupe_key"], keep="first").copy()
+    return deduped.drop(columns=["composer_norm", "title_norm", "filename_norm", "has_error", "note_count_rank", "measure_count_rank", "duration_rank"])
 
 
 def build_multicorpus_catalog(
@@ -294,4 +380,5 @@ def build_multicorpus_catalog(
     catalog = pd.concat(frames, ignore_index=True, sort=False)
     if "source_name" not in catalog.columns:
         catalog["source_name"] = "unknown"
+    catalog = deduplicate_multicorpus_catalog(catalog)
     return catalog.sort_values(["source_name", "composer", "title"]).reset_index(drop=True)

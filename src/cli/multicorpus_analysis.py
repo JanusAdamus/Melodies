@@ -20,6 +20,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--burn-in", dest="burn_in", type=int, default=40, help="Burn-in del HDP-HMM.")
     parser.add_argument("--seed", type=int, default=7, help="Semilla reproducible.")
     parser.add_argument("--include-library", help="Directorio del corpus MusicXML generico o de musetrainer/library.")
+    parser.add_argument("--include-asap", help="Directorio raiz del dataset ASAP con metadata.csv.")
     parser.add_argument("--include-symbtr", help="Directorio raiz de SymbTr o su carpeta MusicXML.")
     parser.add_argument("--include-pdmx", help="Directorio local del dataset PDMX ya descargado desde Zenodo.")
     parser.add_argument("--include-jazzmus", help="Directorio con MusicXML o JSON exportables de JAZZMUS.")
@@ -30,6 +31,8 @@ def _collect_sources(args: argparse.Namespace) -> list[CorpusSource]:
     sources: list[CorpusSource] = []
     if args.include_library:
         sources.append(CorpusSource(name="MuseTrainer", source_type="generic", root_dir=args.include_library))
+    if args.include_asap:
+        sources.append(CorpusSource(name="ASAP", source_type="asap", root_dir=args.include_asap))
     if args.include_symbtr:
         sources.append(CorpusSource(name="SymbTr", source_type="symbtr", root_dir=args.include_symbtr))
     if args.include_pdmx:
@@ -37,7 +40,7 @@ def _collect_sources(args: argparse.Namespace) -> list[CorpusSource]:
     if args.include_jazzmus:
         sources.append(CorpusSource(name="JAZZMUS", source_type="jazzmus", root_dir=args.include_jazzmus))
     if not sources:
-        raise SystemExit("Debes indicar al menos una fuente con --include-library, --include-symbtr, --include-pdmx o --include-jazzmus.")
+        raise SystemExit("Debes indicar al menos una fuente con --include-library, --include-asap, --include-symbtr, --include-pdmx o --include-jazzmus.")
     return sources
 
 
