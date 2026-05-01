@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 import math
+import os
 import random
 import time
 
@@ -15,6 +16,11 @@ import torch.nn.functional as F
 from ..config import HardwareConfig
 from ..experiment.metrics import perplexity_from_nll, summarize_average
 from .base import NextTokenModel
+
+
+def _verbose(message: str) -> None:
+    if os.environ.get("MELODIES_VERBOSE"):
+        print(message, flush=True)
 
 
 def _set_seed(seed: int, deterministic: bool) -> None:
@@ -925,6 +931,17 @@ class SmallTransformerNextTokenModel(NextTokenModel):
                 "learning_rate": learning_rate,
             }
             train_log.append(log_row)
+            _verbose(
+                "[epoch "
+                f"{epoch}/{self.spec.max_epochs}] "
+                f"train_ppl={train_metrics['perplexity']:.4f} "
+                f"val_ppl={validation_metrics['perplexity']:.4f} "
+                f"val_acc={validation_metrics['accuracy']:.4f} "
+                f"val_top5={validation_metrics['top_5_accuracy']:.4f} "
+                f"lr={learning_rate:.6g} "
+                f"train_s={train_metrics['wall_clock_s']:.2f} "
+                f"val_s={validation_metrics['wall_clock_s']:.2f}"
+            )
 
             if validation_metrics["nll_per_token"] < self.best_validation_nll:
                 self.best_validation_nll = validation_metrics["nll_per_token"]

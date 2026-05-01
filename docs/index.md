@@ -21,6 +21,7 @@ recomendada para orientarte es corta:
 - [`codex-multiagent-transformer-benchmark-prompt.md`](codex-multiagent-transformer-benchmark-prompt.md)
 - [`transformer-benchmark-suite.md`](transformer-benchmark-suite.md)
 - [`transformer-comparison-analysis.md`](transformer-comparison-analysis.md)
+- [`pdmx-transformer-thesis-report.md`](pdmx-transformer-thesis-report.md)
 - [`artifact-policy.md`](artifact-policy.md)
 
 ## Baselines

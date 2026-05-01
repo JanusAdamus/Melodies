@@ -104,7 +104,7 @@ def find_pdmx_manifest(root_dir: str | Path) -> Path | None:
 
 def _resolve_pdmx_musicxml_path(root_dir: Path, row: pd.Series) -> Path | None:
     candidates: list[Path] = []
-    for key in ("mxl_path", "musicxml_path", "mxml_path", "xml_path", "path"):
+    for key in ("mxl", "mxl_path", "musicxml_path", "mxml_path", "xml_path", "path"):
         value = row.get(key)
         if not isinstance(value, str) or not value.strip():
             continue
@@ -176,6 +176,7 @@ def build_pdmx_catalog(root_dir: str | Path, subset: str = "no_license_conflict"
             ("title", "title"),
             ("song_name", "title"),
             ("composer", "composer"),
+            ("composer_name", "composer"),
             ("artist_name", "composer"),
             ("rating", "rating"),
             ("genres", "genre_family"),
