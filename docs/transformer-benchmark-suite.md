@@ -127,7 +127,7 @@ Usa la suite en este orden:
 
 ## Relacion con la tesis
 
-Esta suite existe para alimentar el capitulo comparativo final en
-`/home/janusadamuz/Documentos/Tesis`. La pregunta central no es solo quien
-obtiene el mejor numero, sino si el costo adicional del transformer produce una
-mejora sustancial y defendible frente a HMM y HDP-HMM.
+Esta suite existe para alimentar el capitulo comparativo final del manuscrito
+de tesis. La pregunta central no es solo quien obtiene el mejor numero, sino si
+el costo adicional del transformer produce una mejora sustancial y defendible
+frente a HMM y HDP-HMM.

@@ -9,7 +9,7 @@ from src.analysis.library_batch import analyze_library
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Clasificacion y analisis por lotes de una biblioteca MusicXML/MXL.")
     parser.add_argument("--library-dir", required=True, help="Directorio con archivos .mxl/.musicxml/.xml.")
-    parser.add_argument("--output-dir", default="artifacts/outputs/library_batch", help="Directorio de salida.")
+    parser.add_argument("--output-dir", default="artifacts/outputs/library_pitchclass_batch", help="Directorio de salida.")
     parser.add_argument("--obs", default="pitch_class", help="Tipo de observacion para el analisis.")
     parser.add_argument("--model", default="finite_hmm", choices=("finite_hmm", "hdp_hmm", "both"), help="Modelo a ejecutar sobre la biblioteca.")
     parser.add_argument("--limit", type=int, default=None, help="Limita el numero de obras a analizar.")

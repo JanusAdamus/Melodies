@@ -9,7 +9,7 @@ from src.data.multicorpus import CorpusSource
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Analisis multicorpus para MusicXML/MXL procedente de varias colecciones.")
-    parser.add_argument("--output-dir", default="artifacts/outputs/multicorpus_batch", help="Directorio de salida.")
+    parser.add_argument("--output-dir", default="artifacts/outputs/multicorpus_pitchclass_batch", help="Directorio de salida.")
     parser.add_argument("--obs", default="pitch_class", help="Tipo de observacion.")
     parser.add_argument("--model", default="finite_hmm", choices=("finite_hmm", "hdp_hmm", "both"), help="Modelo a ejecutar.")
     parser.add_argument("--limit", type=int, default=None, help="Limita el numero de obras analizadas tras construir el catalogo.")

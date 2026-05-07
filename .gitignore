@@ -32,5 +32,5 @@ tmp/
 build/
 dist/
 htmlcov/
-notebooks/.ipynb_checkpoints/
-notebooks/.mplconfig/
+notebooks/**/.ipynb_checkpoints/
+notebooks/**/.mplconfig/

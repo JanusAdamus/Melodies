@@ -24,6 +24,29 @@
 Si un archivo se puede regenerar o descargar otra vez, normalmente no debe
 entrar al repositorio.
 
+## Referencias Locales a Conservar
+
+Como minimo, conviene preservar estas rutas locales porque ya aparecen en la
+documentacion activa o sirven como referencias claras del estado actual:
+
+- `artifacts/next_token_experiment/results/benchmark_suite`
+- `artifacts/next_token_experiment/results/cpu_baseline_smoke`
+- `artifacts/next_token_experiment/results/cpu_baseline_smoke_v6`
+- `artifacts/next_token_experiment/results/research_richer_events_smoke`
+- `artifacts/next_token_experiment/results/library_smoke_8_timed`
+- `artifacts/outputs/classic_limited_eval_refresh`
+
+## Candidatos Tipicos a Poda Local
+
+Estos artefactos suelen ser buen candidato a borrado local cuando ya existe una
+version mas clara o citada:
+
+- variantes intermedias `v1` a `v5` de una misma corrida;
+- smoke runs redundantes;
+- salidas generadas desde notebooks;
+- rutas `tmp/` y `tmp_figs/`;
+- carpetas viejas reemplazadas por una version `refresh`.
+
 ## Excepción Permitida
 
 Se puede versionar un artefacto puntual si:

@@ -15,7 +15,7 @@ Eso crea `.venv`, instala el proyecto en modo editable y ejecuta ambas suites.
 python -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install -e .
+pip install -e .[dev]
 ```
 
 ## Pruebas
@@ -23,13 +23,13 @@ pip install -e .
 Pipeline principal:
 
 ```bash
-python -m unittest discover -s tests
+pytest tests
 ```
 
 Experimento de siguiente token:
 
 ```bash
-python -m unittest discover -s next_token_experiment/tests
+pytest next_token_experiment/tests
 ```
 
 Ambas:
@@ -37,6 +37,18 @@ Ambas:
 ```bash
 make test
 ```
+
+## Reproduccion Minima
+
+La entrada mas corta y segura para comprobar que el repo funciona es:
+
+```bash
+python scripts/reproduce_results.py
+```
+
+Si falta `external/library/scores`, el script ejecuta la demo clasica por pieza
+con `examples/example_score.musicxml` y omite la parte `next-token` con un
+mensaje claro.
 
 ## Ejemplo Pequeno
 

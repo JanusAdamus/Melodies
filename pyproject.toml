@@ -12,7 +12,6 @@ authors = [
   { name = "Janus Adamuz" },
 ]
 dependencies = [
-  "jupyter>=1.0",
   "matplotlib>=3.8",
   "music21>=9.1",
   "networkx>=3.2",
@@ -25,7 +24,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = []
+dev = [
+  "pytest>=8.0",
+]
+notebooks = [
+  "jupyter>=1.0",
+]
 
 [project.scripts]
 melodies-analyze = "src.cli.main:main"

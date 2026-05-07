@@ -18,7 +18,7 @@ from src.models.hdp_hmm import TruncatedHDPHMM
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Analisis clasico limitado con HMM finito y HDP-HMM truncado.")
     parser.add_argument("--library-dir", default="external/library/scores", help="Directorio de MusicXML/MXL del corpus clasico.")
-    parser.add_argument("--output-dir", default="artifacts/outputs/classic_limited_eval", help="Directorio de salida.")
+    parser.add_argument("--output-dir", default="artifacts/outputs/classic_limited_eval_refresh", help="Directorio de salida.")
     parser.add_argument("--limit", type=int, default=12, help="Numero maximo de obras seleccionadas.")
     parser.add_argument("--obs", default="pitch_class", choices=("pitch_class",), help="Tipo de observacion para la comparacion.")
     parser.add_argument("--K", type=int, default=12, help="Numero de estados truncados para el HDP-HMM.")

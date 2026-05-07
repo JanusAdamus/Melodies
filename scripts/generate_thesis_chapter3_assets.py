@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import math
 import shutil
 from pathlib import Path
@@ -12,11 +13,10 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
 
+from src.project_paths import default_thesis_export_root, project_root
 
-ROOT = Path(__file__).resolve().parents[1]
-THESIS_ROOT = Path("/home/janusadamuz/Documentos/Tesis")
-THESIS_FIGURES = THESIS_ROOT / "figures" / "chapter3"
-THESIS_TABLES = THESIS_ROOT / "chapters" / "tables"
+
+ROOT = project_root()
 
 CLASSIC_DIR = ROOT / "artifacts" / "outputs" / "classic_limited_eval_refresh"
 MULTICORPUS_DIR = ROOT / "artifacts" / "outputs" / "multicorpus_full"
@@ -91,10 +91,10 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _copy_figures(source_dir: Path, mapping: dict[str, str]) -> None:
-    THESIS_FIGURES.mkdir(parents=True, exist_ok=True)
+def _copy_figures(source_dir: Path, mapping: dict[str, str], thesis_figures: Path) -> None:
+    thesis_figures.mkdir(parents=True, exist_ok=True)
     for source_name, target_name in mapping.items():
-        shutil.copy2(source_dir / source_name, THESIS_FIGURES / target_name)
+        shutil.copy2(source_dir / source_name, thesis_figures / target_name)
 
 
 def _display_title(text: object) -> str:
@@ -124,7 +124,7 @@ def _format_metric(value: float) -> str:
     return f"{value:.3f}"
 
 
-def _classic_tables() -> None:
+def _classic_tables(thesis_tables: Path) -> None:
     catalog = pd.read_csv(CLASSIC_DIR / "catalog" / "catalog.csv")
     analysis = pd.read_csv(CLASSIC_DIR / "analysis" / "analysis.csv")
     comparable = analysis.dropna(subset=["finite_log_likelihood", "hdp_log_likelihood"]).copy()
@@ -152,7 +152,7 @@ def _classic_tables() -> None:
             + r" \\"
         )
     lines.extend([r"\hline", r"\end{tabular}"])
-    _write(THESIS_TABLES / "chapter3_corpus_clasico.tex", "\n".join(lines) + "\n")
+    _write(thesis_tables / "chapter3_corpus_clasico.tex", "\n".join(lines) + "\n")
 
     summary_rows = [
         ("Obras comparables", len(comparable)),
@@ -171,7 +171,7 @@ def _classic_tables() -> None:
         rendered = f"{value:.3f}" if isinstance(value, float) else str(value)
         lines.append(f"{_escape_latex(label)} & {rendered} \\\\")
     lines.extend([r"\hline", r"\end{tabular}"])
-    _write(THESIS_TABLES / "chapter3_resumen_resultados.tex", "\n".join(lines) + "\n")
+    _write(thesis_tables / "chapter3_resumen_resultados.tex", "\n".join(lines) + "\n")
 
     detail = comparable.copy()
     detail["title"] = detail["title"].map(_display_title)
@@ -194,10 +194,10 @@ def _classic_tables() -> None:
         ]
         lines.append(" & ".join(values) + r" \\")
     lines.extend([r"\hline", r"\end{tabular}"])
-    _write(THESIS_TABLES / "chapter3_resultados_por_obra.tex", "\n".join(lines) + "\n")
+    _write(thesis_tables / "chapter3_resultados_por_obra.tex", "\n".join(lines) + "\n")
 
 
-def _multicorpus_tables() -> None:
+def _multicorpus_tables(thesis_tables: Path) -> None:
     catalog = pd.read_csv(MULTICORPUS_DIR / "catalog" / "catalog.csv")
     analysis = pd.read_csv(MULTICORPUS_DIR / "analysis" / "analysis.csv")
     comparable = analysis.dropna(subset=["finite_log_likelihood", "hdp_log_likelihood"]).copy()
@@ -220,7 +220,7 @@ def _multicorpus_tables() -> None:
         r"\hline",
         r"\end{tabular}",
     ]
-    _write(THESIS_TABLES / "chapter3_corpus_extendido.tex", "\n".join(lines) + "\n")
+    _write(thesis_tables / "chapter3_corpus_extendido.tex", "\n".join(lines) + "\n")
 
     summary = comparable.groupby("source_name").agg(
         obras=("gain", "size"),
@@ -270,14 +270,14 @@ def _multicorpus_tables() -> None:
             + r" \\"
         )
     lines.extend([r"\hline", r"\end{tabular}"])
-    _write(THESIS_TABLES / "chapter3_resultados_multicorpus.tex", "\n".join(lines) + "\n")
+    _write(thesis_tables / "chapter3_resultados_multicorpus.tex", "\n".join(lines) + "\n")
 
     note = (
         f"Corpus catalogado: {total_catalog} obras. "
         f"Comparaciones validas: {comparable_count}. "
         f"Corridas con error: {failed}."
     )
-    _write(THESIS_TABLES / "chapter3_multicorpus_nota.txt", note + "\n")
+    _write(thesis_tables / "chapter3_multicorpus_nota.txt", note + "\n")
 
     sample_rows = []
     for source_name in ("MuseTrainer", "SymbTr"):
@@ -317,7 +317,7 @@ def _multicorpus_tables() -> None:
                 + r" \\"
             )
         lines.extend([r"\hline", r"\end{tabular}"])
-        _write(THESIS_TABLES / "chapter3_resultados_multicorpus_muestra.tex", "\n".join(lines) + "\n")
+        _write(thesis_tables / "chapter3_resultados_multicorpus_muestra.tex", "\n".join(lines) + "\n")
 
 
 def _load_metrics(path: Path) -> dict[str, float]:
@@ -431,8 +431,8 @@ def _draw_transition_panel(
     ax.set_axis_off()
 
 
-def _single_anchor_assets() -> None:
-    THESIS_FIGURES.mkdir(parents=True, exist_ok=True)
+def _single_anchor_assets(thesis_figures: Path, thesis_tables: Path) -> None:
+    thesis_figures.mkdir(parents=True, exist_ok=True)
 
     comparison = pd.read_csv(ANCHOR_DIR / "comparison.csv")
     finite_metrics = _load_metrics(ANCHOR_DIR / "finite_hmm" / "summary.csv")
@@ -452,7 +452,7 @@ def _single_anchor_assets() -> None:
         r"\hline",
         r"\end{tabular}",
     ]
-    _write(THESIS_TABLES / "chapter3_single_anchor.tex", "\n".join(lines) + "\n")
+    _write(thesis_tables / "chapter3_single_anchor.tex", "\n".join(lines) + "\n")
 
     finite_matrix = pd.read_csv(ANCHOR_DIR / "finite_hmm" / "transition_matrix_active.csv", index_col=0)
     hdp_matrix = pd.read_csv(ANCHOR_DIR / "hdp_hmm" / "transition_matrix_active.csv", index_col=0)
@@ -523,16 +523,32 @@ def _single_anchor_assets() -> None:
         color="#334e68",
     )
     fig.tight_layout(rect=[0.03, 0.05, 0.97, 0.95], h_pad=2.1)
-    fig.savefig(THESIS_FIGURES / "single_anchor_transition_comparison.png", dpi=260, bbox_inches="tight")
+    fig.savefig(thesis_figures / "single_anchor_transition_comparison.png", dpi=260, bbox_inches="tight")
     plt.close(fig)
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Export thesis-facing figures and tables without hardcoded local paths.")
+    parser.add_argument(
+        "--thesis-root",
+        default=str(default_thesis_export_root()),
+        help="Destination thesis root. Defaults to MELODIES_THESIS_ROOT or artifacts/thesis_export.",
+    )
+    return parser
+
+
 def main() -> None:
-    _copy_figures(CLASSIC_DIR / "analysis" / "figures", CLASSIC_FIGURES)
-    _copy_figures(MULTICORPUS_DIR / "analysis" / "figures", MULTICORPUS_FIGURES)
-    _classic_tables()
-    _multicorpus_tables()
-    _single_anchor_assets()
+    args = build_parser().parse_args()
+    thesis_root = Path(args.thesis_root).resolve()
+    thesis_figures = thesis_root / "figures" / "chapter3"
+    thesis_tables = thesis_root / "chapters" / "tables"
+
+    _copy_figures(CLASSIC_DIR / "analysis" / "figures", CLASSIC_FIGURES, thesis_figures)
+    _copy_figures(MULTICORPUS_DIR / "analysis" / "figures", MULTICORPUS_FIGURES, thesis_figures)
+    _classic_tables(thesis_tables)
+    _multicorpus_tables(thesis_tables)
+    _single_anchor_assets(thesis_figures, thesis_tables)
+    print(f"Chapter 3 assets exported to: {thesis_root}")
 
 
 if __name__ == "__main__":

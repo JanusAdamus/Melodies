@@ -11,16 +11,26 @@ recomendada para orientarte es corta:
 4. [`experiments.md`](experiments.md): separacion metodologica entre el pipeline
    principal y el experimento de next-token.
 
-## Guias Principales
+## Ruta Corta
 
 - [`setup-and-reproduction.md`](setup-and-reproduction.md)
 - [`project-structure.md`](project-structure.md)
 - [`experiments.md`](experiments.md)
 - [`transformer.md`](transformer.md)
+
+## Trabajo Activo
+
+- [`gpu-comparable-execution-plan.md`](gpu-comparable-execution-plan.md)
+- [`cleanup_report.md`](cleanup_report.md)
+- [`repo-cleanup-guide.md`](repo-cleanup-guide.md)
 - [`transformer-roadmap.md`](transformer-roadmap.md)
 - [`codex-multiagent-transformer-benchmark-prompt.md`](codex-multiagent-transformer-benchmark-prompt.md)
 - [`transformer-benchmark-suite.md`](transformer-benchmark-suite.md)
+
+## Analisis y Reportes
+
 - [`transformer-comparison-analysis.md`](transformer-comparison-analysis.md)
+- [`transformer-vs-classical-analysis.md`](transformer-vs-classical-analysis.md)
 - [`pdmx-transformer-thesis-report.md`](pdmx-transformer-thesis-report.md)
 - [`artifact-policy.md`](artifact-policy.md)
 

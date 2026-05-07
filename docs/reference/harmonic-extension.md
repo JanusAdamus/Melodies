@@ -95,7 +95,7 @@ Esta decision es esencial para mantener el equilibrio entre riqueza musical y vi
 
 ## Vocabulario armonico implementado
 
-El archivo [harmony.py](/home/janusadamuz/Documentos/Melodies/src/models/harmony.py) define un vocabulario armonico controlado. El conjunto de plantillas abstractas es el siguiente:
+El archivo [`src/models/harmony.py`](../../src/models/harmony.py) define un vocabulario armonico controlado. El conjunto de plantillas abstractas es el siguiente:
 
 - triadas: `maj`, `min`, `dim`, `aug`
 - septimas: `maj7`, `7`, `m7`, `m(maj7)`, `ø7`, `dim7`
@@ -222,4 +222,3 @@ La arquitectura ya queda preparada para crecer. La existencia de plantillas de a
 ## Conclusión
 
 La ampliacion armonica del proyecto constituye una mejora sustantiva y no solo incremental. Reemplaza un inventario armonico minimo por un vocabulario estructurado de triadas, septimas, novenas, suspendidos y acordes con notas anadidas, complementado por una capa modal diatonica. Esta decision amplía la capacidad descriptiva del sistema, fortalece la interpretabilidad de las trayectorias ocultas y mantiene el modelo dentro de limites computacionales razonables. En consecuencia, el proyecto queda mejor alineado tanto con la realidad musical del repertorio simbolico como con las exigencias metodologicas de un trabajo academico serio.
-

@@ -86,6 +86,13 @@ Pensado para:
 
 - continuar la ruta extendida historica con una maquina mas fuerte;
 - ampliar capacidad sin cambiar todavia el tipo de representacion base.
+- explorar escalamiento.
+
+Importante:
+
+- este perfil no debe leerse como comparacion final contra `HMM` y `HDP-HMM`;
+- sirve como evidencia de capacidad y costo, no como protocolo comparativo
+  cerrado.
 
 ### `research_richer_events`
 
@@ -155,6 +162,9 @@ Lo siguiente que ya quedo habilitado en el repo es:
 
 Lo siguiente que todavia falta despues de esta etapa es:
 
+- implementar una comparacion final contra `HMM` y `HDP-HMM` bajo el mismo
+  protocolo `next-token`;
+- separar formalmente `gpu_comparable` de `gpu_extended`;
 - estudiar contextos de 512+ con costo controlado;
 - comparar sesgo relativo contra otras variantes para contexto largo;
 - comparacion formal entre `pitch_class`, `pitch_class_duration` y

@@ -15,3 +15,20 @@ Rutas relevantes:
 - `artifacts/next_token_experiment/results/`: corridas del experimento de
   siguiente token.
 - `artifacts/tmp/`: temporales descartables.
+
+## Regla Practica
+
+No todo resultado local merece quedarse indefinidamente.
+
+Conservar:
+
+- corridas citadas en `docs/`;
+- summaries agregados;
+- artefactos necesarios para tesis o reproduccion.
+
+Purgar localmente cuando ya no aporten:
+
+- `tmp/`;
+- `tmp_figs/`;
+- smoke runs redundantes;
+- variantes intermedias sin nombre canonico claro.
