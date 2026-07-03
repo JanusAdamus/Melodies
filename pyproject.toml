@@ -33,7 +33,8 @@ melodies-library = "src.cli.library_analysis:main"
 melodies-multicorpus = "src.cli.multicorpus_analysis:main"
 melodies-classic-limited = "src.cli.classic_limited_analysis:main"
 melodies-next-token = "next_token_experiment.cli:main"
+melodies-comparacion = "Comparacion.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*", "next_token_experiment*", "examples*"]
+include = ["src*", "next_token_experiment*", "Comparacion*", "examples*"]
