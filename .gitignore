@@ -8,6 +8,7 @@
 .ruff_cache/
 .venv/
 .vscode/
+/.worktrees/
 __pycache__/
 *.log
 *.py[cod]
