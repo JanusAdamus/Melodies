@@ -117,3 +117,166 @@ Result: exit 0. Git printed only Windows LF-to-CRLF conversion notices.
 ## Concerns
 
 None. The user prohibition on subagents prevented an independent reviewer dispatch, so the diff and acceptance criteria were audited locally. Git's LF-to-CRLF notices are informational; `git diff --check` passed.
+
+---
+
+## Fix round 1/5
+
+### Status and scope
+
+DONE. Review head: `a7254dc39ec03c47180a9e48f3a99406fa6cdffa`.
+
+Implemented only the two open findings in the Task 1 write set:
+
+- Finite-HMM candidate selection now retains the complete overall winning tuple locally and assigns `selected_states`, `initial_probs`, `transition_matrix`, and `emission_matrix` together after the candidate loop.
+- `WindowedSequenceDataset.max_windows` now applies only to training. Validation and test retain every evaluation slice and cannot silently lose canonical event coverage.
+
+Per controller ruling, `Comparacion/runner.py` was not changed; context-length propagation remains deferred to Task 4. The FFBS instrumentation suggestion remains a deferred Minor. No subagents were dispatched.
+
+### Fix commit
+
+- `353ab8a5a79b02aa231af579ef3f5d7fc377fc36` — `fix: retain selected models and evaluation coverage`
+- This appended report is committed in the immediate follow-up documentation commit; that SHA is returned in the fix-round handoff.
+
+### RED: finite-HMM selected matrices
+
+Command:
+
+```powershell
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest tests.test_comparacion.ClassicalModelTests.test_finite_hmm_retains_matrices_for_selected_state_count -v
+```
+
+Observed output:
+
+```text
+test_finite_hmm_retains_matrices_for_selected_state_count (tests.test_comparacion.ClassicalModelTests.test_finite_hmm_retains_matrices_for_selected_state_count) ... FAIL
+
+AssertionError: Tuples differ: (3,) != (2,)
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+FAILED (failures=1)
+```
+
+The deterministic first candidate selected two states with validation NLL `0.1`; the final losing candidate used three states with validation NLL `0.9`. Before the fix, `selected_states` remained 2 while the installed initial probabilities had shape `(3,)`.
+
+### GREEN: finite-HMM selected matrices
+
+Commands:
+
+```powershell
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest tests.test_comparacion.ClassicalModelTests.test_finite_hmm_retains_matrices_for_selected_state_count -v
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest tests.test_comparacion -v
+```
+
+Observed output:
+
+```text
+Ran 1 test in 0.001s
+
+OK
+Ran 7 tests in 0.135s
+
+OK
+EXIT_CODES target=0 file=0
+```
+
+### RED: validation coverage under `max_windows`
+
+Command:
+
+```powershell
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest next_token_experiment.tests.test_protocol.ProtocolTests.test_validation_dataset_scores_every_token_once -v
+```
+
+Observed output:
+
+```text
+test_validation_dataset_scores_every_token_once (next_token_experiment.tests.test_protocol.ProtocolTests.test_validation_dataset_scores_every_token_once) ... FAIL
+
+AssertionError: Lists differ: [(0, 128)] != [(0, 128), (128, 129)]
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+FAILED (failures=1)
+```
+
+The 129-token validation piece was configured with `max_windows=1`; before the fix, the cap discarded slice `(128, 129)`.
+
+### GREEN: validation coverage under `max_windows`
+
+Commands:
+
+```powershell
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest next_token_experiment.tests.test_protocol.ProtocolTests.test_validation_dataset_scores_every_token_once -v
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest next_token_experiment.tests.test_protocol -v
+```
+
+Observed output:
+
+```text
+Ran 1 test in 0.000s
+
+OK
+Ran 7 tests in 0.002s
+
+OK
+EXIT_CODES target=0 file=0
+```
+
+### Covering focused tests
+
+Command:
+
+```powershell
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest tests.test_comparacion next_token_experiment.tests.test_protocol -v
+```
+
+Observed output:
+
+```text
+----------------------------------------------------------------------
+Ran 14 tests in 0.136s
+
+OK
+```
+
+`git diff --name-only` listed only:
+
+```text
+Comparacion/classical_models.py
+next_token_experiment/data/dataset.py
+next_token_experiment/tests/test_protocol.py
+tests/test_comparacion.py
+```
+
+`git diff --check` exited 0 and printed only the existing Windows LF-to-CRLF notices.
+
+### Full unit suites
+
+Commands:
+
+```powershell
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest discover -s tests -v
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest discover -s next_token_experiment/tests -v
+```
+
+Observed output:
+
+```text
+----------------------------------------------------------------------
+Ran 26 tests in 1.560s
+
+OK
+----------------------------------------------------------------------
+Ran 19 tests in 4.015s
+
+OK
+FULL_EXIT_CODES main=0 next_token=0
+```
+
+### Fix-round concerns
+
+No open concern within Task 1. The controller-deferred runner propagation and FFBS instrumentation were intentionally left unchanged.
