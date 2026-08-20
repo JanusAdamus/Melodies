@@ -82,7 +82,7 @@ def _empty_comparison(model_a: str, model_b: str) -> dict[str, object]:
         "status": "unavailable",
         "reason": "no_paired_finite_works",
         "n_pairs": 0,
-        "piece_ids": [],
+        "canonical_work_ids": [],
         "mean_difference": None,
         "median_difference": None,
         "bootstrap_95_ci": None,
@@ -128,7 +128,8 @@ def pairwise_model_comparisons(
     """Compare every sorted model pair using canonical works at ``frac == 1.0``.
 
     Repeated data/model seeds are first averaged within each
-    ``(model, piece_id)``.  Pairwise differences are then computed as
+    ``(model, canonical_work_id)``.  File-level ``piece_id`` is never used as
+    a fallback. Pairwise differences are then computed as
     ``model_a test_nll - model_b test_nll``; negative values favor ``model_a``.
     Rows with missing or non-finite identifiers, fractions, or NLL values are
     excluded rather than imputed.  ``nll_per_token`` is accepted as the
@@ -152,13 +153,13 @@ def pairwise_model_comparisons(
         model_names.add(model)
         if not _full_fraction(row):
             continue
-        piece_id = row.get("piece_id")
-        if not isinstance(piece_id, str) or not piece_id:
+        canonical_work_id = row.get("canonical_work_id")
+        if not isinstance(canonical_work_id, str) or not canonical_work_id.strip():
             continue
         test_nll = _row_test_nll(row)
         if test_nll is None:
             continue
-        repeated_values.setdefault((model, piece_id), []).append(test_nll)
+        repeated_values.setdefault((model, canonical_work_id), []).append(test_nll)
 
     work_means = {
         key: float(np.mean(values))
@@ -166,21 +167,22 @@ def pairwise_model_comparisons(
         if values
     }
     works_by_model: dict[str, set[str]] = {model: set() for model in model_names}
-    for model, piece_id in work_means:
-        works_by_model[model].add(piece_id)
+    for model, canonical_work_id in work_means:
+        works_by_model[model].add(canonical_work_id)
 
     generator = np.random.default_rng(validated_seed)
     comparisons_payload: list[dict[str, object]] = []
     for model_a, model_b in combinations(sorted(model_names), 2):
-        piece_ids = sorted(works_by_model[model_a] & works_by_model[model_b])
-        if not piece_ids:
+        canonical_work_ids = sorted(works_by_model[model_a] & works_by_model[model_b])
+        if not canonical_work_ids:
             comparisons_payload.append(_empty_comparison(model_a, model_b))
             continue
 
         differences = np.asarray(
             [
-                work_means[(model_a, piece_id)] - work_means[(model_b, piece_id)]
-                for piece_id in piece_ids
+                work_means[(model_a, canonical_work_id)]
+                - work_means[(model_b, canonical_work_id)]
+                for canonical_work_id in canonical_work_ids
             ],
             dtype=float,
         )
@@ -192,8 +194,8 @@ def pairwise_model_comparisons(
             "interpretation": "negative_favors_model_a",
             "status": "ok",
             "reason": None,
-            "n_pairs": len(piece_ids),
-            "piece_ids": piece_ids,
+            "n_pairs": len(canonical_work_ids),
+            "canonical_work_ids": canonical_work_ids,
             "mean_difference": float(np.mean(differences)),
             "median_difference": float(np.median(differences)),
             "bootstrap_95_ci": _bootstrap_mean_interval(

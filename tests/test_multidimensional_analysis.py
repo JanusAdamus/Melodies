@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import math
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from Comparacion.decision import pareto_front
 from Comparacion.structural_metrics import (
@@ -71,11 +74,50 @@ class StructuralMetricTests(unittest.TestCase):
                 with self.assertRaises((TypeError, ValueError)):
                     boundary_f1(reference, predicted, tolerance)
 
+    def test_boundary_f1_rejects_duplicate_annotation_coordinates(self) -> None:
+        """Catches treating repeated annotation rows as distinct boundaries."""
+
+        for reference, predicted in (([2, 2, 8], [2, 8]), ([2, 8], [2, 8, 8])):
+            with self.subTest(reference=reference, predicted=predicted):
+                with self.assertRaises(ValueError):
+                    boundary_f1(reference, predicted, tolerance=0)
+
     def test_partition_scores_are_one_for_identical_one_cluster_partitions(self) -> None:
         """Catches zero-entropy and zero-denominator degeneracies."""
 
         self.assertEqual(normalized_mutual_information(["a", "a", "a"], [7, 7, 7]), 1.0)
         self.assertEqual(adjusted_rand_index(["a", "a", "a"], [7, 7, 7]), 1.0)
+
+    def test_partition_scores_are_one_for_permuted_all_singleton_partitions(self) -> None:
+        """Catches mishandling the zero-denominator all-singleton ARI case."""
+
+        reference = ["a", "b", "c", "d"]
+        predicted = [40, 30, 20, 10]
+
+        self.assertEqual(normalized_mutual_information(reference, predicted), 1.0)
+        self.assertEqual(adjusted_rand_index(reference, predicted), 1.0)
+
+    def test_partition_scores_are_symmetric_and_invariant_to_label_permutation(self) -> None:
+        """Catches asymmetric marginals or dependence on cluster label names."""
+
+        reference = ["a", "a", "a", "b", "b", "c"]
+        predicted = ["x", "x", "y", "y", "z", "z"]
+        permuted_prediction = [3, 3, 1, 1, 2, 2]
+
+        for left, right in (
+            (reference, predicted),
+            (predicted, reference),
+            (reference, permuted_prediction),
+        ):
+            with self.subTest(left=left, right=right):
+                self.assertAlmostEqual(
+                    normalized_mutual_information(left, right),
+                    0.5206652463984818,
+                )
+                self.assertAlmostEqual(
+                    adjusted_rand_index(left, right),
+                    0.07407407407407407,
+                )
 
     def test_partition_scores_ignore_permuted_hashable_label_values(self) -> None:
         """Catches comparing label values instead of partition membership."""
@@ -122,81 +164,127 @@ class StructuralMetricTests(unittest.TestCase):
 
 
 class PairedInferenceTests(unittest.TestCase):
-    def test_three_models_average_repeats_and_report_oriented_pairwise_differences(self) -> None:
-        """Catches seed-level pairing, fraction leakage, and reversed NLL differences."""
+    def test_canonical_variants_and_repeated_seeds_are_averaged_before_inference(self) -> None:
+        """Catches file-level pairing or using first, last, or seed-level values."""
 
         rows = [
-            {"model": "alpha", "piece_id": "p1", "frac": 1.0, "test_nll": -1.0},
-            {"model": "alpha", "piece_id": "p1", "frac": 1.0, "test_nll": 1.0},
-            {"model": "alpha", "piece_id": "p2", "frac": 1.0, "test_nll": 0.0},
-            {"model": "alpha", "piece_id": "p3", "frac": 1.0, "test_nll": 0.0},
-            {"model": "alpha", "piece_id": "p4", "frac": 1.0, "test_nll": 0.0},
-            {"model": "alpha", "piece_id": "p5", "frac": 1.0, "test_nll": 0.0},
-            {"model": "alpha", "piece_id": "p2", "frac": 0.5, "test_nll": -100.0},
-            {"model": "beta", "piece_id": "p1", "frac": 1.0, "test_nll": 0.0},
-            {"model": "beta", "piece_id": "p1", "frac": 1.0, "test_nll": 2.0},
-            {"model": "beta", "piece_id": "p2", "frac": 1.0, "test_nll": 2.0},
-            {"model": "beta", "piece_id": "p3", "frac": 1.0, "test_nll": 3.0},
-            {"model": "beta", "piece_id": "p4", "frac": 1.0, "test_nll": 4.0},
-            {"model": "beta", "piece_id": "p5", "frac": 1.0, "test_nll": 5.0},
-            {"model": "gamma", "piece_id": "p1", "frac": 1.0, "test_nll": -2.0},
-            {"model": "gamma", "piece_id": "p1", "frac": 1.0, "test_nll": 0.0},
-            {"model": "gamma", "piece_id": "p2", "frac": 1.0, "test_nll": 1.0},
-            {"model": "gamma", "piece_id": "p3", "frac": 1.0, "test_nll": 2.0},
-            {"model": "gamma", "piece_id": "p4", "frac": 1.0, "test_nll": 3.0},
-            {"model": "gamma", "piece_id": "p5", "frac": 1.0, "test_nll": 4.0},
+            {"model": "alpha", "piece_id": "one-a", "canonical_work_id": "work-one", "frac": 1.0, "data_seed": 1, "model_seed": 1, "test_nll": 0.0},
+            {"model": "alpha", "piece_id": "one-b", "canonical_work_id": "work-one", "frac": 1.0, "data_seed": 1, "model_seed": 2, "test_nll": 9.0},
+            {"model": "alpha", "piece_id": "one-a", "canonical_work_id": "work-one", "frac": 1.0, "data_seed": 2, "model_seed": 1, "test_nll": 12.0},
+            {"model": "beta", "piece_id": "one-c", "canonical_work_id": "work-one", "frac": 1.0, "data_seed": 1, "model_seed": 1, "test_nll": 2.0},
+            {"model": "beta", "piece_id": "one-d", "canonical_work_id": "work-one", "frac": 1.0, "data_seed": 2, "model_seed": 2, "test_nll": 20.0},
+            {"model": "alpha", "piece_id": "two-a", "canonical_work_id": "work-two", "frac": 1.0, "data_seed": 1, "model_seed": 1, "test_nll": 30.0},
+            {"model": "alpha", "piece_id": "two-b", "canonical_work_id": "work-two", "frac": 1.0, "data_seed": 2, "model_seed": 2, "test_nll": 0.0},
+            {"model": "beta", "piece_id": "two-c", "canonical_work_id": "work-two", "frac": 1.0, "data_seed": 1, "model_seed": 1, "test_nll": 1.0},
+            {"model": "beta", "piece_id": "two-d", "canonical_work_id": "work-two", "frac": 1.0, "data_seed": 1, "model_seed": 2, "test_nll": 5.0},
+            {"model": "beta", "piece_id": "two-c", "canonical_work_id": "work-two", "frac": 1.0, "data_seed": 2, "model_seed": 1, "test_nll": 12.0},
+            {"model": "alpha", "piece_id": "ignored", "canonical_work_id": "work-two", "frac": 0.5, "data_seed": 9, "model_seed": 9, "test_nll": -100.0},
         ]
 
-        result = pairwise_model_comparisons(rows, bootstrap_samples=512, seed=23)
-        repeated = pairwise_model_comparisons(rows, bootstrap_samples=512, seed=23)
+        def checked_wilcoxon(differences: object) -> SimpleNamespace:
+            self.assertEqual(tuple(float(value) for value in differences), (-4.0, 9.0))
+            return SimpleNamespace(statistic=1.0, pvalue=0.5)
+
+        with patch("Comparacion.statistics.wilcoxon", side_effect=checked_wilcoxon):
+            result = pairwise_model_comparisons(rows, bootstrap_samples=4, seed=2)
+
+        comparison = result["comparisons"][0]
+        self.assertEqual(comparison["n_pairs"], 2)
+        self.assertEqual(comparison["canonical_work_ids"], ["work-one", "work-two"])
+        self.assertEqual(comparison["mean_difference"], 2.5)
+        self.assertEqual(comparison["median_difference"], 2.5)
+        self.assertEqual(comparison["bootstrap_95_ci"], [-4.0, 2.5])
+        self.assertNotEqual(comparison["bootstrap_95_ci"], [0.0, 4.8125])
+        self.assertEqual(comparison["difference_orientation"], "model_a_minus_model_b")
+        self.assertEqual(comparison["interpretation"], "negative_favors_model_a")
+
+    def test_missing_canonical_ids_are_not_replaced_with_piece_ids(self) -> None:
+        """Catches silently pairing file variants whose canonical identity is absent."""
+
+        rows = [
+            {"model": "alpha", "piece_id": "valid-a", "canonical_work_id": "real-work", "frac": 1.0, "test_nll": 1.0},
+            {"model": "beta", "piece_id": "valid-b", "canonical_work_id": "real-work", "frac": 1.0, "test_nll": 2.0},
+            {"model": "alpha", "piece_id": "shared-file", "frac": 1.0, "test_nll": 100.0},
+            {"model": "beta", "piece_id": "shared-file", "frac": 1.0, "test_nll": 0.0},
+            {"model": "alpha", "piece_id": "empty-file", "canonical_work_id": "", "frac": 1.0, "test_nll": 50.0},
+            {"model": "beta", "piece_id": "empty-file", "canonical_work_id": "   ", "frac": 1.0, "test_nll": 0.0},
+        ]
+
+        result = pairwise_model_comparisons(rows, bootstrap_samples=8, seed=4)
+        comparison = result["comparisons"][0]
+
+        self.assertEqual(comparison["n_pairs"], 1)
+        self.assertEqual(comparison["canonical_work_ids"], ["real-work"])
+        self.assertEqual(comparison["mean_difference"], -1.0)
+        self.assertEqual(comparison["bootstrap_95_ci"], [-1.0, -1.0])
+
+    def test_holm_adjustment_has_exact_values_for_three_distinct_raw_p_values(self) -> None:
+        """Catches wrong rank factors, pair mapping, monotonicity, or capping logic."""
+
+        rows = [
+            {"model": "alpha", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 1.0},
+            {"model": "alpha", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 1.0},
+            {"model": "alpha", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 1.0},
+            {"model": "beta", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 2.0},
+            {"model": "beta", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 3.0},
+            {"model": "beta", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 4.0},
+            {"model": "gamma", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 4.0},
+            {"model": "gamma", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 6.0},
+            {"model": "gamma", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 8.0},
+        ]
+        scripted_results = [
+            SimpleNamespace(statistic=4.0, pvalue=0.8),
+            SimpleNamespace(statistic=1.0, pvalue=0.01),
+            SimpleNamespace(statistic=3.0, pvalue=0.6),
+        ]
+
+        with patch("Comparacion.statistics.wilcoxon", side_effect=scripted_results):
+            result = pairwise_model_comparisons(rows, bootstrap_samples=8, seed=11)
         comparisons = {
             (item["model_a"], item["model_b"]): item
             for item in result["comparisons"]
         }
 
-        self.assertEqual(result, repeated)
-        self.assertEqual(result["metric"], "test_nll")
-        self.assertEqual(result["difference_orientation"], "model_a_minus_model_b")
-        self.assertEqual(list(comparisons), [("alpha", "beta"), ("alpha", "gamma"), ("beta", "gamma")])
-        self.assertEqual(comparisons[("alpha", "beta")]["n_pairs"], 5)
-        self.assertEqual(comparisons[("alpha", "beta")]["piece_ids"], ["p1", "p2", "p3", "p4", "p5"])
-        self.assertEqual(comparisons[("alpha", "beta")]["mean_difference"], -3.0)
-        self.assertEqual(comparisons[("alpha", "beta")]["median_difference"], -3.0)
-        self.assertEqual(comparisons[("alpha", "beta")]["difference_orientation"], "model_a_minus_model_b")
-        self.assertEqual(comparisons[("alpha", "beta")]["interpretation"], "negative_favors_model_a")
-        self.assertEqual(comparisons[("alpha", "gamma")]["mean_difference"], -1.8)
-        self.assertEqual(comparisons[("alpha", "gamma")]["median_difference"], -2.0)
-        self.assertEqual(comparisons[("beta", "gamma")]["mean_difference"], 1.2)
-        self.assertEqual(comparisons[("beta", "gamma")]["median_difference"], 1.0)
-        self.assertGreaterEqual(comparisons[("alpha", "beta")]["bootstrap_95_ci"][0], -5.0)
-        self.assertLessEqual(comparisons[("alpha", "beta")]["bootstrap_95_ci"][1], -1.0)
+        self.assertEqual(result["n_valid_tests"], 3)
+        self.assertAlmostEqual(comparisons[("alpha", "beta")]["p_value"], 0.8)
+        self.assertAlmostEqual(comparisons[("alpha", "beta")]["p_value_holm"], 1.0)
+        self.assertAlmostEqual(comparisons[("alpha", "gamma")]["p_value"], 0.01)
+        self.assertAlmostEqual(comparisons[("alpha", "gamma")]["p_value_holm"], 0.03)
+        self.assertAlmostEqual(comparisons[("beta", "gamma")]["p_value"], 0.6)
+        self.assertAlmostEqual(comparisons[("beta", "gamma")]["p_value_holm"], 1.0)
 
-        valid = sorted(
-            (
-                item["p_value"],
-                item["p_value_holm"],
-            )
-            for item in result["comparisons"]
-            if item["wilcoxon_status"] == "ok"
-        )
-        self.assertEqual(len(valid), 3)
-        self.assertEqual([adjusted for _, adjusted in valid], sorted(adjusted for _, adjusted in valid))
-        for raw, adjusted in valid:
-            self.assertGreaterEqual(adjusted, raw)
-            self.assertLessEqual(adjusted, 1.0)
+    def test_actual_wilcoxon_is_used_for_nonzero_canonical_work_differences(self) -> None:
+        """Catches replacing the SciPy integration with only scripted test behavior."""
+
+        rows = [
+            {"model": "alpha", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 0.0},
+            {"model": "alpha", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 0.0},
+            {"model": "alpha", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 0.0},
+            {"model": "beta", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 1.0},
+            {"model": "beta", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 2.0},
+            {"model": "beta", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 3.0},
+        ]
+
+        result = pairwise_model_comparisons(rows, bootstrap_samples=8, seed=5)
+        comparison = result["comparisons"][0]
+
+        self.assertEqual(comparison["wilcoxon_status"], "ok")
+        self.assertEqual(comparison["wilcoxon_statistic"], 0.0)
+        self.assertEqual(comparison["p_value"], 0.25)
+        self.assertEqual(comparison["p_value_holm"], 0.25)
 
     def test_missing_and_nonfinite_rows_do_not_fabricate_pairs(self) -> None:
         """Catches imputing absent work metrics or treating partial fractions as full data."""
 
         rows = [
-            {"model": "alpha", "piece_id": "p1", "frac": 1.0, "test_nll": 1.0},
-            {"model": "alpha", "piece_id": "p2", "frac": 1.0, "test_nll": math.nan},
-            {"model": "alpha", "piece_id": "p3", "frac": 1.0},
-            {"model": "beta", "piece_id": "p1", "frac": 1.0, "test_nll": 2.0},
-            {"model": "beta", "piece_id": "p2", "frac": 1.0, "test_nll": 3.0},
-            {"model": "beta", "piece_id": "p3", "frac": 1.0, "test_nll": 4.0},
-            {"model": "gamma", "piece_id": "p1", "frac": 0.5, "test_nll": 0.0},
-            {"model": "gamma", "piece_id": "p2", "frac": 1.0, "test_nll": math.inf},
+            {"model": "alpha", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 1.0},
+            {"model": "alpha", "canonical_work_id": "w2", "frac": 1.0, "test_nll": math.nan},
+            {"model": "alpha", "canonical_work_id": "w3", "frac": 1.0},
+            {"model": "beta", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 2.0},
+            {"model": "beta", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 3.0},
+            {"model": "beta", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 4.0},
+            {"model": "gamma", "canonical_work_id": "w1", "frac": 0.5, "test_nll": 0.0},
+            {"model": "gamma", "canonical_work_id": "w2", "frac": 1.0, "test_nll": math.inf},
         ]
 
         result = pairwise_model_comparisons(rows, bootstrap_samples=128, seed=7)
@@ -208,7 +296,7 @@ class PairedInferenceTests(unittest.TestCase):
         self.assertEqual(list(comparisons), [("alpha", "beta"), ("alpha", "gamma"), ("beta", "gamma")])
         alpha_beta = comparisons[("alpha", "beta")]
         self.assertEqual(alpha_beta["n_pairs"], 1)
-        self.assertEqual(alpha_beta["piece_ids"], ["p1"])
+        self.assertEqual(alpha_beta["canonical_work_ids"], ["w1"])
         self.assertEqual(alpha_beta["mean_difference"], -1.0)
         self.assertEqual(alpha_beta["bootstrap_95_ci"], [-1.0, -1.0])
         self.assertEqual(alpha_beta["wilcoxon_status"], "unavailable")
@@ -278,6 +366,52 @@ class ParetoDecisionTests(unittest.TestCase):
             ["complete", "missing_structure", "nonfinite_cost"],
         )
         self.assertEqual(rows, original)
+
+    def test_incomplete_candidate_cannot_dominate_a_complete_row(self) -> None:
+        """Catches treating a missing maximize value as an artificial best score."""
+
+        rows = [
+            {"model": "complete", "test_nll": 2.0, "train_time": 2.0, "boundary_f1": 0.5},
+            {"model": "incomplete_challenger", "test_nll": 1.0, "train_time": 1.0},
+        ]
+
+        front = pareto_front(
+            rows,
+            minimize=("test_nll", "train_time"),
+            maximize=("boundary_f1",),
+        )
+
+        self.assertEqual([row["model"] for row in front], ["complete", "incomplete_challenger"])
+
+    def test_pareto_front_sanitizes_declared_nonfinite_axes_for_strict_json(self) -> None:
+        """Catches returning NaN or infinity while preserving incomparable rows."""
+
+        rows = [
+            {"model": "finite", "test_nll": 2.0, "train_time": 2.0, "boundary_f1": 0.5},
+            {"model": "nan_loss", "test_nll": math.nan, "train_time": 1.0, "boundary_f1": 0.9},
+            {"model": "infinite_axes", "test_nll": 1.0, "train_time": math.inf, "boundary_f1": -math.inf},
+            {"model": "missing_structure", "test_nll": 1.0, "train_time": 1.0},
+        ]
+        original = [dict(row) for row in rows]
+
+        front = pareto_front(
+            rows,
+            minimize=("test_nll", "train_time"),
+            maximize=("boundary_f1",),
+        )
+
+        self.assertEqual(
+            [row["model"] for row in front],
+            ["finite", "nan_loss", "infinite_axes", "missing_structure"],
+        )
+        self.assertIsNone(front[1]["test_nll"])
+        self.assertIsNone(front[2]["train_time"])
+        self.assertIsNone(front[2]["boundary_f1"])
+        self.assertNotIn("boundary_f1", front[3])
+        self.assertEqual(rows, original)
+        self.assertTrue(math.isnan(rows[1]["test_nll"]))
+        self.assertTrue(math.isinf(rows[2]["train_time"]))
+        json.dumps(front, allow_nan=False)
 
     def test_pareto_front_rejects_an_axis_with_conflicting_direction(self) -> None:
         """Catches contradictory dominance declarations for one metric."""

@@ -35,7 +35,10 @@ def _validated_boundaries(values: Iterable[object], *, name: str) -> list[int]:
         if values is None:
             raise TypeError(f"{name} boundaries must be iterable") from exc
         raise
-    return sorted(boundaries)
+    boundaries.sort()
+    if any(left == right for left, right in zip(boundaries, boundaries[1:])):
+        raise ValueError(f"{name} boundaries must not contain duplicate coordinates")
+    return boundaries
 
 
 def boundary_f1(
@@ -47,7 +50,7 @@ def boundary_f1(
 
     Boundaries and ``tolerance`` must be nonnegative integers.  Matches are a
     maximum-cardinality one-to-one matching under absolute distance at most
-    ``tolerance``; duplicate positions therefore remain distinct observations.
+    ``tolerance``. Duplicate coordinates are rejected as malformed annotations.
     """
 
     validated_tolerance = _nonnegative_integer(tolerance, name="tolerance")

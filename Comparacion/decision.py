@@ -54,6 +54,23 @@ def _dominates(
     return no_worse and strictly_better
 
 
+def _strict_json_axis_copy(
+    row: Mapping[str, object],
+    axes: tuple[str, ...],
+) -> dict[str, object]:
+    result = dict(row)
+    for axis in axes:
+        if axis not in result or isinstance(result[axis], bool):
+            continue
+        try:
+            value = float(result[axis])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(value):
+            result[axis] = None
+    return result
+
+
 def pareto_front(
     rows: Iterable[Mapping[str, object]],
     minimize: tuple[str, ...],
@@ -64,7 +81,8 @@ def pareto_front(
     Every declared axis is required for each pairwise dominance statement.  If
     either row is missing an axis or has a non-finite value, that pair is
     incomparable.  Dominance requires a candidate to be no worse on all axes
-    and strictly better on at least one.
+    and strictly better on at least one. Non-finite declared-axis values are
+    replaced with ``None`` in returned copies so JSON can reject NaN safely.
     """
 
     minimized_axes = tuple(minimize)
@@ -88,5 +106,7 @@ def pareto_front(
             for candidate_index, candidate in enumerate(row_copies)
         )
         if not dominated:
-            nondominated.append(target)
+            nondominated.append(
+                _strict_json_axis_copy(target, (*minimized_axes, *maximized_axes))
+            )
     return nondominated
