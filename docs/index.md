@@ -8,14 +8,17 @@ recomendada para orientarte es corta:
    probar y ejecutar demos.
 3. [`project-structure.md`](project-structure.md): mapa de carpetas y criterio
    de organizacion.
-4. [`experiments.md`](experiments.md): separacion metodologica entre el pipeline
-   principal y el experimento de next-token.
+4. [`multidimensional-evaluation.md`](multidimensional-evaluation.md): pregunta
+   estructural primaria, protocolo predictivo comun, costo, CLI y artefactos.
+5. [`experiments.md`](experiments.md): flujo de planificacion y limites de
+   evidencia.
 
 ## Guias Principales
 
 - [`setup-and-reproduction.md`](setup-and-reproduction.md)
 - [`project-structure.md`](project-structure.md)
 - [`experiments.md`](experiments.md)
+- [`multidimensional-evaluation.md`](multidimensional-evaluation.md)
 - [`transformer.md`](transformer.md)
 - [`transformer-roadmap.md`](transformer-roadmap.md)
 - [`codex-multiagent-transformer-benchmark-prompt.md`](codex-multiagent-transformer-benchmark-prompt.md)

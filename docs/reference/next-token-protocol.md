@@ -1,227 +1,101 @@
-# Protocolo Experimental Minimo
+# Protocolo predictivo comun
 
-## 1. Alcance
+## Papel metodologico
 
-Experimento unico:
+La prediccion del siguiente evento es una tarea secundaria compartida para
+comparar HMM finito, HDP-HMM, Transformer y el control VOMM opcional. La
+descripcion estructural sigue siendo el objetivo principal del proyecto. Una
+mejor NLL no demuestra por si misma mejor descripcion musical.
 
-- comparacion de prediccion de siguiente token entre HMM finito, HDP-HMM
-  truncado y Transformer pequeno.
+No se asume que exista una corrida canonica. Los smoke tests sinteticos
+verifican implementacion, no evidencia. Corpus completos, entrenamientos
+pesados, conteos, tiempos y resultados deben ser producidos por el autor.
 
-Queda fuera de alcance en `v1`:
+## Unidad, representacion y splits
 
-- tareas de generacion libre;
-- clasificacion;
-- analisis estructural;
-- modelado polifonico completo;
-- multiples corpus principales;
-- busqueda amplia de hiperparametros.
+La unidad es una secuencia lineal de eventos discretos por pieza. La
+representacion comparable primaria es `pitch_class`; configuraciones mas ricas
+son ablaciones internas.
 
-## 2. Corpus
+Cada `PreparedPiece` tiene un `canonical_work_id` no vacio. La particion fija se
+hace por ese identificador y expande despues todas las variantes del grupo, de
+modo que una obra canonica no cruza train, validacion y test. Las fracciones de
+entrenamiento son anidadas por semilla. La inferencia estadistica vuelve a
+agrupar variantes y repeticiones por obra canonica para evitar
+pseudorreplicacion.
 
-Corpus principal:
+## Soporte compartido
 
-- `external/library/scores`
-
-Estado actual observado en el repositorio:
-
-- 69 archivos detectados con extensiones musicales compatibles;
-- catalogos previos del repo muestran al menos 1 error de parseo conocido:
-  `Mozart_-_Piano_Sonata_No._16_-_Allegro.mxl`.
-
-Regla:
-
-- construir un manifiesto reproducible con archivos incluidos y excluidos.
-
-## 3. Unidad de observacion
-
-Unidad modelada:
-
-- secuencia lineal de eventos musicales discretos por obra.
-
-Preprocesamiento inicial:
-
-- `music21.converter.parse` como lector base;
-- `extract_events(..., include_rests=False, prefer_treble=True)`;
-- sin transposicion tonal en `v1`;
-- sin atributos expresivos;
-- sin inyeccion de etiquetas armonicas humanas.
-
-Motivo:
-
-- mantiene el problema en un nivel compatible con HMM, HDP-HMM y Transformer
-  sin sesgar el diseno hacia una arquitectura mas rica.
-
-## 4. Representacion
-
-Representacion principal:
-
-- `pitch_class`
-- vocabulario musical de 12 simbolos
-
-Mapeo:
-
-- `C, C#, D, D#, E, F, F#, G, G#, A, A#, B`
-
-Representacion alternativa permitida, pero no inicial:
-
-- `pitch_class_duration`
-- bins de duracion sugeridos: `0.25, 0.5, 1.0, 2.0, 4.0`
-
-## 5. Tokenizacion
-
-Para `pitch_class`:
-
-- el token musical es el entero `0..11`;
-- padding y `BOS` pueden existir solo como detalle interno del Transformer;
-- la evaluacion se hace exclusivamente sobre tokens musicales reales.
-
-## 6. Longitud de secuencia
-
-Regla de ventanas:
-
-- longitud maxima: 128 tokens;
-- longitud minima retenida: 32 tokens;
-- stride de train: 64;
-- stride de validacion y test: 128.
-
-Motivo:
-
-- limita costo computacional;
-- evita que unas pocas obras largas dominen el entrenamiento;
-- mantiene suficiente contexto local para una comparacion sobria.
-
-## 7. Split
-
-Particion fija:
-
-- train: 70%
-- validation: 15%
-- test: 15%
-- semilla: 7
-
-Regla metodologica:
-
-- dividir por grupo de obra canonica, no por archivo.
-
-Motivo:
-
-- el corpus contiene variantes, arreglos y duplicados probables;
-- dividir por archivo produciria leakage entre train y test.
-
-## 8. Modelos
-
-### HMM finito
-
-Configuracion recomendada:
-
-- emisiones categoricas sobre el mismo vocabulario;
-- grid pequeno: `K in {8, 12, 16}`;
-- seleccion por NLL de validacion;
-- maximo 50 iteraciones EM;
-- tolerancia: `1e-4`.
-
-### HDP-HMM truncado
-
-Configuracion recomendada:
-
-- truncacion: `K_max=20`;
-- `n_iters=100`;
-- `burn_in=50`;
-- misma representacion que los otros modelos;
-- seleccion de snapshot por mejor validacion o mejor log-likelihood retenido.
-
-### Transformer pequeno
-
-Configuracion recomendada:
-
-- arquitectura `decoder-only`;
-- embeddings discretos sobre el vocabulario musical;
-- embeddings posicionales aprendidos;
-- `n_layers=3`;
-- `n_heads=4`;
-- `d_model=128`;
-- `ff_dim=256`;
-- `dropout=0.1`;
-- `lr=3e-4`;
-- `batch_size=32`;
-- early stopping con paciencia 5 y maximo 25 epocas.
-
-Estimacion de escala:
-
-- alrededor de `0.42M` parametros con `pitch_class`.
-
-## 9. Metricas
-
-Principal:
-
-- `test_nll_per_token`
-
-Secundarias:
-
-- `test_perplexity`
-- `test_accuracy`
-- `train_wall_clock_s`
-- `eval_wall_clock_s`
-- `effective_states` para HDP-HMM
-- `selected_states` para HMM finito
-
-## 10. Hardware
-
-Objetivo de reproducibilidad:
-
-- CPU-first
-
-Entorno local observado:
-
-- 12 CPUs logicas
-- 15 GiB RAM
-- sin GPU detectada
-
-Consecuencia:
-
-- cualquier configuracion que requiera GPU para ser viable queda fuera de
-  alcance.
-
-## 11. Almacenamiento de resultados
-
-Formato recomendado:
+El soporte de puntuacion es:
 
 ```text
-next_token_experiment/results/
-  split_manifest.csv
-  exclusions.csv
-  finite_hmm/
-    config.json
-    train_log.csv
-    validation_metrics.csv
-    test_piece_metrics.csv
-    test_summary.json
-  hdp_hmm/
-    config.json
-    train_log.csv
-    validation_metrics.csv
-    test_piece_metrics.csv
-    test_summary.json
-  transformer/
-    config.json
-    train_log.csv
-    validation_metrics.csv
-    test_piece_metrics.csv
-    test_summary.json
+simbolos musicales + BOS
 ```
 
-Regla:
+BOS reinicia el contexto pero nunca es objetivo. PAD no pertenece al soporte
+de puntuacion: se excluye de log-softmax, argmax, top-k y Brier del Transformer.
+PAD sigue siendo valido en `input_ids` y en la mascara de batches. Para VOMM,
+el runner pasa `bos_token_id=tokenizer.bos_token_id` y
+`vocabulary_size=bos_token_id+1`. HMM y HDP-HMM usan el mismo soporte
+musica+BOS.
 
-- guardar configuracion, split y metricas por separado;
-- no sobrescribir resultados sin identificador de corrida;
-- registrar exclusiones desde el inicio.
+## Contexto y cobertura exacta
 
-## 12. Criterio de decision despues de la primera comparacion
+Entrenamiento puede usar ventanas solapadas. Validacion y test no: cada pieza
+se divide en segmentos consecutivos de hasta `max_context_length`, sin
+solapamiento. Toda cola positiva se conserva, incluso una cola de un evento.
+Cada segmento empieza desde BOS.
 
-Solo escalar el Transformer si se cumplen ambas condiciones:
+Los evaluadores publican `scored_event_indices` por pieza. El runner los
+compara con `range(len(piece.tokens))` y escribe ambos arreglos en
+`protocol_audit.json`. Duplicados, omisiones, valores fuera de rango, orden
+incorrecto o conteos distintos producen `status=failed` y detienen la corrida.
+La auditoria no se construye solo con indices esperados.
 
-- mejora consistente en `test_nll_per_token`;
-- costo computacional compatible con el marco de tesis.
+## Seleccion y medidas
 
-Si eso no ocurre, el Transformer debe quedar como referencia exploratoria y no
-como nucleo del trabajo.
+La seleccion de estados, hiperparametros, orden VOMM y checkpoint Transformer
+usa solamente validacion. El modelo conservado debe corresponder al candidato
+reportado. VOMM contabiliza todo el tiempo de seleccion entre ordenes.
+
+La medida primaria es NLL media por evento musical. Perplejidad es exactamente
+`exp(NLL)` y no una observacion independiente. Exactitud, top-k y Brier son
+diagnosticos secundarios cuando la familia expone distribuciones completas.
+
+## Inferencia y costo
+
+En `frac=1.0`, `pairwise_comparisons.json` forma todos los pares disponibles.
+Promedia primero dentro de `(modelo, obra canonica)`, calcula la diferencia de
+NLL `modelo_a - modelo_b`, un intervalo bootstrap pareado del 95 %, Wilcoxon
+cuando hay suficientes diferencias no nulas y correccion Holm para los valores
+p validos.
+
+`engineering_costs.csv` conserva por corrida tiempo de ajuste, tiempo de
+evaluacion, dispositivo, piezas/eventos de entrenamiento y las medidas de
+complejidad que cada familia puede justificar. Memoria y energia quedan vacias
+con razon explicita cuando no se miden de forma fiable. No se combinan unidades
+distintas en un indice de costo.
+
+## Relacion con estructura y Pareto
+
+Las anotaciones opcionales requieren
+`piece_id,event_index,segment_label,boundary`. Sin referencia,
+`structural_evaluation.json` identifica la entrada ausente. Con referencia pero
+sin etiquetas/fronteras inferidas comparables, identifica el artefacto inferido
+ausente. Solo con ambos lados validos se calculan F1 de fronteras, NMI y ARI.
+
+Cuando estructura no esta disponible, `pareto_summary.json` puede contener una
+frontera parcial predictiva-costo. La frontera completa de estructura,
+prediccion y costo se marca `not_evaluated` o `incomparable`.
+
+## Planificacion
+
+`melodies-comparacion --plan-only` prepara solamente el alcance acotado por
+`--max-files`, configuracion, manifiestos y `execution_plan.json`. El plan
+enumera splits, grupos, fracciones, ajustes, semillas, soporte, reset, cobertura
+y artefactos; separa carga clasica/ligera de carga neuronal. Retorna antes de
+construir modelos o ejecutar `fit`, no escribe filas de resultados y no afirma
+evidencia.
+
+El contrato completo de CLI y artefactos esta en
+[evaluacion multidimensional](../multidimensional-evaluation.md).

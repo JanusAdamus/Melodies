@@ -1,26 +1,24 @@
 # Melodies
 
-Repositorio de tesis para analisis de musica simbolica con dos superficies de
-trabajo claramente separadas:
+Repositorio de tesis para comparar modelos de musica simbolica en tres ejes:
+descripcion estructural, prediccion del siguiente evento y costo de ingenieria.
+La descripcion de fronteras, segmentos y estados latentes es el objetivo
+principal. La NLL de siguiente evento es una tarea secundaria comun. Tiempo,
+complejidad y opacidad se reportan por separado, no como un ganador unico.
 
-- `src/`: pipeline principal de analisis musical con HMM finito, HDP-HMM,
-  reportes y CLIs.
-- `next_token_experiment/`: experimento acotado de prediccion de siguiente
-  token con HMM, HDP-HMM y un transformer pequeno.
+Las familias principales son HMM finito, HDP-HMM y un Transformer causal
+pequeno. El VOMM inspirado en PPM es un control diagnostico opcional: no es
+IDyOM ni un aislador causal de memoria. La perplejidad es solo `exp(NLL)` y no
+constituye evidencia adicional.
 
-La idea es que el repo se pueda recorrer rapido desde este `README` y que los
-detalles vivan en [`docs/`](docs/index.md).
-
-## Inicio Rapido
-
-La forma mas corta de dejar el proyecto operativo es:
+## Inicio rapido
 
 ```bash
 make install
 make test
 ```
 
-Si prefieres hacerlo manualmente:
+Instalacion manual:
 
 ```bash
 python -m venv .venv
@@ -31,15 +29,39 @@ python -m unittest discover -s tests
 python -m unittest discover -s next_token_experiment/tests
 ```
 
-## Comandos Utiles
+## Planificar antes de ejecutar
 
 ```bash
-make demo-score
-make demo-main
-make demo-transformer
+melodies-comparacion --plan-only --max-files 12 --run-name audit
 ```
 
-Tambien quedan disponibles entradas instalables:
+`--plan-only` escribe configuracion, splits y un plan auditable, y retorna
+antes de construir o ajustar modelos. No produce filas de resultados ni afirma
+evidencia. `--without-vomm` desactiva el control opcional y
+`--structural-annotations annotations.csv` registra la referencia estructural.
+Consulta [la guia multidimensional](docs/multidimensional-evaluation.md) para el
+protocolo, todos los flags y el contrato de artefactos.
+
+Las divisiones se agrupan por obra canonica. Validacion y test conservan la cola
+exacta y puntuan cada evento una vez con BOS como contexto. El soporte comun es
+musica+BOS; PAD solo rellena entradas del Transformer y se excluye de NLL,
+argmax, top-k y Brier. La inferencia por pares usa obras canonicas, bootstrap
+pareado, Wilcoxon y correccion Holm.
+
+Si faltan anotaciones o inferencias estructurales, los artefactos lo declaran
+como `not_evaluated`. Una frontera predictiva-costo puede reportarse como
+parcial, pero nunca se presenta como una frontera completa de tres ejes.
+
+## Superficies del repositorio
+
+- `src/`: analisis musical y modelos estructurales.
+- `Comparacion/`: runner multidimensional, planificacion y artefactos.
+- `next_token_experiment/`: datos y Transformer para la tarea predictiva comun.
+- `docs/`: documentacion mantenida.
+- `tests/` y `next_token_experiment/tests/`: pruebas acotadas.
+- `artifacts/`: salidas locales, no resultados versionados.
+
+Comandos adicionales:
 
 ```bash
 melodies-analyze --input examples/example_score.musicxml --model both
@@ -48,34 +70,15 @@ melodies-multicorpus --include-library /ruta/a/corpus --output-dir artifacts/out
 melodies-next-token --profile cpu_baseline --run-name smoke
 ```
 
-## Mapa del Repositorio
+## Evidencia y reproduccion
 
-```text
-Melodies/
-  .github/workflows/       # CI para GitHub Actions
-  docs/                    # Documentacion canonicamente mantenida
-  examples/                # Insumos pequenos y reproducibles
-  next_token_experiment/   # Experimento de next-token
-  notebooks/               # Exploracion y demos
-  scripts/                 # Wrappers ligeros
-  src/                     # Pipeline principal
-  tests/                   # Suite principal
-  external/                # Recursos externos locales
-  artifacts/               # Resultados y salidas locales
-  Makefile                 # Comandos rapidos de trabajo
-  pyproject.toml           # Metadatos de paquete y entry points
-```
+Las pruebas unitarias, demos y smoke tests usan entradas pequenas para validar
+software; no son evidencia de tesis. Las corridas canonicas o pesadas, los
+conteos de corpus, los tiempos, la cobertura observada y las conclusiones deben
+ser ejecutados y documentados por el autor. Este README no afirma que exista ya
+una corrida canonica.
 
-## Navegacion Recomendada
-
-1. Lee [`docs/index.md`](docs/index.md) para ubicarte.
-2. Sigue con [`docs/setup-and-reproduction.md`](docs/setup-and-reproduction.md) si vas a instalar o reproducir.
-3. Consulta [`docs/experiments.md`](docs/experiments.md) para distinguir pipeline principal vs experimento next-token.
-4. Usa [`docs/transformer.md`](docs/transformer.md) si tu foco es el baseline del transformer.
-
-## Convenciones
-
-- Todo artefacto generado va a `artifacts/`.
-- Todo recurso externo recuperable queda en `external/`.
-- El repo esta preparado para `pip install -e .`, `make test` y CI en GitHub Actions.
-- La licencia final todavia debe confirmarse antes de publicar el repositorio de forma abierta.
+Empieza por [docs/index.md](docs/index.md) y despues consulta
+[setup-and-reproduction.md](docs/setup-and-reproduction.md),
+[experiments.md](docs/experiments.md) y
+[multidimensional-evaluation.md](docs/multidimensional-evaluation.md).
