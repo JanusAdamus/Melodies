@@ -99,4 +99,48 @@ Source and tests: `eaff32f fix: harden VOMM evaluation contract`.
 
 ### Remaining concerns
 
-BOS deliberately remains fixed to the documented final vocabulary ID, and its smoothed probability remains part of the model's full output distribution even though it is prohibited as a target. Runner/config integration and deferred FFBS work remain owned by later tasks.
+Superseded by fix round 2: BOS is now explicit and the no-PAD comparison support is enforced. Runner/config integration and deferred FFBS work remain owned by later tasks.
+
+## Fix round 2/5
+
+### Status and scope
+
+Complete. The remaining exact-coverage and BOS/support findings were addressed in `Comparacion/vomm.py` and `tests/test_vomm.py`. Runner, config, Transformer, and documentation files were not changed.
+
+### RED evidence
+
+```powershell
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest tests.test_vomm -v
+```
+
+Result before implementation: 12 tests ran with 14 expected errors. The valid explicit-BOS constructor and all updated call sites failed with `TypeError` because `bos_token_id` was not yet accepted by `VariableOrderMarkovModel` or `select_vomm_by_validation`.
+
+### Implemented corrections
+
+- `bos_token_id` is now a required constructor and validation-selection argument; it is validated as a positive non-boolean integer and propagated to every candidate.
+- Task 2 scoring support is explicitly musical symbol IDs `0 <= token < bos_token_id` plus BOS, with the binding invariant `vocabulary_size == bos_token_id + 1`. This excludes PAD and any other tokenizer-only symbols.
+- BOS remains legal only once at prediction-context position zero and remains illegal as a training or evaluation target.
+- The coverage fixture now uses five distinct musical targets `[0, 1, 2, 3, 4]`, BOS `5`, a three-token first slice, and a two-token tail. It asserts exact ordered targets, exact contexts, and exact `(target, context)` pairs: `(0, [5])`, `(1, [5, 0])`, `(2, [5, 0, 1])`, `(3, [5])`, `(4, [5, 3])`.
+
+### Binding Task 4 integration obligation
+
+Task 4 must construct/select this VOMM with `bos_token_id=tokenizer.bos_token_id` and `vocabulary_size=tokenizer.bos_token_id + 1`. It must keep VOMM/HMM comparison targets within the musical range below BOS and must mask or exclude Transformer PAD from shared predictive support and metrics. Task 2 intentionally does not modify the runner or Transformer.
+
+### GREEN and full-suite evidence
+
+```powershell
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest tests.test_vomm -v
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest discover -s tests -v
+& 'C:\Melodies\.venv\Scripts\python.exe' -m unittest discover -s next_token_experiment/tests -v
+git diff --check
+```
+
+Results: focused VOMM 12/12 passed; main suite 38/38 passed; next-token suite 19/19 passed; diff check passed with only the repository's CRLF conversion notices.
+
+### Commit
+
+Source and tests: `ed6b3fe fix: make VOMM BOS support explicit`.
+
+### Remaining concerns
+
+Task 4 must satisfy the binding tokenizer/BOS/PAD obligation above before runner integration. No Task 2 source concern remains from this review round.
