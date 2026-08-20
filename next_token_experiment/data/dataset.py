@@ -41,6 +41,22 @@ def build_window_slices(
     return windows
 
 
+def build_evaluation_slices(
+    sequence_length: int,
+    max_context_length: int,
+) -> list[tuple[int, int]]:
+    """Return non-overlapping evaluation slices that cover every token once."""
+
+    if max_context_length <= 1:
+        raise ValueError("max_context_length must be greater than 1.")
+    if sequence_length <= 0:
+        return []
+    return [
+        (start, min(start + max_context_length, sequence_length))
+        for start in range(0, sequence_length, max_context_length)
+    ]
+
+
 class WindowedSequenceDataset(Dataset):
     """Dataset of autoregressive windows built from prepared symbolic pieces."""
 
@@ -60,12 +76,18 @@ class WindowedSequenceDataset(Dataset):
         self.examples: list[WindowExample] = []
 
         for piece in self.pieces:
-            slices = build_window_slices(
-                sequence_length=len(piece.tokens),
-                max_context_length=max_context_length,
-                stride=stride,
-                min_window_length=min_window_length,
-            )
+            if split == "train":
+                slices = build_window_slices(
+                    sequence_length=len(piece.tokens),
+                    max_context_length=max_context_length,
+                    stride=stride,
+                    min_window_length=min_window_length,
+                )
+            else:
+                slices = build_evaluation_slices(
+                    sequence_length=len(piece.tokens),
+                    max_context_length=max_context_length,
+                )
             for start_index, stop_index in slices:
                 window_tokens = piece.tokens[start_index:stop_index]
                 input_tokens, target_tokens = tokenizer.encode_window(window_tokens)

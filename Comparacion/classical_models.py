@@ -6,6 +6,7 @@ import time
 
 import numpy as np
 
+from next_token_experiment.data.dataset import build_evaluation_slices
 from next_token_experiment.schemas import PreparedPiece
 from src.data.observations import PITCH_CLASS_NAMES, ObservationSequence
 from src.models.hdp_hmm import TruncatedHDPHMM
@@ -25,13 +26,6 @@ def _augment_piece_tokens(piece: PreparedPiece, bos_token_id: int) -> list[int]:
     return [bos_token_id] + [int(token) for token in piece.tokens]
 
 
-def _flatten_training_pieces(pieces: list[PreparedPiece], bos_token_id: int) -> list[int]:
-    flattened: list[int] = []
-    for piece in pieces:
-        flattened.extend(_augment_piece_tokens(piece, bos_token_id))
-    return flattened
-
-
 def _build_observation_sequence(tokens: list[int], vocabulary: list[str]) -> ObservationSequence:
     return ObservationSequence(
         observation_type="pitch_class",
@@ -41,6 +35,34 @@ def _build_observation_sequence(tokens: list[int], vocabulary: list[str]) -> Obs
         events=[],
         extra={},
     )
+
+
+def conditional_log_likelihood(
+    *,
+    initial_probs: np.ndarray,
+    transition_matrix: np.ndarray,
+    emission_matrix: np.ndarray,
+    context_token: int,
+    target_tokens: list[int],
+) -> float:
+    """Score targets conditioned on a context token without scoring the context."""
+
+    context = np.array([context_token], dtype=int)
+    context_log_likelihood, _ = forward_log_likelihood(
+        initial_probs=initial_probs,
+        transition_matrix=transition_matrix,
+        emission_matrix=emission_matrix,
+        observations=context,
+    )
+    if not target_tokens:
+        return 0.0
+    joint_log_likelihood, _ = forward_log_likelihood(
+        initial_probs=initial_probs,
+        transition_matrix=transition_matrix,
+        emission_matrix=emission_matrix,
+        observations=np.array([context_token, *target_tokens], dtype=int),
+    )
+    return float(joint_log_likelihood - context_log_likelihood)
 
 
 def _backward_log_probs(transition_matrix: np.ndarray, emission_log_probs: np.ndarray) -> np.ndarray:
@@ -64,8 +86,8 @@ def _logsumexp(values: np.ndarray, axis: int | None = None) -> np.ndarray:
 
 
 def _piece_metrics_from_log_likelihood(piece: PreparedPiece, log_likelihood: float) -> dict[str, float | int | str]:
-    n_tokens = max(1, len(piece.tokens))
-    nll_per_token = -float(log_likelihood) / n_tokens
+    n_tokens = len(piece.tokens)
+    nll_per_token = -float(log_likelihood) / max(1, n_tokens)
     return {
         "piece_id": piece.piece_id,
         "title": piece.title,
@@ -112,23 +134,30 @@ class FiniteGlobalHMM:
         emission_matrix = rng.dirichlet(np.ones(self.vocab_size, dtype=float), size=n_states)
         return initial_probs, transition_matrix, emission_matrix
 
-    def _sequence_log_likelihood(self, tokens: list[int]) -> float:
+    def _score_piece(self, piece: PreparedPiece, bos_token_id: int, max_context_length: int) -> float:
         if self.initial_probs is None or self.transition_matrix is None or self.emission_matrix is None:
             raise ValueError("Model must be fitted before evaluation.")
-        observations = np.array(tokens, dtype=int)
-        log_likelihood, _ = forward_log_likelihood(
-            initial_probs=self.initial_probs,
-            transition_matrix=self.transition_matrix,
-            emission_matrix=self.emission_matrix,
-            observations=observations,
+        return sum(
+            conditional_log_likelihood(
+                initial_probs=self.initial_probs,
+                transition_matrix=self.transition_matrix,
+                emission_matrix=self.emission_matrix,
+                context_token=bos_token_id,
+                target_tokens=[int(token) for token in piece.tokens[start:stop]],
+            )
+            for start, stop in build_evaluation_slices(len(piece.tokens), max_context_length)
         )
-        return float(log_likelihood)
 
-    def _evaluate_split_nll(self, pieces: list[PreparedPiece], bos_token_id: int) -> float:
+    def _evaluate_split_nll(
+        self,
+        pieces: list[PreparedPiece],
+        bos_token_id: int,
+        max_context_length: int,
+    ) -> float:
         total_log_likelihood = 0.0
         total_tokens = 0
         for piece in pieces:
-            total_log_likelihood += self._sequence_log_likelihood(_augment_piece_tokens(piece, bos_token_id))
+            total_log_likelihood += self._score_piece(piece, bos_token_id, max_context_length)
             total_tokens += len(piece.tokens)
         return -total_log_likelihood / max(1, total_tokens)
 
@@ -139,6 +168,7 @@ class FiniteGlobalHMM:
         *,
         n_states: int,
         bos_token_id: int,
+        max_context_length: int,
         rng: np.random.Generator,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, list[dict[str, float | int]]]:
         sequences = [_augment_piece_tokens(piece, bos_token_id) for piece in train_pieces]
@@ -190,7 +220,7 @@ class FiniteGlobalHMM:
             self.initial_probs = initial_probs
             self.transition_matrix = transition_matrix
             self.emission_matrix = emission_matrix
-            validation_nll = self._evaluate_split_nll(validation_pieces, bos_token_id)
+            validation_nll = self._evaluate_split_nll(validation_pieces, bos_token_id, max_context_length)
             train_log.append(
                 {
                     "iteration": iteration,
@@ -207,7 +237,14 @@ class FiniteGlobalHMM:
 
         return best_params[0], best_params[1], best_params[2], best_validation_nll, train_log
 
-    def fit(self, train_pieces: list[PreparedPiece], validation_pieces: list[PreparedPiece], *, bos_token_id: int) -> FiniteHMMFitResult:
+    def fit(
+        self,
+        train_pieces: list[PreparedPiece],
+        validation_pieces: list[PreparedPiece],
+        *,
+        bos_token_id: int,
+        max_context_length: int = 128,
+    ) -> FiniteHMMFitResult:
         rng = np.random.default_rng(self.seed)
         start_time = time.perf_counter()
         best_validation_nll = math.inf
@@ -219,6 +256,7 @@ class FiniteGlobalHMM:
                 validation_pieces=validation_pieces,
                 n_states=n_states,
                 bos_token_id=bos_token_id,
+                max_context_length=max_context_length,
                 rng=np.random.default_rng(rng.integers(0, 2**32 - 1)),
             )
             initial_probs, transition_matrix, emission_matrix, validation_nll, train_log = params
@@ -241,7 +279,13 @@ class FiniteGlobalHMM:
         )
         return self.fit_result
 
-    def evaluate(self, test_pieces: list[PreparedPiece], *, bos_token_id: int) -> dict[str, object]:
+    def evaluate(
+        self,
+        test_pieces: list[PreparedPiece],
+        *,
+        bos_token_id: int,
+        max_context_length: int = 128,
+    ) -> dict[str, object]:
         if self.fit_result is None or self.selected_states is None:
             raise ValueError("Fit the finite HMM before evaluation.")
 
@@ -249,7 +293,7 @@ class FiniteGlobalHMM:
         total_log_likelihood = 0.0
         total_tokens = 0
         for piece in test_pieces:
-            log_likelihood = self._sequence_log_likelihood(_augment_piece_tokens(piece, bos_token_id))
+            log_likelihood = self._score_piece(piece, bos_token_id, max_context_length)
             piece_metrics.append(_piece_metrics_from_log_likelihood(piece, log_likelihood))
             total_log_likelihood += log_likelihood
             total_tokens += len(piece.tokens)
@@ -298,29 +342,61 @@ class GlobalHDPHMM:
         self.validation_nll_per_token: float | None = None
         self.train_time_sec: float | None = None
 
-    def _score_piece(self, piece: PreparedPiece, bos_token_id: int) -> float:
-        if self.best_result is None:
+    def _score_piece(
+        self,
+        piece: PreparedPiece,
+        bos_token_id: int,
+        max_context_length: int,
+        *,
+        result=None,
+    ) -> float:
+        selected_result = result if result is not None else self.best_result
+        if selected_result is None:
             raise ValueError("Model must be fitted before scoring.")
-        observations = np.array(_augment_piece_tokens(piece, bos_token_id), dtype=int)
-        log_likelihood, _ = forward_log_likelihood(
-            initial_probs=self.best_result.posterior_initial_mean,
-            transition_matrix=self.best_result.posterior_transition_mean,
-            emission_matrix=self.best_result.posterior_emission_mean,
-            observations=observations,
+        return sum(
+            conditional_log_likelihood(
+                initial_probs=selected_result.posterior_initial_mean,
+                transition_matrix=selected_result.posterior_transition_mean,
+                emission_matrix=selected_result.posterior_emission_mean,
+                context_token=bos_token_id,
+                target_tokens=[int(token) for token in piece.tokens[start:stop]],
+            )
+            for start, stop in build_evaluation_slices(len(piece.tokens), max_context_length)
         )
-        return float(log_likelihood)
 
-    def _evaluate_validation_nll(self, pieces: list[PreparedPiece], bos_token_id: int) -> float:
+    def _evaluate_validation_nll(
+        self,
+        pieces: list[PreparedPiece],
+        bos_token_id: int,
+        max_context_length: int,
+        *,
+        result,
+    ) -> float:
         total_log_likelihood = 0.0
         total_tokens = 0
         for piece in pieces:
-            total_log_likelihood += self._score_piece(piece, bos_token_id)
+            total_log_likelihood += self._score_piece(
+                piece,
+                bos_token_id,
+                max_context_length,
+                result=result,
+            )
             total_tokens += len(piece.tokens)
         return -total_log_likelihood / max(1, total_tokens)
 
-    def fit(self, train_pieces: list[PreparedPiece], validation_pieces: list[PreparedPiece], *, bos_token_id: int) -> dict[str, object]:
+    def fit(
+        self,
+        train_pieces: list[PreparedPiece],
+        validation_pieces: list[PreparedPiece],
+        *,
+        bos_token_id: int,
+        max_context_length: int = 128,
+    ) -> dict[str, object]:
         vocabulary = PITCH_CLASS_NAMES + [BOS_TOKEN]
-        train_tokens = _flatten_training_pieces(train_pieces, bos_token_id)
+        train_sequences = [
+            _build_observation_sequence(_augment_piece_tokens(piece, bos_token_id), vocabulary)
+            for piece in train_pieces
+        ]
         start_time = time.perf_counter()
         train_log: list[dict[str, float | int]] = []
         best_validation_nll = math.inf
@@ -337,9 +413,13 @@ class GlobalHDPHMM:
                 burn_in=self.burn_in,
                 seed=self.seed + index,
             )
-            result = model.fit(_build_observation_sequence(train_tokens, vocabulary))
-            self.best_result = result
-            validation_nll = self._evaluate_validation_nll(validation_pieces, bos_token_id)
+            result = model.fit_sequences(train_sequences)
+            validation_nll = self._evaluate_validation_nll(
+                validation_pieces,
+                bos_token_id,
+                max_context_length,
+                result=result,
+            )
             train_log.append(
                 {
                     "candidate_index": index,
@@ -372,7 +452,13 @@ class GlobalHDPHMM:
             "train_log": train_log,
         }
 
-    def evaluate(self, test_pieces: list[PreparedPiece], *, bos_token_id: int) -> dict[str, object]:
+    def evaluate(
+        self,
+        test_pieces: list[PreparedPiece],
+        *,
+        bos_token_id: int,
+        max_context_length: int = 128,
+    ) -> dict[str, object]:
         if self.best_result is None or self.best_hyperparameters is None or self.validation_nll_per_token is None or self.train_time_sec is None:
             raise ValueError("Fit the HDP-HMM before evaluation.")
 
@@ -380,7 +466,7 @@ class GlobalHDPHMM:
         total_log_likelihood = 0.0
         total_tokens = 0
         for piece in test_pieces:
-            log_likelihood = self._score_piece(piece, bos_token_id)
+            log_likelihood = self._score_piece(piece, bos_token_id, max_context_length)
             piece_metrics.append(_piece_metrics_from_log_likelihood(piece, log_likelihood))
             total_log_likelihood += log_likelihood
             total_tokens += len(piece.tokens)

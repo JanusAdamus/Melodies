@@ -12,10 +12,8 @@ from .utils import (
     EPSILON,
     contiguous_segments,
     count_emissions,
-    count_transitions,
     dirichlet_logpdf,
     normalize,
-    one_hot,
     sample_truncated_stick_breaking,
     set_random_seed,
     stick_breaking_from_v,
@@ -28,6 +26,33 @@ try:
 except Exception:  # pragma: no cover - cubierto por fallback cuando scipy no esta.
     minimize = None
     SCIPY_AVAILABLE = False
+
+
+def _count_segmented_transitions(
+    state_sequences: list[np.ndarray],
+    n_states: int,
+) -> np.ndarray:
+    counts = np.zeros((n_states, n_states), dtype=int)
+    for states in state_sequences:
+        for left, right in zip(states[:-1], states[1:]):
+            counts[int(left), int(right)] += 1
+    return counts
+
+
+def _concatenate_observations(
+    observations: list[ObservationSequence],
+) -> ObservationSequence:
+    if len(observations) == 1:
+        return observations[0]
+    first = observations[0]
+    return ObservationSequence(
+        observation_type=first.observation_type,
+        tokens=np.concatenate([item.tokens for item in observations]),
+        vocabulary=list(first.vocabulary),
+        decoded=[decoded for item in observations for decoded in item.decoded],
+        events=[event for item in observations for event in item.events],
+        extra={"sequence_lengths": [item.size for item in observations]},
+    )
 
 
 @dataclass
@@ -153,13 +178,16 @@ class TruncatedHDPHMM:
             matrix[state] = self.rng.dirichlet(prior + counts[state])
         return matrix
 
-    def _sample_initial(self, states: np.ndarray, beta: np.ndarray) -> np.ndarray:
-        initial_counts = one_hot(int(states[0]), self.n_states)
+    def _sample_initial(self, state_sequences: list[np.ndarray], beta: np.ndarray) -> np.ndarray:
+        initial_counts = np.bincount(
+            [int(states[0]) for states in state_sequences],
+            minlength=self.n_states,
+        )
         prior = self.alpha0 * beta + EPSILON
         return self.rng.dirichlet(prior + initial_counts)
 
-    def _sample_transitions(self, states: np.ndarray, beta: np.ndarray) -> np.ndarray:
-        counts = count_transitions(states, self.n_states)
+    def _sample_transitions(self, state_sequences: list[np.ndarray], beta: np.ndarray) -> np.ndarray:
+        counts = _count_segmented_transitions(state_sequences, self.n_states)
         matrix = np.zeros((self.n_states, self.n_states), dtype=float)
         for state in range(self.n_states):
             prior = self.alpha * beta + EPSILON
@@ -231,18 +259,33 @@ class TruncatedHDPHMM:
         return normalize(updated), "approx_dirichlet_fallback"
 
     def fit(self, observations: ObservationSequence) -> HDPHMMResult:
+        """Fit one observation sequence, preserving the original public API."""
+
+        return self.fit_sequences([observations])
+
+    def fit_sequences(self, observations: list[ObservationSequence]) -> HDPHMMResult:
         """Ejecuta blocked Gibbs sampling sobre el HDP-HMM truncado."""
 
-        if observations.size < 2:
+        if not observations:
+            raise ValueError("Se requiere al menos una secuencia de observaciones.")
+        if any(item.size == 0 for item in observations):
+            raise ValueError("Las secuencias de observaciones no pueden estar vacias.")
+        if sum(item.size for item in observations) < 2:
             raise ValueError("Se requieren al menos dos observaciones para ajustar el HDP-HMM.")
+        first = observations[0]
+        if any(item.vocabulary != first.vocabulary for item in observations[1:]):
+            raise ValueError("Todas las secuencias deben compartir el mismo vocabulario.")
 
-        sequence = observations.tokens.astype(int)
-        vocab_size = observations.vocab_size
+        sequences = [item.tokens.astype(int) for item in observations]
+        sequence = np.concatenate(sequences)
+        combined_observations = _concatenate_observations(observations)
+        vocab_size = first.vocab_size
         _, beta = sample_truncated_stick_breaking(self.gamma, self.n_states, self.rng)
-        states = self._initialize_states(sequence, vocab_size)
-        transition_matrix = self._sample_transitions(states, beta)
+        state_sequences = [self._initialize_states(item, vocab_size) for item in sequences]
+        states = np.concatenate(state_sequences)
+        transition_matrix = self._sample_transitions(state_sequences, beta)
         emission_matrix = self._sample_emissions(states, sequence, vocab_size)
-        initial_probs = self._sample_initial(states, beta)
+        initial_probs = self._sample_initial(state_sequences, beta)
 
         log_likelihood_history: list[float] = []
         active_state_history: list[int] = []
@@ -265,18 +308,25 @@ class TruncatedHDPHMM:
         best_iteration = 0
 
         for iteration in range(self.n_iters):
+            states = np.concatenate(state_sequences)
             emission_matrix = self._sample_emissions(states, sequence, vocab_size)
-            transition_matrix = self._sample_transitions(states, beta)
-            initial_probs = self._sample_initial(states, beta)
+            transition_matrix = self._sample_transitions(state_sequences, beta)
+            initial_probs = self._sample_initial(state_sequences, beta)
             beta, beta_update_mode = self._update_beta(beta, transition_matrix, initial_probs, states)
 
-            states, log_likelihood = ffbs_sample(
-                initial_probs=initial_probs,
-                transition_matrix=transition_matrix,
-                emission_matrix=emission_matrix,
-                observations=sequence,
-                rng=self.rng,
-            )
+            sampled = [
+                ffbs_sample(
+                    initial_probs=initial_probs,
+                    transition_matrix=transition_matrix,
+                    emission_matrix=emission_matrix,
+                    observations=item,
+                    rng=self.rng,
+                )
+                for item in sequences
+            ]
+            state_sequences = [item[0] for item in sampled]
+            states = np.concatenate(state_sequences)
+            log_likelihood = float(sum(item[1] for item in sampled))
 
             active_states = len(set(int(state) for state in states))
             beta_entropy = -float(np.sum(beta * np.log(beta + EPSILON)))
@@ -331,7 +381,7 @@ class TruncatedHDPHMM:
             transition_matrix=best_transition,
             emission_matrix=best_emission,
             state_usage=state_usage,
-            observations=observations,
+            observations=combined_observations,
             diagnostics=diagnostics,
             log_likelihood=best_log_likelihood,
             effective_states=len(active_state_indices),
