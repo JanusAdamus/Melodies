@@ -167,14 +167,15 @@ class VariableOrderMarkovModel:
             return np.full(self.vocabulary_size, 1.0 / self.vocabulary_size, dtype=float)
         return distribution / total
 
-    def _score_piece(self, piece: PreparedPiece, max_context_length: int) -> dict[str, float | int]:
+    def _score_piece(self, piece: PreparedPiece, max_context_length: int) -> dict[str, object]:
         log_likelihood = 0.0
         correct = 0
         brier_score_sum = 0.0
         n_tokens = 0
+        scored_event_indices: list[int] = []
         for start, stop in build_evaluation_slices(len(piece.tokens), max_context_length):
             context = [self.bos_token_id]
-            for token in piece.tokens[start:stop]:
+            for event_index, token in enumerate(piece.tokens[start:stop], start=start):
                 target = self._validated_musical_target(token)
                 distribution = self.predict_distribution(context)
                 log_likelihood += math.log(max(float(distribution[target]), EPSILON))
@@ -183,12 +184,14 @@ class VariableOrderMarkovModel:
                 one_hot[target] = 1.0
                 brier_score_sum += float(np.square(distribution - one_hot).sum())
                 n_tokens += 1
+                scored_event_indices.append(event_index)
                 context.append(target)
         return {
             "log_likelihood": log_likelihood,
             "correct": correct,
             "brier_score_sum": brier_score_sum,
             "n_tokens": n_tokens,
+            "scored_event_indices": scored_event_indices,
         }
 
     def evaluate(self, pieces: list[PreparedPiece], max_context_length: int) -> dict[str, object]:
@@ -221,6 +224,7 @@ class VariableOrderMarkovModel:
                     "perplexity": math.exp(nll_per_token),
                     "accuracy": accuracy,
                     "brier_score": brier_score,
+                    "scored_event_indices": list(score["scored_event_indices"]),
                 }
             )
             total_log_likelihood += log_likelihood

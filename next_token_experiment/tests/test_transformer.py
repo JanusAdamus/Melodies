@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import math
 import unittest
+
+import torch
+from torch import nn
 
 from next_token_experiment.config import (
     CorpusConfig,
@@ -65,7 +69,112 @@ def make_piece(piece_id: str, values: list[int]) -> PreparedPiece:
     )
 
 
+def build_spec(config: ExperimentConfig) -> SmallTransformerStudySpec:
+    transformer = config.transformer
+    return SmallTransformerStudySpec(
+        architecture=transformer.architecture,
+        n_layers=transformer.n_layers,
+        d_model=transformer.d_model,
+        n_heads=transformer.n_heads,
+        ff_dim=transformer.ff_dim,
+        dropout=transformer.dropout,
+        learning_rate=transformer.learning_rate,
+        weight_decay=transformer.weight_decay,
+        batch_size=transformer.batch_size,
+        max_epochs=transformer.max_epochs,
+        early_stopping_patience=transformer.early_stopping_patience,
+        gradient_accumulation_steps=transformer.gradient_accumulation_steps,
+        grad_clip_norm=transformer.grad_clip_norm,
+        label_smoothing=transformer.label_smoothing,
+        lr_scheduler_factor=transformer.lr_scheduler_factor,
+        lr_scheduler_patience=transformer.lr_scheduler_patience,
+        min_learning_rate=transformer.min_learning_rate,
+        tie_input_output_embeddings=transformer.tie_input_output_embeddings,
+        use_relative_position_bias=transformer.use_relative_position_bias,
+        relative_attention_num_buckets=transformer.relative_attention_num_buckets,
+        relative_attention_max_distance=transformer.relative_attention_max_distance,
+        generation_num_prompts=transformer.generation_num_prompts,
+        generation_prompt_length=transformer.generation_prompt_length,
+        generation_max_new_tokens=transformer.generation_max_new_tokens,
+        generation_temperature=transformer.generation_temperature,
+        generation_top_k=transformer.generation_top_k,
+    )
+
+
+class PadDominantLogits(nn.Module):
+    """A deterministic network whose PAD logit would win if scoring included it."""
+
+    def __init__(self, vocab_size: int, pad_token_id: int) -> None:
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.pad_token_id = pad_token_id
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        logits = torch.zeros((*input_ids.shape, self.vocab_size), device=input_ids.device)
+        logits[..., 0] = 1.0
+        logits[..., self.pad_token_id] = 100.0
+        return logits
+
+    def parameter_count(self) -> int:
+        return 0
+
+
 class TransformerTests(unittest.TestCase):
+    def _pad_dominant_model_and_batch(self) -> tuple[SmallTransformerNextTokenModel, dict[str, object]]:
+        config = build_config()
+        tokenizer = build_tokenizer(config.representation)
+        model = SmallTransformerNextTokenModel(
+            spec=build_spec(config),
+            vocab_size=tokenizer.vocab_size,
+            bos_token_id=tokenizer.bos_token_id,
+            pad_token_id=tokenizer.pad_token_id,
+            max_context_length=config.windows.max_context_length,
+            cpu_threads=1,
+            seed=7,
+        )
+        model.model = PadDominantLogits(tokenizer.vocab_size, tokenizer.pad_token_id).to(model.device)
+        batch = {
+            "input_ids": torch.tensor([[tokenizer.bos_token_id, tokenizer.pad_token_id]]),
+            "target_ids": torch.tensor([[0, -100]]),
+            "attention_mask": torch.tensor([[True, False]]),
+            "piece_ids": ["piece"],
+            "start_indices": [7],
+            "stop_indices": [8],
+            "sequence_lengths": [1],
+        }
+        return model, batch
+
+    def test_validation_metrics_exclude_pad_from_support(self) -> None:
+        """Catches PAD changing validation NLL, selection, argmax, or top-k metrics."""
+
+        model, batch = self._pad_dominant_model_and_batch()
+        metrics = model._run_epoch([batch], train=False)
+
+        denominator = math.e + 12.0
+        expected_nll = math.log(denominator) - 1.0
+        self.assertAlmostEqual(metrics["nll_per_token"], expected_nll, places=6)
+        self.assertEqual(metrics["accuracy"], 1.0)
+        self.assertEqual(metrics["top_3_accuracy"], 1.0)
+        self.assertEqual(metrics["top_5_accuracy"], 1.0)
+        self.assertEqual(metrics["n_tokens"], 1.0)
+
+    def test_test_metrics_exclude_pad_and_expose_actual_event_indices(self) -> None:
+        """Catches PAD-normalized test/Brier metrics or expected-only coverage evidence."""
+
+        model, batch = self._pad_dominant_model_and_batch()
+        result = model.evaluate([batch])
+
+        denominator = math.e + 12.0
+        target_probability = math.e / denominator
+        other_probability = 1.0 / denominator
+        expected_nll = -math.log(target_probability)
+        expected_brier = (1.0 - target_probability) ** 2 + 12.0 * other_probability**2
+        self.assertAlmostEqual(result["summary"]["nll_per_token"], expected_nll, places=6)
+        self.assertAlmostEqual(result["summary"]["brier_score"], expected_brier, places=6)
+        self.assertEqual(result["summary"]["accuracy"], 1.0)
+        self.assertEqual(result["piece_metrics"][0]["brier_score"], result["summary"]["brier_score"])
+        self.assertEqual(result["piece_metrics"][0]["scored_event_indices"], [7])
+
     def test_small_transformer_learns_non_trivial_pattern(self) -> None:
         config = build_config()
         tokenizer = build_tokenizer(config.representation)

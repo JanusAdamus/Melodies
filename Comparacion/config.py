@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from numbers import Integral
 from pathlib import Path
 
 from next_token_experiment.config import ExperimentConfig
@@ -36,6 +37,48 @@ class LearningCurveConfig:
         (8.0, 8.0, 2.0),
         (12.0, 4.0, 2.0),
     )
+    include_vomm_control: bool = True
+    vomm_candidate_orders: tuple[int, ...] = (1, 2, 4, 8)
+    bootstrap_samples: int = 10000
+    bootstrap_seed: int = 17
+    boundary_tolerance: int = 1
+    structural_annotations_path: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.include_vomm_control, bool):
+            raise TypeError("include_vomm_control must be a boolean.")
+        if not isinstance(self.vomm_candidate_orders, tuple) or not self.vomm_candidate_orders:
+            raise ValueError("vomm_candidate_orders must be a nonempty tuple.")
+        if any(
+            isinstance(order, bool) or not isinstance(order, Integral) or int(order) < 0
+            for order in self.vomm_candidate_orders
+        ):
+            raise ValueError("vomm_candidate_orders must contain nonnegative integers.")
+        if len(set(self.vomm_candidate_orders)) != len(self.vomm_candidate_orders):
+            raise ValueError("vomm_candidate_orders must not contain duplicates.")
+        if (
+            isinstance(self.bootstrap_samples, bool)
+            or not isinstance(self.bootstrap_samples, Integral)
+            or int(self.bootstrap_samples) <= 0
+        ):
+            raise ValueError("bootstrap_samples must be a positive integer.")
+        if (
+            isinstance(self.bootstrap_seed, bool)
+            or not isinstance(self.bootstrap_seed, Integral)
+            or int(self.bootstrap_seed) < 0
+        ):
+            raise ValueError("bootstrap_seed must be a nonnegative integer.")
+        if (
+            isinstance(self.boundary_tolerance, bool)
+            or not isinstance(self.boundary_tolerance, Integral)
+            or int(self.boundary_tolerance) < 0
+        ):
+            raise ValueError("boundary_tolerance must be a nonnegative integer.")
+        if self.structural_annotations_path is not None:
+            if not isinstance(self.structural_annotations_path, str):
+                raise TypeError("structural_annotations_path must be a string or None.")
+            if not self.structural_annotations_path.strip():
+                raise ValueError("structural_annotations_path must not be blank.")
 
 
 def build_default_learning_curve_config(

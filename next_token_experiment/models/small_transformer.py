@@ -502,10 +502,33 @@ class SmallTransformerNextTokenModel(NextTokenModel):
             "sequence_lengths": batch["sequence_lengths"],
         }
 
+    def _comparison_logits(self, logits: torch.Tensor) -> torch.Tensor:
+        """Remove PAD from predictive normalization while retaining it as input."""
+
+        if self.pad_token_id < 0 or self.pad_token_id >= logits.size(-1):
+            raise ValueError("pad_token_id must index the model vocabulary.")
+        return torch.cat(
+            (
+                logits[..., : self.pad_token_id],
+                logits[..., self.pad_token_id + 1 :],
+            ),
+            dim=-1,
+        )
+
+    def _comparison_targets(self, target_ids: torch.Tensor) -> torch.Tensor:
+        valid_targets = target_ids != -100
+        if torch.any(target_ids[valid_targets] == self.pad_token_id):
+            raise ValueError("PAD cannot be a next-token target.")
+        remapped = target_ids.clone()
+        remapped[valid_targets & (target_ids > self.pad_token_id)] -= 1
+        return remapped
+
     def _compute_loss(self, logits: torch.Tensor, target_ids: torch.Tensor) -> torch.Tensor:
+        comparison_logits = self._comparison_logits(logits)
+        comparison_targets = self._comparison_targets(target_ids)
         return F.cross_entropy(
-            logits.reshape(-1, logits.size(-1)),
-            target_ids.reshape(-1),
+            comparison_logits.reshape(-1, comparison_logits.size(-1)),
+            comparison_targets.reshape(-1),
             ignore_index=-100,
             label_smoothing=self.spec.label_smoothing,
         )
@@ -561,8 +584,10 @@ class SmallTransformerNextTokenModel(NextTokenModel):
                         optimizer_steps += 1
 
             target_mask = batch["target_ids"] != -100
-            valid_targets = batch["target_ids"][target_mask]
-            valid_logits = logits[target_mask]
+            comparison_targets = self._comparison_targets(batch["target_ids"])
+            comparison_logits = self._comparison_logits(logits)
+            valid_targets = comparison_targets[target_mask]
+            valid_logits = comparison_logits[target_mask]
             total_loss += float(raw_loss.detach().float().cpu()) * int(valid_targets.numel())
             total_tokens += int(valid_targets.numel())
             if valid_targets.numel() > 0:
@@ -595,7 +620,8 @@ class SmallTransformerNextTokenModel(NextTokenModel):
         total_correct = 0
         total_top3_hits = 0
         total_top5_hits = 0
-        piece_stats: dict[str, dict[str, float]] = {}
+        total_brier_score = 0.0
+        piece_stats: dict[str, dict[str, object]] = {}
         slice_piece_length: dict[str, dict[str, float]] = {}
         slice_composer: dict[str, dict[str, float]] = {}
         slice_token_rarity: dict[str, dict[str, float]] = {}
@@ -605,18 +631,28 @@ class SmallTransformerNextTokenModel(NextTokenModel):
             batch = self._move_batch(batch)
             with self._autocast_context():
                 logits = self.model(batch["input_ids"], batch["attention_mask"])
-            log_probs = torch.log_softmax(logits.float(), dim=-1)
+            comparison_logits = self._comparison_logits(logits)
+            comparison_target_ids = self._comparison_targets(batch["target_ids"])
+            log_probs = torch.log_softmax(comparison_logits.float(), dim=-1)
             predictions = torch.argmax(log_probs, dim=-1)
             target_ids = batch["target_ids"]
             valid_mask = target_ids != -100
 
             batch_indices, time_indices = torch.nonzero(valid_mask, as_tuple=True)
-            target_values = target_ids[valid_mask]
-            valid_logits = logits[valid_mask]
+            target_values = comparison_target_ids[valid_mask]
+            original_target_values = target_ids[valid_mask]
+            valid_logits = comparison_logits[valid_mask]
             token_log_probs = log_probs[batch_indices, time_indices, target_values]
             token_nll = -token_log_probs
+            token_probabilities = torch.softmax(valid_logits.float(), dim=-1)
+            token_one_hot = F.one_hot(
+                target_values,
+                num_classes=valid_logits.size(-1),
+            ).to(token_probabilities.dtype)
+            token_brier = torch.square(token_probabilities - token_one_hot).sum(dim=-1)
 
             total_nll += float(token_nll.sum().cpu())
+            total_brier_score += float(token_brier.sum().cpu())
             total_tokens += int(target_values.numel())
             total_correct += int((predictions[valid_mask] == target_values).sum().item())
             total_top3_hits += _top_k_hits(valid_logits, target_values, k=3)
@@ -627,7 +663,7 @@ class SmallTransformerNextTokenModel(NextTokenModel):
             token_correct = predictions[valid_mask] == target_values
 
             for token_id, token_loss, correct, top3_hit, top5_hit in zip(
-                target_values.tolist(),
+                original_target_values.tolist(),
                 token_nll.tolist(),
                 token_correct.tolist(),
                 token_top3.tolist(),
@@ -646,15 +682,25 @@ class SmallTransformerNextTokenModel(NextTokenModel):
 
             for local_index, piece_id in enumerate(batch["piece_ids"]):
                 local_mask = valid_mask[local_index]
-                local_targets = target_ids[local_index][local_mask]
+                local_targets = comparison_target_ids[local_index][local_mask]
                 if local_targets.numel() == 0:
                     continue
                 local_log_probs = log_probs[local_index][local_mask]
-                local_logits = logits[local_index][local_mask]
+                local_logits = comparison_logits[local_index][local_mask]
                 local_predictions = predictions[local_index][local_mask]
                 gathered = local_log_probs.gather(1, local_targets.unsqueeze(-1)).squeeze(-1)
+                local_probabilities = torch.softmax(local_logits.float(), dim=-1)
+                local_one_hot = F.one_hot(
+                    local_targets,
+                    num_classes=local_logits.size(-1),
+                ).to(local_probabilities.dtype)
+                local_brier_score = torch.square(local_probabilities - local_one_hot).sum(dim=-1)
                 local_top3_hits = _top_k_hits(local_logits, local_targets, k=3)
                 local_top5_hits = _top_k_hits(local_logits, local_targets, k=5)
+                local_event_indices = [
+                    int(batch["start_indices"][local_index]) + int(time_index)
+                    for time_index in torch.nonzero(local_mask, as_tuple=False).flatten().tolist()
+                ]
                 stats = piece_stats.setdefault(
                     piece_id,
                     {
@@ -664,6 +710,8 @@ class SmallTransformerNextTokenModel(NextTokenModel):
                         "correct": 0,
                         "top3_hits": 0,
                         "top5_hits": 0,
+                        "brier_score_sum": 0.0,
+                        "scored_event_indices": [],
                     },
                 )
                 stats["nll_sum"] += float((-gathered).sum().cpu())
@@ -671,6 +719,8 @@ class SmallTransformerNextTokenModel(NextTokenModel):
                 stats["correct"] += int((local_predictions == local_targets).sum().item())
                 stats["top3_hits"] += int(local_top3_hits)
                 stats["top5_hits"] += int(local_top5_hits)
+                stats["brier_score_sum"] += float(local_brier_score.sum().cpu())
+                stats["scored_event_indices"].extend(local_event_indices)
 
         elapsed = time.perf_counter() - start_time
         summary_nll = summarize_average(total_nll, total_tokens)
@@ -694,6 +744,8 @@ class SmallTransformerNextTokenModel(NextTokenModel):
                     "accuracy": summarize_average(float(stats["correct"]), piece_n_tokens),
                     "top_3_accuracy": summarize_average(float(stats["top3_hits"]), piece_n_tokens),
                     "top_5_accuracy": summarize_average(float(stats["top5_hits"]), piece_n_tokens),
+                    "brier_score": summarize_average(float(stats["brier_score_sum"]), piece_n_tokens),
+                    "scored_event_indices": list(stats["scored_event_indices"]),
                 }
             )
             _append_slice_stat(
@@ -727,6 +779,7 @@ class SmallTransformerNextTokenModel(NextTokenModel):
                 "accuracy": summarize_average(float(total_correct), total_tokens),
                 "top_3_accuracy": summarize_average(float(total_top3_hits), total_tokens),
                 "top_5_accuracy": summarize_average(float(total_top5_hits), total_tokens),
+                "brier_score": summarize_average(total_brier_score, total_tokens),
                 "n_tokens": total_tokens,
                 "eval_wall_clock_s": elapsed,
                 "parameter_count": self.model.parameter_count(),

@@ -165,6 +165,8 @@ class VariableOrderMarkovModelTests(unittest.TestCase):
             [(0, [5]), (1, [5, 0]), (2, [5, 0, 1]), (3, [5]), (4, [5, 3])],
         )
         self.assertEqual(evaluation["summary"]["n_tokens"], 5)
+        self.assertIn("scored_event_indices", evaluation["piece_metrics"][0])
+        self.assertEqual(evaluation["piece_metrics"][0]["scored_event_indices"], [0, 1, 2, 3, 4])
 
     def test_evaluation_accumulates_literal_nll_accuracy_and_brier_score(self) -> None:
         """Catches deriving aggregate metrics from anything but every full distribution."""
