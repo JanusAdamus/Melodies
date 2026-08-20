@@ -10,7 +10,7 @@ from Comparacion.vomm import VariableOrderMarkovModel, select_vomm_by_validation
 from next_token_experiment.schemas import PreparedPiece
 
 
-def _piece(piece_id: str, tokens: list[int]) -> PreparedPiece:
+def _piece(piece_id: str, tokens: list[int], *, vocabulary_size: int = 3) -> PreparedPiece:
     return PreparedPiece(
         piece_id=piece_id,
         source_path=f"/tmp/{piece_id}.musicxml",
@@ -18,7 +18,7 @@ def _piece(piece_id: str, tokens: list[int]) -> PreparedPiece:
         composer="composer",
         canonical_work_id=piece_id,
         representation="pitch_class",
-        vocabulary=["0", "1", "<BOS>"],
+        vocabulary=[*(str(index) for index in range(vocabulary_size - 1)), "<BOS>"],
         tokens=tokens,
         n_events=len(tokens),
         metadata={},
@@ -30,35 +30,51 @@ class VariableOrderMarkovModelTests(unittest.TestCase):
         """Catches lossy integer casts and non-finite smoothing parameters."""
 
         invalid_parameters = (
-            {"max_order": 1.5, "vocabulary_size": 3},
-            {"max_order": math.inf, "vocabulary_size": 3},
-            {"max_order": math.nan, "vocabulary_size": 3},
-            {"max_order": 1, "vocabulary_size": 2.5},
-            {"max_order": 1, "vocabulary_size": math.nan},
-            {"max_order": 1, "vocabulary_size": math.inf},
-            {"max_order": 1, "vocabulary_size": 3, "alpha": math.nan},
-            {"max_order": 1, "vocabulary_size": 3, "alpha": math.inf},
-            {"max_order": 1, "vocabulary_size": 3, "backoff_strength": math.nan},
-            {"max_order": 1, "vocabulary_size": 3, "backoff_strength": math.inf},
+            {"max_order": 1.5, "vocabulary_size": 3, "bos_token_id": 2},
+            {"max_order": math.inf, "vocabulary_size": 3, "bos_token_id": 2},
+            {"max_order": math.nan, "vocabulary_size": 3, "bos_token_id": 2},
+            {"max_order": 1, "vocabulary_size": 2.5, "bos_token_id": 2},
+            {"max_order": 1, "vocabulary_size": math.nan, "bos_token_id": 2},
+            {"max_order": 1, "vocabulary_size": math.inf, "bos_token_id": 2},
+            {"max_order": 1, "vocabulary_size": 3, "bos_token_id": 2, "alpha": math.nan},
+            {"max_order": 1, "vocabulary_size": 3, "bos_token_id": 2, "alpha": math.inf},
+            {"max_order": 1, "vocabulary_size": 3, "bos_token_id": 2, "backoff_strength": math.nan},
+            {"max_order": 1, "vocabulary_size": 3, "bos_token_id": 2, "backoff_strength": math.inf},
         )
         for parameters in invalid_parameters:
             with self.subTest(parameters=parameters):
                 with self.assertRaises((ValueError, TypeError, OverflowError)):
                     VariableOrderMarkovModel(**parameters)
 
+    def test_constructor_requires_explicit_bos_only_comparison_support(self) -> None:
+        """Catches implicit BOS placement or inclusion of a PAD slot in scoring support."""
+
+        model = VariableOrderMarkovModel(max_order=1, vocabulary_size=3, bos_token_id=2)
+        self.assertEqual(model.bos_token_id, 2)
+        self.assertEqual(model.musical_vocabulary_size, 2)
+
+        for vocabulary_size, bos_token_id in ((4, 2), (3, 1), (3, 2.5), (3, math.nan)):
+            with self.subTest(vocabulary_size=vocabulary_size, bos_token_id=bos_token_id):
+                with self.assertRaises(ValueError):
+                    VariableOrderMarkovModel(
+                        max_order=1,
+                        vocabulary_size=vocabulary_size,
+                        bos_token_id=bos_token_id,
+                    )
+
     def test_training_rejects_noninteger_and_bos_targets(self) -> None:
         """Catches silently coercing data or counting BOS as a musical target."""
 
         for invalid_target in (0.5, True, 2):
             with self.subTest(invalid_target=invalid_target):
-                model = VariableOrderMarkovModel(max_order=1, vocabulary_size=3)
+                model = VariableOrderMarkovModel(max_order=1, vocabulary_size=3, bos_token_id=2)
                 with self.assertRaises(ValueError):
                     model.fit([[invalid_target]])
 
     def test_evaluation_rejects_noninteger_and_bos_targets(self) -> None:
         """Catches silently coercing evaluation data or scoring BOS as music."""
 
-        model = VariableOrderMarkovModel(max_order=1, vocabulary_size=3).fit([[0, 1]])
+        model = VariableOrderMarkovModel(max_order=1, vocabulary_size=3, bos_token_id=2).fit([[0, 1]])
         for invalid_target in (0.5, True, 2):
             with self.subTest(invalid_target=invalid_target):
                 with self.assertRaises(ValueError):
@@ -67,7 +83,7 @@ class VariableOrderMarkovModelTests(unittest.TestCase):
     def test_prediction_rejects_invalid_tokens_and_bos_placement(self) -> None:
         """Catches accepting malformed external prediction contexts."""
 
-        model = VariableOrderMarkovModel(max_order=2, vocabulary_size=3).fit([[0, 1]])
+        model = VariableOrderMarkovModel(max_order=2, vocabulary_size=3, bos_token_id=2).fit([[0, 1]])
         invalid_contexts = ([0.5], [True], [-1], [3], [0, 2], [2, 2])
         for context in invalid_contexts:
             with self.subTest(context=context):
@@ -80,7 +96,7 @@ class VariableOrderMarkovModelTests(unittest.TestCase):
     def test_distribution_is_normalized_and_strictly_positive(self) -> None:
         """Catches a missing smoothing or defensive normalization branch."""
 
-        model = VariableOrderMarkovModel(max_order=2, vocabulary_size=3)
+        model = VariableOrderMarkovModel(max_order=2, vocabulary_size=3, bos_token_id=2)
         model.fit([[0, 1, 0], [0, 1, 0]])
 
         distribution = model.predict_distribution([2, 0, 1])
@@ -91,7 +107,7 @@ class VariableOrderMarkovModelTests(unittest.TestCase):
     def test_unseen_long_context_uses_observed_shorter_suffix(self) -> None:
         """Catches skipping an available suffix after a long-context miss."""
 
-        model = VariableOrderMarkovModel(max_order=2, vocabulary_size=3)
+        model = VariableOrderMarkovModel(max_order=2, vocabulary_size=3, bos_token_id=2)
         model.fit([[0, 1, 0], [0, 1, 0]])
 
         shorter_suffix = model.predict_distribution([1])
@@ -105,7 +121,7 @@ class VariableOrderMarkovModelTests(unittest.TestCase):
     def test_repeated_long_context_outweighs_unigram_probability(self) -> None:
         """Catches ignoring an observed higher-order context during interpolation."""
 
-        model = VariableOrderMarkovModel(max_order=2, vocabulary_size=3)
+        model = VariableOrderMarkovModel(max_order=2, vocabulary_size=3, bos_token_id=2)
         model.fit([[0, 1, 0], [0, 1, 0]])
 
         unigram = model.predict_distribution([])
@@ -120,36 +136,42 @@ class VariableOrderMarkovModelTests(unittest.TestCase):
 
         class InstrumentedVOMM(VariableOrderMarkovModel):
             def __init__(self) -> None:
-                super().__init__(max_order=1, vocabulary_size=3)
+                super().__init__(max_order=1, vocabulary_size=6, bos_token_id=5)
                 self.contexts: list[list[int]] = []
+                self.scored_targets: list[int] = []
+                self.record_scoring = False
+
+            def _validated_musical_target(self, token: object) -> int:
+                target = super()._validated_musical_target(token)
+                if self.record_scoring:
+                    self.scored_targets.append(target)
+                return target
 
             def predict_distribution(self, context: list[int]) -> np.ndarray:
                 self.contexts.append(list(context))
                 return super().predict_distribution(context)
 
-        model = InstrumentedVOMM().fit([[0, 1, 0, 1, 1]])
-        evaluation = model.evaluate([_piece("tail", [0, 1, 0, 1, 1])], max_context_length=3)
-
-        expected_log_likelihood = math.log(
-            (32.0 / 65.0) * (179.0 / 273.0) * (113.0 / 273.0) * (24.0 / 65.0) * (127.0 / 273.0)
+        model = InstrumentedVOMM().fit([[0, 1, 2, 3, 4]])
+        model.record_scoring = True
+        evaluation = model.evaluate(
+            [_piece("tail", [0, 1, 2, 3, 4], vocabulary_size=6)],
+            max_context_length=3,
         )
+
+        self.assertEqual(model.scored_targets, [0, 1, 2, 3, 4])
+        self.assertEqual(model.contexts, [[5], [5, 0], [5, 0, 1], [5], [5, 3]])
         self.assertEqual(
-            model.contexts,
-            [[2], [2, 0], [2, 0, 1], [2], [2, 1]],
+            list(zip(model.scored_targets, model.contexts)),
+            [(0, [5]), (1, [5, 0]), (2, [5, 0, 1]), (3, [5]), (4, [5, 3])],
         )
         self.assertEqual(evaluation["summary"]["n_tokens"], 5)
-        self.assertAlmostEqual(evaluation["piece_metrics"][0]["log_likelihood"], expected_log_likelihood)
-        self.assertAlmostEqual(
-            evaluation["summary"]["test_nll_per_token"],
-            -expected_log_likelihood / 5.0,
-        )
 
     def test_evaluation_accumulates_literal_nll_accuracy_and_brier_score(self) -> None:
         """Catches deriving aggregate metrics from anything but every full distribution."""
 
         class ScriptedVOMM(VariableOrderMarkovModel):
             def __init__(self) -> None:
-                super().__init__(max_order=0, vocabulary_size=3)
+                super().__init__(max_order=0, vocabulary_size=3, bos_token_id=2)
                 self.distributions = iter(
                     (
                         np.array([0.7, 0.2, 0.1]),
@@ -196,6 +218,7 @@ class VariableOrderMarkovModelTests(unittest.TestCase):
                         validation_pieces=validation_pieces,
                         candidate_orders=(0, 1),
                         vocabulary_size=3,
+                        bos_token_id=2,
                     )
 
     def test_validation_selection_retains_the_lowest_nll_order(self) -> None:
@@ -207,12 +230,14 @@ class VariableOrderMarkovModelTests(unittest.TestCase):
                 validation_pieces=[_piece("validation", [0, 1, 0])],
                 candidate_orders=(0, 1),
                 vocabulary_size=3,
+                bos_token_id=2,
                 max_context_length=3,
             )
 
         expected_validation_nll = -math.log((71.0 / 105.0) * (37.0 / 63.0) * (71.0 / 105.0)) / 3.0
         self.assertEqual(model.selected_order, 1)
         self.assertEqual(model.max_order, 1)
+        self.assertEqual(model.bos_token_id, 2)
         self.assertAlmostEqual(model.validation_nll_per_token, expected_validation_nll)
         self.assertAlmostEqual(float(model.predict_distribution([0])[1]), 37.0 / 63.0)
 

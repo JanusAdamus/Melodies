@@ -1,4 +1,7 @@
-"""A small PPM-inspired VOMM diagnostic control, not an IDyOM implementation."""
+"""PPM-inspired VOMM control over musical symbols plus BOS, excluding PAD.
+
+This lightweight diagnostic is not an IDyOM implementation.
+"""
 
 from __future__ import annotations
 
@@ -37,23 +40,32 @@ def _validated_positive_finite(name: str, value: object) -> float:
 class VariableOrderMarkovModel:
     """Interpolated variable-order Markov diagnostic inspired by PPM, not IDyOM.
 
-    Musical token sequences passed to :meth:`fit` exclude BOS.  The model adds
-    ``vocabulary_size - 1`` as BOS separately to every piece, so it is context
-    during fitting and evaluation but never a scored musical target.
+    ``vocabulary_size`` is the shared comparison support: musical symbol IDs
+    ``0 <= token < bos_token_id`` followed by the explicitly supplied BOS ID.
+    The required equality ``vocabulary_size == bos_token_id + 1`` excludes PAD
+    and any other tokenizer-only symbols. Sequences passed to :meth:`fit`
+    contain musical targets only; BOS is added separately to every piece as
+    context and is never scored as a target.
     """
 
     def __init__(
         self,
         max_order: int,
         vocabulary_size: int,
+        bos_token_id: int,
         alpha: float = 0.5,
         backoff_strength: float = 1.0,
     ) -> None:
         self.max_order = _validated_integer("max_order", max_order, minimum=0)
         self.vocabulary_size = _validated_integer("vocabulary_size", vocabulary_size, minimum=2)
+        self.bos_token_id = _validated_integer("bos_token_id", bos_token_id, minimum=1)
+        if self.vocabulary_size != self.bos_token_id + 1:
+            raise ValueError(
+                "VOMM comparison support must contain musical symbols plus BOS only: "
+                "vocabulary_size must equal bos_token_id + 1."
+            )
         self.alpha = _validated_positive_finite("alpha", alpha)
         self.backoff_strength = _validated_positive_finite("backoff_strength", backoff_strength)
-        self.bos_token_id = self.vocabulary_size - 1
         self.musical_vocabulary_size = self.bos_token_id
         self._next_token_counts: dict[int, dict[tuple[int, ...], np.ndarray]] = {}
         self._fitted = False
@@ -113,8 +125,8 @@ class VariableOrderMarkovModel:
 
     def _validated_musical_target(self, token: object) -> int:
         token_id = self._validated_token(token, field="Musical targets")
-        if token_id == self.bos_token_id:
-            raise ValueError("BOS cannot be used as a musical target.")
+        if token_id >= self.bos_token_id:
+            raise ValueError("Musical targets must satisfy 0 <= token < bos_token_id.")
         return token_id
 
     def _validated_context(self, context: list[int]) -> list[int]:
@@ -254,11 +266,12 @@ def select_vomm_by_validation(
     *,
     candidate_orders: tuple[int, ...],
     vocabulary_size: int,
+    bos_token_id: int,
     alpha: float = 0.5,
     backoff_strength: float = 1.0,
     max_context_length: int = 128,
 ) -> VariableOrderMarkovModel:
-    """Fit VOMM orders and retain the diagnostic control with lowest validation NLL."""
+    """Select a VOMM over musical symbols plus explicit BOS, with PAD excluded."""
 
     if not candidate_orders:
         raise ValueError("candidate_orders must not be empty.")
@@ -274,6 +287,7 @@ def select_vomm_by_validation(
         candidate = VariableOrderMarkovModel(
             max_order=order,
             vocabulary_size=vocabulary_size,
+            bos_token_id=bos_token_id,
             alpha=alpha,
             backoff_strength=backoff_strength,
         ).fit(train_sequences)
