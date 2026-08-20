@@ -78,6 +78,7 @@ class ProtocolTests(unittest.TestCase):
             max_context_length=128,
             stride=64,
             min_window_length=32,
+            max_windows=1,
         )
 
         self.assertEqual(

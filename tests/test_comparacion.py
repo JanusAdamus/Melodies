@@ -47,6 +47,41 @@ class ComparisonSplitTests(unittest.TestCase):
 
 
 class ClassicalModelTests(unittest.TestCase):
+    def test_finite_hmm_retains_matrices_for_selected_state_count(self) -> None:
+        class DeterministicFiniteHMM(FiniteGlobalHMM):
+            def _fit_candidate(self, *args, n_states: int, **kwargs):
+                initial_probs = np.full(n_states, 1.0 / n_states)
+                transition_matrix = np.eye(n_states)
+                emission_matrix = np.full((n_states, self.vocab_size), 1.0 / self.vocab_size)
+                self.initial_probs = initial_probs
+                self.transition_matrix = transition_matrix
+                self.emission_matrix = emission_matrix
+                validation_nll = 0.1 if n_states == 2 else 0.9
+                return (
+                    initial_probs,
+                    transition_matrix,
+                    emission_matrix,
+                    validation_nll,
+                    [{"n_states": n_states, "validation_nll_per_token": validation_nll}],
+                )
+
+        model = DeterministicFiniteHMM(
+            candidate_num_states=(2, 3),
+            max_iterations=1,
+            tolerance=1e-4,
+            seed=1,
+        )
+        fit_result = model.fit(
+            [_piece("train", 0, 2, "MuseTrainer")],
+            [_piece("validation", 0, 2, "SymbTr")],
+            bos_token_id=12,
+        )
+
+        self.assertEqual(fit_result.selected_states, 2)
+        self.assertEqual(model.initial_probs.shape, (2,))
+        self.assertEqual(model.transition_matrix.shape, (2, 2))
+        self.assertEqual(model.emission_matrix.shape, (2, 13))
+
     def test_classical_score_conditions_on_bos_without_counting_it(self) -> None:
         train_pieces = [_piece("train", 0, 4, "MuseTrainer")]
         validation_pieces = [_piece("validation", 0, 2, "MuseTrainer")]

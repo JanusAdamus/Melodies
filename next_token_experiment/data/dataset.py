@@ -103,7 +103,7 @@ class WindowedSequenceDataset(Dataset):
                 )
 
         self.examples.sort(key=lambda item: (item.piece_id, item.start_index))
-        if max_windows is not None:
+        if max_windows is not None and split == "train":
             self.examples = self.examples[:max_windows]
 
     def __len__(self) -> int:

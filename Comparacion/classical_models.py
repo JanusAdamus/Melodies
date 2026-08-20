@@ -249,6 +249,7 @@ class FiniteGlobalHMM:
         start_time = time.perf_counter()
         best_validation_nll = math.inf
         best_log: list[dict[str, float | int]] = []
+        best_candidate: tuple[int, np.ndarray, np.ndarray, np.ndarray] | None = None
 
         for n_states in self.candidate_num_states:
             params = self._fit_candidate(
@@ -262,14 +263,17 @@ class FiniteGlobalHMM:
             initial_probs, transition_matrix, emission_matrix, validation_nll, train_log = params
             if validation_nll < best_validation_nll:
                 best_validation_nll = validation_nll
-                self.initial_probs = initial_probs
-                self.transition_matrix = transition_matrix
-                self.emission_matrix = emission_matrix
-                self.selected_states = n_states
+                best_candidate = (
+                    n_states,
+                    initial_probs.copy(),
+                    transition_matrix.copy(),
+                    emission_matrix.copy(),
+                )
                 best_log = train_log
 
-        if self.selected_states is None:
+        if best_candidate is None:
             raise ValueError("Finite HMM fitting did not produce a selected state count.")
+        self.selected_states, self.initial_probs, self.transition_matrix, self.emission_matrix = best_candidate
 
         self.fit_result = FiniteHMMFitResult(
             selected_states=self.selected_states,
