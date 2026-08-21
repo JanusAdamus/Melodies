@@ -15,7 +15,12 @@ import numpy as np
 from Comparacion.classical_models import FiniteGlobalHMM, FiniteHMMFitResult, GlobalHDPHMM
 from Comparacion.cli import build_parser
 from Comparacion.config import LearningCurveConfig, build_default_learning_curve_config
-from Comparacion.runner import _build_pareto_summary, run_learning_curve_experiment
+from Comparacion.runner import (
+    _VOMM_DETERMINISTIC_SEED,
+    _build_pareto_summary,
+    _collect_structural_predictions,
+    run_learning_curve_experiment,
+)
 from Comparacion.splits import build_fixed_splits, build_nested_training_subsets
 from next_token_experiment.schemas import CorpusPreparationResult, PreparedPiece
 from src.models.inference import forward_log_likelihood
@@ -123,6 +128,85 @@ def _piece_metrics(
         }
         for piece in pieces
     ]
+
+
+def _standard_model_mocks() -> dict[str, MagicMock]:
+    finite_model = MagicMock()
+    finite_model.fit.return_value = SimpleNamespace(selected_states=2)
+    finite_model.evaluate.side_effect = lambda pieces, **kwargs: {
+        "summary": {
+            "model": "finite_hmm",
+            "selected_states": 2,
+            "validation_nll_per_token": 1.4,
+            "test_nll_per_token": 1.5,
+            "test_perplexity": math.exp(1.5),
+            "n_tokens": sum(len(piece.tokens) for piece in pieces),
+            "n_params": 25,
+            "train_time_sec": 0.2,
+        },
+        "piece_metrics": _piece_metrics(pieces, nll=1.5),
+    }
+    hdp_model = MagicMock()
+    hdp_model.fit.return_value = {
+        "selected_hyperparameters": {"alpha": 1.0, "alpha0": 1.0, "gamma": 1.0}
+    }
+    hdp_model.evaluate.side_effect = lambda pieces, **kwargs: {
+        "summary": {
+            "model": "hdp_hmm",
+            "truncation_level": 2,
+            "validation_nll_per_token": 1.3,
+            "test_nll_per_token": 1.4,
+            "test_perplexity": math.exp(1.4),
+            "n_tokens": sum(len(piece.tokens) for piece in pieces),
+            "n_params": 25,
+            "effective_states": 2,
+            "train_time_sec": 0.3,
+        },
+        "piece_metrics": _piece_metrics(pieces, nll=1.4),
+    }
+    transformer_model = MagicMock()
+    transformer_model.fit.return_value = {
+        "summary": {"best_validation_nll": 1.1},
+        "train_log": [{"train_wall_clock_s": 0.4, "validation_wall_clock_s": 0.1}],
+    }
+    transformer_model.evaluate.side_effect = lambda pieces: {
+        "summary": {
+            "nll_per_token": 1.2,
+            "perplexity": math.exp(1.2),
+            "accuracy": 0.5,
+            "brier_score": 0.7,
+            "n_tokens": sum(len(piece.tokens) for piece in pieces),
+            "eval_wall_clock_s": 0.15,
+            "parameter_count": 100,
+            "runtime": {"device": "cpu"},
+        },
+        "piece_metrics": _piece_metrics(pieces, nll=1.2),
+    }
+    vomm_model = MagicMock()
+    vomm_model.selected_order = 2
+    vomm_model.evaluate.side_effect = lambda pieces, max_context_length: {
+        "summary": {
+            "model": "vomm",
+            "selected_order": 2,
+            "validation_nll_per_token": 1.2,
+            "test_nll_per_token": 1.3,
+            "test_perplexity": math.exp(1.3),
+            "accuracy": 0.5,
+            "brier_score": 0.8,
+            "n_tokens": sum(len(piece.tokens) for piece in pieces),
+            "n_params": 20,
+            "count_table_size": 20,
+            "train_time_sec": 0.05,
+            "evaluation_wall_clock_s": 0.02,
+        },
+        "piece_metrics": _piece_metrics(pieces, nll=1.3),
+    }
+    return {
+        "finite": finite_model,
+        "hdp": hdp_model,
+        "transformer": transformer_model,
+        "vomm": vomm_model,
+    }
 
 
 class ComparisonSplitTests(unittest.TestCase):
@@ -615,6 +699,120 @@ class ComparisonRunnerTests(unittest.TestCase):
                         path.read_text(encoding="utf-8"),
                         parse_constant=lambda value: self.fail(f"non-standard JSON constant {value} in {path}"),
                     )
+
+    def test_rerun_into_nonempty_run_directory_fails_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = _runner_config(temporary_directory, include_vomm_control=False)
+            existing = Path(temporary_directory) / "reused-run"
+            existing.mkdir()
+            (existing / "results_raw.csv").write_text("stale", encoding="utf-8")
+            with (
+                patch("Comparacion.runner.prepare_corpus") as prepare_corpus,
+                patch("Comparacion.runner.FiniteGlobalHMM") as finite_constructor,
+            ):
+                with self.assertRaises(FileExistsError):
+                    run_learning_curve_experiment(config, run_name="reused-run", max_files=12)
+            prepare_corpus.assert_not_called()
+            finite_constructor.assert_not_called()
+            self.assertEqual((existing / "results_raw.csv").read_text(encoding="utf-8"), "stale")
+
+    def test_vomm_control_is_scored_once_across_model_seeds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = replace(
+                _runner_config(temporary_directory),
+                model_seeds=(13, 17, 19),
+            )
+            preparation = _synthetic_preparation()
+            mocks = _standard_model_mocks()
+            with (
+                patch("Comparacion.runner.prepare_corpus", return_value=preparation),
+                patch("Comparacion.runner.FiniteGlobalHMM", return_value=mocks["finite"]) as finite_constructor,
+                patch("Comparacion.runner.GlobalHDPHMM", return_value=mocks["hdp"]),
+                patch("Comparacion.runner.SmallTransformerNextTokenModel", return_value=mocks["transformer"]),
+                patch(
+                    "Comparacion.runner._build_transformer_dataloaders",
+                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces: {
+                        "train": train_pieces,
+                        "validation": validation_pieces,
+                        "test": test_pieces,
+                    },
+                ),
+                patch(
+                    "Comparacion.runner.select_vomm_by_validation",
+                    return_value=mocks["vomm"],
+                ) as vomm_selector,
+            ):
+                result = run_learning_curve_experiment(config, run_name="multi-seed", max_files=12)
+
+            # Stochastic models are refit per model seed; the deterministic VOMM is not.
+            self.assertEqual(finite_constructor.call_count, 3)
+            self.assertEqual(vomm_selector.call_count, 1)
+            self.assertEqual(mocks["vomm"].evaluate.call_count, 1)
+
+            output_root = Path(result["output_root"])
+            with (output_root / "results_raw.csv").open(encoding="utf-8", newline="") as stream:
+                raw_rows = list(csv.DictReader(stream))
+            vomm_rows = [row for row in raw_rows if row["model"] == "vomm"]
+            self.assertEqual(len(vomm_rows), 1)
+            self.assertEqual(vomm_rows[0]["model_seed"], _VOMM_DETERMINISTIC_SEED)
+            self.assertEqual(vomm_rows[0]["test_accuracy"], "0.5")
+            self.assertEqual(vomm_rows[0]["test_brier_score"], "0.8")
+            self.assertEqual(len([row for row in raw_rows if row["model"] == "finite_hmm"]), 3)
+
+    def test_transformer_fit_cost_measures_whole_fit_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = _runner_config(temporary_directory, include_vomm_control=False)
+            preparation = _synthetic_preparation()
+            mocks = _standard_model_mocks()
+            with (
+                patch("Comparacion.runner.prepare_corpus", return_value=preparation),
+                patch("Comparacion.runner.FiniteGlobalHMM", return_value=mocks["finite"]),
+                patch("Comparacion.runner.GlobalHDPHMM", return_value=mocks["hdp"]),
+                patch("Comparacion.runner.SmallTransformerNextTokenModel", return_value=mocks["transformer"]),
+                patch(
+                    "Comparacion.runner._build_transformer_dataloaders",
+                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces: {
+                        "train": train_pieces,
+                        "validation": validation_pieces,
+                        "test": test_pieces,
+                    },
+                ),
+            ):
+                result = run_learning_curve_experiment(config, run_name="fit-cost", max_files=12)
+
+            output_root = Path(result["output_root"])
+            with (output_root / "results_raw.csv").open(encoding="utf-8", newline="") as stream:
+                raw_rows = list(csv.DictReader(stream))
+            transformer_row = next(row for row in raw_rows if row["model"] == "transformer")
+            # The summed per-epoch train_log is 0.5s; the wrapped wall clock of the mock fit
+            # call is effectively instant, so the reported fit cost must not just echo the log.
+            self.assertEqual(float(transformer_row["train_time_sec"]), 0.5)
+            self.assertLess(float(transformer_row["fit_wall_clock_s"]), 0.5)
+            self.assertGreaterEqual(float(transformer_row["fit_wall_clock_s"]), 0.0)
+
+    def test_collect_structural_predictions_stamps_fraction_and_seeds(self) -> None:
+        collected: list[dict[str, object]] = []
+        evaluation = {
+            "structural_predictions": [
+                {"piece_id": "piece-0", "canonical_work_id": "work-0", "boundary": 1},
+            ]
+        }
+        _collect_structural_predictions(
+            collected,
+            "vomm",
+            evaluation,
+            fraction=0.5,
+            data_seed=11,
+            model_seed=_VOMM_DETERMINISTIC_SEED,
+        )
+        self.assertEqual(len(collected), 1)
+        prediction = collected[0]
+        self.assertEqual(prediction["model"], "vomm")
+        self.assertEqual(prediction["frac"], 0.5)
+        self.assertEqual(prediction["data_seed"], 11)
+        self.assertEqual(prediction["model_seed"], _VOMM_DETERMINISTIC_SEED)
+        self.assertEqual(prediction["piece_id"], "piece-0")
+        self.assertEqual(prediction["canonical_work_id"], "work-0")
 
     def test_protocol_audit_fails_fast_on_asymmetric_scored_indices(self) -> None:
         self.assertIn("include_vomm_control", LearningCurveConfig.__dataclass_fields__)

@@ -34,6 +34,26 @@ from .vomm import select_vomm_by_validation
 
 REQUIRED_STRUCTURAL_COLUMNS = ("piece_id", "event_index", "segment_label", "boundary")
 
+# VOMM selection is deterministic in the stochastic model seed: it depends only on the
+# training subset (data_seed, fraction) and validation set. It is therefore scored once
+# per (data_seed, fraction) and labelled with this sentinel instead of being recomputed
+# per model_seed, which would only fabricate identical duplicate rows.
+_VOMM_DETERMINISTIC_SEED = "deterministic"
+
+
+def _guard_fresh_run_directory(run_directory: Path) -> None:
+    """Refuse to write into an existing, non-empty run directory.
+
+    Reusing a run name would interleave new artifacts with stale ones from a previous
+    run, so fail before writing anything and ask for a different name.
+    """
+
+    if run_directory.exists() and any(run_directory.iterdir()):
+        raise FileExistsError(
+            f"Run directory {run_directory} already exists and is not empty; "
+            "choose a different run_name to avoid mixing artifacts from separate runs."
+        )
+
 
 def _json_safe(value: object) -> object:
     if isinstance(value, float) and not math.isfinite(value):
@@ -421,7 +441,7 @@ def _build_piece_metric_rows(
     model_name: str,
     fraction: float,
     data_seed: int,
-    model_seed: int,
+    model_seed: int | str,
     piece_metrics: list[dict[str, object]],
     evaluated_pieces: list[PreparedPiece],
 ) -> list[dict[str, object]]:
@@ -452,7 +472,7 @@ def _append_protocol_evidence(
     model_name: str,
     fraction: float,
     data_seed: int,
-    model_seed: int,
+    model_seed: int | str,
     evaluated_pieces: list[PreparedPiece],
     piece_metrics: list[dict[str, object]],
 ) -> None:
@@ -612,13 +632,25 @@ def _collect_structural_predictions(
     target: list[dict[str, object]],
     model_name: str,
     evaluation: Mapping[str, object],
+    *,
+    fraction: float,
+    data_seed: int,
+    model_seed: object,
 ) -> None:
     predictions = evaluation.get("structural_predictions")
     if not isinstance(predictions, list):
         return
     for prediction in predictions:
         if isinstance(prediction, Mapping):
-            target.append({"model": model_name, **dict(prediction)})
+            target.append(
+                {
+                    **dict(prediction),
+                    "model": model_name,
+                    "frac": fraction,
+                    "data_seed": data_seed,
+                    "model_seed": model_seed,
+                }
+            )
 
 
 def _build_structural_evaluation(
@@ -806,7 +838,9 @@ def run_learning_curve_experiment(
     max_files: int | None = None,
     plan_only: bool = False,
 ) -> dict[str, object]:
-    output_root = ensure_directory(Path(config.results_root) / run_name)
+    run_directory = Path(config.results_root) / run_name
+    _guard_fresh_run_directory(run_directory)
+    output_root = ensure_directory(run_directory)
     preparation = prepare_corpus(config.experiment, max_files=max_files)
     fixed_splits = _build_grouped_fixed_splits(
         preparation.pieces,
@@ -864,6 +898,71 @@ def run_learning_curve_experiment(
         for fraction, train_pieces in nested_subsets:
             n_train_tokens = sum(len(piece.tokens) for piece in train_pieces)
             n_train_pieces = len(train_pieces)
+
+            if config.include_vomm_control:
+                vomm = select_vomm_by_validation(
+                    train_sequences=[list(piece.tokens) for piece in train_pieces],
+                    validation_pieces=fixed_splits.validation_pieces,
+                    candidate_orders=config.vomm_candidate_orders,
+                    vocabulary_size=comparison_vocabulary_size,
+                    bos_token_id=bos_token_id,
+                    max_context_length=max_context_length,
+                )
+                vomm_eval = vomm.evaluate(fixed_splits.test_pieces, max_context_length)
+                vomm_summary = vomm_eval["summary"]
+                _append_protocol_evidence(
+                    output_path=protocol_path,
+                    evidence=protocol_evidence,
+                    model_name="vomm",
+                    fraction=fraction,
+                    data_seed=data_seed,
+                    model_seed=_VOMM_DETERMINISTIC_SEED,
+                    evaluated_pieces=fixed_splits.test_pieces,
+                    piece_metrics=vomm_eval["piece_metrics"],
+                )
+                _collect_structural_predictions(
+                    structural_predictions,
+                    "vomm",
+                    vomm_eval,
+                    fraction=fraction,
+                    data_seed=data_seed,
+                    model_seed=_VOMM_DETERMINISTIC_SEED,
+                )
+                raw_rows.append(
+                    {
+                        "model": "vomm",
+                        "data_seed": data_seed,
+                        "model_seed": _VOMM_DETERMINISTIC_SEED,
+                        "frac": fraction,
+                        "n_train_pieces": n_train_pieces,
+                        "n_train_tokens": n_train_tokens,
+                        "n_params": vomm_summary["n_params"],
+                        "selected_states": None,
+                        "effective_states": None,
+                        "count_table_size": vomm_summary["count_table_size"],
+                        "device": "cpu",
+                        "val_ppl": math.exp(float(vomm_summary["validation_nll_per_token"])),
+                        "test_ppl": vomm_summary["test_perplexity"],
+                        "test_nll": vomm_summary["test_nll_per_token"],
+                        "test_accuracy": vomm_summary["accuracy"],
+                        "test_brier_score": vomm_summary["brier_score"],
+                        "train_time_sec": vomm_summary["train_time_sec"],
+                        "fit_wall_clock_s": vomm_summary["train_time_sec"],
+                        "evaluation_wall_clock_s": vomm_summary["evaluation_wall_clock_s"],
+                        "hyperparams_json": json.dumps({"selected_order": vomm.selected_order}),
+                    }
+                )
+                piece_metric_rows.extend(
+                    _build_piece_metric_rows(
+                        "vomm",
+                        fraction,
+                        data_seed,
+                        _VOMM_DETERMINISTIC_SEED,
+                        vomm_eval["piece_metrics"],
+                        fixed_splits.test_pieces,
+                    )
+                )
+
             for model_seed in config.model_seeds:
                 finite_hmm = FiniteGlobalHMM(
                     candidate_num_states=config.finite_hmm_states,
@@ -896,7 +995,14 @@ def run_learning_curve_experiment(
                     evaluated_pieces=fixed_splits.test_pieces,
                     piece_metrics=finite_eval["piece_metrics"],
                 )
-                _collect_structural_predictions(structural_predictions, "finite_hmm", finite_eval)
+                _collect_structural_predictions(
+                    structural_predictions,
+                    "finite_hmm",
+                    finite_eval,
+                    fraction=fraction,
+                    data_seed=data_seed,
+                    model_seed=model_seed,
+                )
                 raw_rows.append(
                     {
                         "model": "finite_hmm",
@@ -962,7 +1068,14 @@ def run_learning_curve_experiment(
                     evaluated_pieces=fixed_splits.test_pieces,
                     piece_metrics=hdp_eval["piece_metrics"],
                 )
-                _collect_structural_predictions(structural_predictions, "hdp_hmm", hdp_eval)
+                _collect_structural_predictions(
+                    structural_predictions,
+                    "hdp_hmm",
+                    hdp_eval,
+                    fraction=fraction,
+                    data_seed=data_seed,
+                    model_seed=model_seed,
+                )
                 raw_rows.append(
                     {
                         "model": "hdp_hmm",
@@ -996,61 +1109,6 @@ def run_learning_curve_experiment(
                     )
                 )
 
-                if config.include_vomm_control:
-                    vomm = select_vomm_by_validation(
-                        train_sequences=[list(piece.tokens) for piece in train_pieces],
-                        validation_pieces=fixed_splits.validation_pieces,
-                        candidate_orders=config.vomm_candidate_orders,
-                        vocabulary_size=comparison_vocabulary_size,
-                        bos_token_id=bos_token_id,
-                        max_context_length=max_context_length,
-                    )
-                    vomm_eval = vomm.evaluate(fixed_splits.test_pieces, max_context_length)
-                    vomm_summary = vomm_eval["summary"]
-                    _append_protocol_evidence(
-                        output_path=protocol_path,
-                        evidence=protocol_evidence,
-                        model_name="vomm",
-                        fraction=fraction,
-                        data_seed=data_seed,
-                        model_seed=model_seed,
-                        evaluated_pieces=fixed_splits.test_pieces,
-                        piece_metrics=vomm_eval["piece_metrics"],
-                    )
-                    _collect_structural_predictions(structural_predictions, "vomm", vomm_eval)
-                    raw_rows.append(
-                        {
-                            "model": "vomm",
-                            "data_seed": data_seed,
-                            "model_seed": model_seed,
-                            "frac": fraction,
-                            "n_train_pieces": n_train_pieces,
-                            "n_train_tokens": n_train_tokens,
-                            "n_params": vomm_summary["n_params"],
-                            "selected_states": None,
-                            "effective_states": None,
-                            "count_table_size": vomm_summary["count_table_size"],
-                            "device": "cpu",
-                            "val_ppl": math.exp(float(vomm_summary["validation_nll_per_token"])),
-                            "test_ppl": vomm_summary["test_perplexity"],
-                            "test_nll": vomm_summary["test_nll_per_token"],
-                            "train_time_sec": vomm_summary["train_time_sec"],
-                            "fit_wall_clock_s": vomm_summary["train_time_sec"],
-                            "evaluation_wall_clock_s": vomm_summary["evaluation_wall_clock_s"],
-                            "hyperparams_json": json.dumps({"selected_order": vomm.selected_order}),
-                        }
-                    )
-                    piece_metric_rows.extend(
-                        _build_piece_metric_rows(
-                            "vomm",
-                            fraction,
-                            data_seed,
-                            model_seed,
-                            vomm_eval["piece_metrics"],
-                            fixed_splits.test_pieces,
-                        )
-                    )
-
                 transformer_model = _build_transformer_model(
                     config,
                     model_seed,
@@ -1062,10 +1120,12 @@ def run_learning_curve_experiment(
                     validation_pieces=fixed_splits.validation_pieces,
                     test_pieces=fixed_splits.test_pieces,
                 )
+                transformer_fit_start = time.perf_counter()
                 transformer_fit = transformer_model.fit(
                     dataloaders["train"],
                     dataloaders["validation"],
                 )
+                transformer_fit_wall_clock_s = time.perf_counter() - transformer_fit_start
                 transformer_eval = transformer_model.evaluate(dataloaders["test"])
                 transformer_summary = _transformer_summary_row(transformer_fit, transformer_eval)
                 _append_protocol_evidence(
@@ -1078,7 +1138,14 @@ def run_learning_curve_experiment(
                     evaluated_pieces=fixed_splits.test_pieces,
                     piece_metrics=transformer_eval["piece_metrics"],
                 )
-                _collect_structural_predictions(structural_predictions, "transformer", transformer_eval)
+                _collect_structural_predictions(
+                    structural_predictions,
+                    "transformer",
+                    transformer_eval,
+                    fraction=fraction,
+                    data_seed=data_seed,
+                    model_seed=model_seed,
+                )
                 raw_rows.append(
                     {
                         "model": "transformer",
@@ -1098,7 +1165,7 @@ def run_learning_curve_experiment(
                         "test_accuracy": transformer_summary["test_accuracy"],
                         "test_brier_score": transformer_summary["test_brier_score"],
                         "train_time_sec": transformer_summary["train_time_sec"],
-                        "fit_wall_clock_s": transformer_summary["train_time_sec"],
+                        "fit_wall_clock_s": transformer_fit_wall_clock_s,
                         "evaluation_wall_clock_s": transformer_summary["evaluation_wall_clock_s"],
                         "hyperparams_json": json.dumps(
                             {"architecture": config.experiment.transformer.architecture}
