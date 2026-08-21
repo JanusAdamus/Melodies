@@ -119,6 +119,7 @@ class TransformerConfig:
     lr_scheduler_patience: int = 2
     min_learning_rate: float = 1e-5
     tie_input_output_embeddings: bool = True
+    attention_implementation: str = "eager"
     use_relative_position_bias: bool = False
     relative_attention_num_buckets: int = 32
     relative_attention_max_distance: int = 256

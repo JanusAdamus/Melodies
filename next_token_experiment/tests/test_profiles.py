@@ -21,6 +21,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(config.hardware.target_device, "cuda")
         self.assertTrue(config.hardware.gpu_required)
         self.assertEqual(config.hardware.precision, "bf16")
+        self.assertEqual(config.transformer.attention_implementation, "eager")
 
 
 if __name__ == "__main__":

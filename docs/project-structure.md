@@ -16,7 +16,10 @@ Melodies/
   examples/                # Ejemplos pequenos y reproducibles
   external/                # Datasets y snapshots locales no versionados
   next_token_experiment/   # Experimento de next-token y su suite
-  notebooks/               # Exploracion, demos y trabajo interactivo
+  notebooks/               # Exploracion, demos y material historico ligero
+    exploratory/
+    thesis/
+    archive/
   scripts/                 # Wrappers ligeros de ejecucion
   src/                     # Pipeline principal del proyecto
     analysis/
@@ -42,8 +45,24 @@ Melodies/
 - `docs/`: fuente de verdad documental.
 - `notebooks/`: exploracion; utiles para trabajar, pero no son la interfaz
   principal del repo.
+- `scripts/reproduce_results.py`: entrada minima reproducible del repo.
 - `external/`: recursos reinstalables o descargables localmente.
 - `artifacts/`: cualquier salida generada que no deba entrar al remoto.
+
+## Ruta Activa Recomendada
+
+Si quieres trabajar sin perder tiempo en carpetas perifericas, quedate en esta
+ruta:
+
+1. `README.md`
+2. `docs/index.md`
+3. `docs/experiments.md`
+4. luego elige solo una superficie:
+   - `src/`
+   - `next_token_experiment/`
+
+Las carpetas `docs/reference/`, `notebooks/` y muchas rutas dentro de
+`artifacts/` deben leerse como apoyo o historico, no como punto de entrada.
 
 ## Decisiones de Limpieza
 
@@ -52,6 +71,16 @@ Melodies/
   `pyproject.toml`.
 - Las rutas de resultados viven bajo `artifacts/` para mantener limpia la raiz.
 - La integracion con GitHub Actions vive en `.github/workflows/`.
+
+## Criterio de Poda
+
+- `artifacts/tmp/` y `artifacts/tmp_figs/` son descartables.
+- Las corridas `smoke` redundantes no deben acumularse sin una razon
+  documental.
+- Los nombres de corridas deben describir corpus, tarea y escala, en vez de
+  crecer como variantes opacas.
+- Los documentos nuevos deben entrar a `docs/index.md`; si no merecen estar
+  ahi, probablemente deban integrarse en otro documento existente.
 
 ## Recorrido Recomendado
 

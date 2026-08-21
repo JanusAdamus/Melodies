@@ -33,7 +33,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eta", type=float, default=1.0, help="Concentracion total del prior Dirichlet de emision.")
     parser.add_argument("--kappa", type=float, default=0.0, help="Sesgo sticky opcional hacia auto-transiciones.")
     parser.add_argument("--seed", type=int, default=7, help="Semilla reproducible.")
-    parser.add_argument("--output-dir", default="artifacts/outputs/run", help="Directorio de salida.")
+    parser.add_argument("--output-dir", default="artifacts/outputs/single_piece_analysis", help="Directorio de salida.")
     parser.add_argument("--prefer-treble", action="store_true", help="Prioriza partes en clave de sol al fusionar el score.")
     return parser
 

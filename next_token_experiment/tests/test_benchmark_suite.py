@@ -22,6 +22,9 @@ class BenchmarkSuiteTests(unittest.TestCase):
             "research_richer_events_smoke",
             "research_richer_events_full",
         ])
+        self.assertTrue(any(spec.run_id == "research_pitch_duration_full" for spec in specs))
+        self.assertTrue(any(spec.run_id == "research_richer_events_absolute_full" for spec in specs))
+        self.assertTrue(any(spec.run_id == "research_richer_events_context128_full" for spec in specs))
 
         smoke_specs = resolve_benchmark_suite(specs, only_smoke=True)
         self.assertTrue(all(spec.expected_budget_class == "smoke" for spec in smoke_specs))
@@ -45,6 +48,7 @@ class BenchmarkSuiteTests(unittest.TestCase):
                             "n_layers": 3,
                             "d_model": 128,
                             "n_heads": 4,
+                            "attention_implementation": "eager",
                             "use_relative_position_bias": False,
                         },
                     }
@@ -98,6 +102,8 @@ class BenchmarkSuiteTests(unittest.TestCase):
                         "runtime": {
                             "device": "cpu",
                             "actual_precision": "fp32",
+                            "attention_implementation_effective": "eager",
+                            "flash_attention_candidate": False,
                             "seed": 7,
                         },
                     }
@@ -138,6 +144,8 @@ class BenchmarkSuiteTests(unittest.TestCase):
             self.assertEqual(summary_rows[0]["status"], "completed")
             self.assertEqual(summary_rows[0]["n_train_windows"], 20)
             self.assertIn("token_rarity", summary_rows[0]["test_slices_recorded"])
+            self.assertEqual(summary_rows[0]["attention_implementation"], "eager")
+            self.assertEqual(summary_rows[0]["attention_implementation_effective"], "eager")
 
             benchmark_root = results_root / "benchmark_suite"
             self.assertTrue((benchmark_root / "summary.csv").exists())

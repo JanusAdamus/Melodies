@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+import os
 import time
 
 from ..config import ExperimentConfig, TransformerConfig
@@ -13,6 +14,12 @@ from ..experiment.splits import assign_piece_splits
 from ..models.small_transformer import SmallTransformerNextTokenModel, SmallTransformerStudySpec
 from ..schemas import CorpusPreparationResult, DatasetBundle
 from .storage import ensure_directory, write_csv, write_json
+
+
+def _verbose(message: str) -> None:
+    if os.environ.get("MELODIES_VERBOSE"):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] {message}", flush=True)
 
 
 def describe_execution_order(config: ExperimentConfig) -> list[str]:
@@ -178,19 +185,32 @@ def run_small_transformer_experiment(
     effective_config = config if transformer_override is None else replace(config, transformer=transformer_override)
     total_start = time.perf_counter()
     preprocessing_start = time.perf_counter()
+    _verbose(f"Starting corpus preprocessing: root={effective_config.corpus.root_dir}, max_files={max_files}")
     preparation = prepare_corpus(effective_config, max_files=max_files)
     preprocessing_wall_clock_s = time.perf_counter() - preprocessing_start
+    _verbose(
+        "Finished corpus preprocessing: "
+        f"pieces={len(preparation.pieces)}, exclusions={len(preparation.exclusions)}, "
+        f"seconds={preprocessing_wall_clock_s:.2f}"
+    )
     preparation_issues = validate_prepared_pieces(preparation.pieces)
     if preparation_issues:
         raise ValueError(f"Prepared corpus validation failed: {preparation_issues}")
 
     dataset_start = time.perf_counter()
+    _verbose(f"Building datasets and windows: limits={max_windows_per_split}")
     bundle, datasets = _split_datasets(
         preparation=preparation,
         config=effective_config,
         max_windows_per_split=max_windows_per_split,
     )
     dataset_wall_clock_s = time.perf_counter() - dataset_start
+    _verbose(
+        "Finished datasets: "
+        f"train_windows={bundle.train_dataset_size}, "
+        f"validation_windows={bundle.validation_dataset_size}, "
+        f"test_windows={bundle.test_dataset_size}, seconds={dataset_wall_clock_s:.2f}"
+    )
     dataset_issues = validate_dataset_bundle(bundle)
     if dataset_issues:
         raise ValueError(f"Dataset bundle validation failed: {dataset_issues}")
@@ -222,6 +242,7 @@ def run_small_transformer_experiment(
         lr_scheduler_patience=effective_config.transformer.lr_scheduler_patience,
         min_learning_rate=effective_config.transformer.min_learning_rate,
         tie_input_output_embeddings=effective_config.transformer.tie_input_output_embeddings,
+        attention_implementation=effective_config.transformer.attention_implementation,
         use_relative_position_bias=effective_config.transformer.use_relative_position_bias,
         relative_attention_num_buckets=effective_config.transformer.relative_attention_num_buckets,
         relative_attention_max_distance=effective_config.transformer.relative_attention_max_distance,
@@ -246,12 +267,16 @@ def run_small_transformer_experiment(
     )
 
     fit_start = time.perf_counter()
+    _verbose("Starting transformer fit")
     fit_result = model.fit(dataloaders["train"], dataloaders["validation"])
     fit_wall_clock_s = time.perf_counter() - fit_start
+    _verbose(f"Finished transformer fit: seconds={fit_wall_clock_s:.2f}")
     eval_start = time.perf_counter()
+    _verbose("Starting validation/test evaluation")
     validation_summary = model.evaluate(dataloaders["validation"])
     test_summary = model.evaluate(dataloaders["test"])
     eval_wall_clock_s = time.perf_counter() - eval_start
+    _verbose(f"Finished evaluation: seconds={eval_wall_clock_s:.2f}")
     prompts = _build_generation_prompts(bundle, effective_config)
     generated_continuations = []
     for prompt_index, prompt in enumerate(prompts, start=1):

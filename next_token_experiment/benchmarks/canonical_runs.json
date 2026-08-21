@@ -49,7 +49,7 @@
     "expected_budget_class": "smoke",
     "run_name": "research_richer_events_smoke",
     "representation": "event_pitch_duration_metrical",
-    "context_length": 256,
+    "context_length": 128,
     "max_files": 8,
     "max_windows": {
       "train": 64,
@@ -104,5 +104,227 @@
       "Main research comparison run against the CPU baseline.",
       "Used to assess whether richer representation and longer context earn their cost."
     ]
+  },
+  {
+    "run_id": "research_pitch_duration_smoke",
+    "profile": "research_richer_events",
+    "purpose": "Quick ablation to test whether richer metrical events beat a simpler pitch-duration representation.",
+    "comparison_group": "representation_ablation",
+    "expected_budget_class": "smoke",
+    "run_name": "research_pitch_duration_smoke",
+    "representation": "pitch_class_duration",
+    "context_length": 128,
+    "max_files": 8,
+    "max_windows": {
+      "train": 64,
+      "validation": 16,
+      "test": 16
+    },
+    "seed": 7,
+    "notes": [
+      "Controls model size while simplifying the musical representation.",
+      "Disables rests because the pitch_class_duration vocabulary does not encode them."
+    ],
+    "config_overrides": {
+      "preprocessing": {
+        "include_rests": false
+      },
+      "representation": {
+        "primary": "pitch_class_duration",
+        "alternative": "pitch_class"
+      },
+      "hardware": {
+        "dataloader_workers": 0,
+        "pin_memory": false,
+        "precision": "fp32"
+      },
+      "windows": {
+        "max_context_length": 128,
+        "min_window_length": 32,
+        "train_stride": 64,
+        "eval_stride": 128
+      },
+      "transformer": {
+        "max_epochs": 4,
+        "early_stopping_patience": 2,
+        "batch_size": 16,
+        "gradient_accumulation_steps": 1,
+        "generation_num_prompts": 2,
+        "generation_prompt_length": 16,
+        "generation_max_new_tokens": 16
+      }
+    }
+  },
+  {
+    "run_id": "research_pitch_duration_full",
+    "profile": "research_richer_events",
+    "purpose": "Full ablation of richer events versus pitch-duration tokens under the research model budget.",
+    "comparison_group": "representation_ablation",
+    "expected_budget_class": "full",
+    "run_name": "research_pitch_duration_full",
+    "representation": "pitch_class_duration",
+    "context_length": 256,
+    "max_files": 64,
+    "max_windows": {
+      "train": 1024,
+      "validation": 256,
+      "test": 256
+    },
+    "seed": 7,
+    "notes": [
+      "Representation ablation against event_pitch_duration_metrical.",
+      "Keeps research-scale decoder and relative bias while simplifying tokens."
+    ],
+    "config_overrides": {
+      "preprocessing": {
+        "include_rests": false
+      },
+      "representation": {
+        "primary": "pitch_class_duration",
+        "alternative": "pitch_class"
+      }
+    }
+  },
+  {
+    "run_id": "research_richer_events_absolute_smoke",
+    "profile": "research_richer_events",
+    "purpose": "Quick ablation of absolute versus relative positional treatment under richer events.",
+    "comparison_group": "position_ablation",
+    "expected_budget_class": "smoke",
+    "run_name": "research_richer_events_absolute_smoke",
+    "representation": "event_pitch_duration_metrical",
+    "context_length": 128,
+    "max_files": 8,
+    "max_windows": {
+      "train": 64,
+      "validation": 16,
+      "test": 16
+    },
+    "seed": 7,
+    "notes": [
+      "Position ablation for smoke validation.",
+      "Turns off relative position bias while preserving the richer-event vocabulary."
+    ],
+    "config_overrides": {
+      "hardware": {
+        "dataloader_workers": 0,
+        "pin_memory": false,
+        "precision": "fp32"
+      },
+      "windows": {
+        "max_context_length": 128,
+        "min_window_length": 32,
+        "train_stride": 64,
+        "eval_stride": 128
+      },
+      "transformer": {
+        "use_relative_position_bias": false,
+        "max_epochs": 4,
+        "early_stopping_patience": 2,
+        "batch_size": 16,
+        "gradient_accumulation_steps": 1,
+        "generation_num_prompts": 2,
+        "generation_prompt_length": 16,
+        "generation_max_new_tokens": 16
+      }
+    }
+  },
+  {
+    "run_id": "research_richer_events_absolute_full",
+    "profile": "research_richer_events",
+    "purpose": "Full ablation of absolute versus relative positional treatment under richer events.",
+    "comparison_group": "position_ablation",
+    "expected_budget_class": "full",
+    "run_name": "research_richer_events_absolute_full",
+    "representation": "event_pitch_duration_metrical",
+    "context_length": 256,
+    "max_files": 64,
+    "max_windows": {
+      "train": 1024,
+      "validation": 256,
+      "test": 256
+    },
+    "seed": 7,
+    "notes": [
+      "Direct position-bias ablation against the main research run.",
+      "Preserves representation and budget while disabling relative buckets."
+    ],
+    "config_overrides": {
+      "transformer": {
+        "use_relative_position_bias": false
+      }
+    }
+  },
+  {
+    "run_id": "research_richer_events_context128_smoke",
+    "profile": "research_richer_events",
+    "purpose": "Quick ablation of shorter context under the richer-event research track.",
+    "comparison_group": "context_ablation",
+    "expected_budget_class": "smoke",
+    "run_name": "research_richer_events_context128_smoke",
+    "representation": "event_pitch_duration_metrical",
+    "context_length": 128,
+    "max_files": 8,
+    "max_windows": {
+      "train": 64,
+      "validation": 16,
+      "test": 16
+    },
+    "seed": 7,
+    "notes": [
+      "Context-length ablation for smoke validation.",
+      "Matches research representation and relative bias with a shorter window."
+    ],
+    "config_overrides": {
+      "hardware": {
+        "dataloader_workers": 0,
+        "pin_memory": false,
+        "precision": "fp32"
+      },
+      "windows": {
+        "max_context_length": 128,
+        "min_window_length": 32,
+        "train_stride": 64,
+        "eval_stride": 128
+      },
+      "transformer": {
+        "max_epochs": 4,
+        "early_stopping_patience": 2,
+        "batch_size": 16,
+        "gradient_accumulation_steps": 1,
+        "generation_num_prompts": 2,
+        "generation_prompt_length": 16,
+        "generation_max_new_tokens": 16
+      }
+    }
+  },
+  {
+    "run_id": "research_richer_events_context128_full",
+    "profile": "research_richer_events",
+    "purpose": "Full ablation of 128-token versus 256-token context under richer events.",
+    "comparison_group": "context_ablation",
+    "expected_budget_class": "full",
+    "run_name": "research_richer_events_context128_full",
+    "representation": "event_pitch_duration_metrical",
+    "context_length": 128,
+    "max_files": 64,
+    "max_windows": {
+      "train": 1024,
+      "validation": 256,
+      "test": 256
+    },
+    "seed": 7,
+    "notes": [
+      "Shorter-context reference for context-length comparison.",
+      "Used against research_richer_events_full to justify 256-token context."
+    ],
+    "config_overrides": {
+      "windows": {
+        "max_context_length": 128,
+        "min_window_length": 32,
+        "train_stride": 64,
+        "eval_stride": 128
+      }
+    }
   }
 ]

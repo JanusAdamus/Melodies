@@ -16,6 +16,22 @@ La idea es evitar un error comun: crecer el transformer sin mejorar antes la rep
 - Guardar todas las decisiones metodologicas como artefactos reproducibles.
 - Distinguir claramente resultados de tesis y resultados exploratorios.
 
+## Decisiones Arquitectonicas Seleccionadas
+
+- mantener `decoder-only` en esta fase para preservar comparabilidad con la tarea de next-token prediction;
+- fijar `cpu_baseline` con atencion `eager` como referencia historica estable;
+- consolidar `research_richer_events` con `event_pitch_duration_metrical` y `rests`;
+- tratar `relative position bias` como mejora estructural principal para musica simbolica;
+- estudiar `128` y `256` tokens de contexto antes de abrir la puerta a `512`;
+- usar una ruta opcional `auto` basada en `torch.scaled_dot_product_attention` para GPU cuando el entorno lo permita, con fallback limpio al path `eager`.
+
+## Opciones Descartadas en Esta Fase
+
+- no introducir `MoE`, `DeepSeek-style`, `Mamba`, `Linformer`, `Performer` ni `Nyströmformer`;
+- no meter optimizaciones de serving o KV cache como `PagedAttention` o `SnapKV`;
+- no pasar todavia a `encoder-only` ni `encoder-decoder`;
+- no convertir la tesis en un problema texto-musica o de captioning.
+
 ## Referencias Primarias que Guiaran el Track
 
 - Huang et al., *Music Transformer* (arXiv:1809.04281): muestra que la atencion relativa y el modelado de dependencias largas son especialmente relevantes para musica simbolica.  
@@ -141,6 +157,7 @@ Salida esperada:
 Estado actual:
 
 - el track `research_richer_events` ya activa sesgo posicional relativo bucketizado como primer paso practico hacia contexto largo real.
+- el track `research_richer_events` ya puede pedir una ruta de atencion `auto`, pensada para aprovechar kernels SDPA/Flash compatibles en GPU sin romper la ruta conservadora del baseline.
 
 ## Fase 6: Escala y Pretraining
 
@@ -173,6 +190,9 @@ Si se invierte ese orden, el proyecto puede crecer en parametros pero seguir sie
 ## Proximos Entregables del Repo
 
 - perfilar y comparar `cpu_baseline` vs `research_richer_events`;
+- comparar `pitch_class_duration` vs `event_pitch_duration_metrical`;
+- comparar posicion absoluta vs sesgo relativo;
+- comparar contexto `128` vs `256`;
 - agregar reportes por slice y top-k metrics;
 - introducir generacion de continuaciones cortas y reproducibles;
 - decidir si la siguiente fase exige atencion relativa.
