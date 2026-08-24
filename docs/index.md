@@ -32,6 +32,9 @@ recomendada para orientarte es corta:
 - [`transformer-benchmark-suite.md`](transformer-benchmark-suite.md)
 - [`transformer-comparison-analysis.md`](transformer-comparison-analysis.md)
 - [`artifact-policy.md`](artifact-policy.md)
+- [`superpowers/plans/2026-08-24-auditoria-comparacion-final.md`](superpowers/plans/2026-08-24-auditoria-comparacion-final.md):
+  plan ejecutable para recuperar artefactos, auditar denominadores y ejecutar
+  las sensibilidades pendientes en la computadora principal.
 
 ## Baselines
 
