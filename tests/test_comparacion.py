@@ -681,7 +681,18 @@ class ComparisonRunnerTests(unittest.TestCase):
             protocol_audit = json.loads((output_root / "protocol_audit.json").read_text(encoding="utf-8"))
             self.assertEqual(protocol_audit["status"], "passed")
             self.assertTrue(protocol_audit["evidence"])
-            self.assertTrue(all(item["expected_event_indices"] == item["scored_event_indices"] for item in protocol_audit["evidence"]))
+            # En el camino exitoso el audit guarda contadores, no las listas de indices:
+            # expected y scored serian ambos list(range(n)) para cada pieza.
+            self.assertTrue(all(item["status"] == "passed" for item in protocol_audit["evidence"]))
+            self.assertTrue(
+                all(
+                    item["expected_count"] == item["scored_count"]
+                    and not item["count_mismatch"]
+                    and not item["order_mismatch"]
+                    for item in protocol_audit["evidence"]
+                )
+            )
+            self.assertTrue(all("scored_event_indices" not in item for item in protocol_audit["evidence"]))
             pairwise = json.loads((output_root / "pairwise_comparisons.json").read_text(encoding="utf-8"))
             self.assertEqual(pairwise["models"], ["finite_hmm", "hdp_hmm", "transformer", "vomm"])
             self.assertEqual(pairwise["n_comparisons"], 6)
@@ -715,6 +726,70 @@ class ComparisonRunnerTests(unittest.TestCase):
             prepare_corpus.assert_not_called()
             finite_constructor.assert_not_called()
             self.assertEqual((existing / "results_raw.csv").read_text(encoding="utf-8"), "stale")
+
+    def test_resume_skips_completed_cells_and_reproduces_the_full_run(self) -> None:
+        """An interrupted run must finish to the same numbers, refitting only what is missing."""
+
+        timing_columns = {
+            "train_time_sec",
+            "fit_wall_clock_s",
+            "evaluation_wall_clock_s",
+        }
+
+        def stable_rows(path: Path) -> list[dict[str, str]]:
+            with path.open(newline="", encoding="utf-8") as handle:
+                return [
+                    {key: value for key, value in row.items() if key not in timing_columns}
+                    for row in csv.DictReader(handle)
+                ]
+
+        def run(directory: str, name: str, *, resume: bool) -> MagicMock:
+            config = replace(
+                _runner_config(directory),
+                train_fractions=(0.5, 1.0),
+                data_seeds=(11, 12),
+            )
+            mocks = _standard_model_mocks()
+            with (
+                patch("Comparacion.runner.prepare_corpus", return_value=_synthetic_preparation()),
+                patch("Comparacion.runner.FiniteGlobalHMM", return_value=mocks["finite"]) as finite,
+                patch("Comparacion.runner.GlobalHDPHMM", return_value=mocks["hdp"]),
+                patch("Comparacion.runner.SmallTransformerNextTokenModel", return_value=mocks["transformer"]),
+                patch(
+                    "Comparacion.runner._build_transformer_dataloaders",
+                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces: {
+                        "train": train_pieces,
+                        "validation": validation_pieces,
+                        "test": test_pieces,
+                    },
+                ),
+                patch("Comparacion.runner.select_vomm_by_validation", return_value=mocks["vomm"]),
+            ):
+                run_learning_curve_experiment(config, run_name=name, max_files=12, resume=resume)
+            return finite
+
+        with tempfile.TemporaryDirectory() as reference_directory:
+            run(reference_directory, "full", resume=False)
+            expected = stable_rows(Path(reference_directory) / "full" / "results_raw.csv")
+
+        with tempfile.TemporaryDirectory() as interrupted_directory:
+            finite = run(interrupted_directory, "partial", resume=False)
+            self.assertEqual(finite.call_count, 4, "expected one fit per (data_seed, fraction)")
+
+            output_root = Path(interrupted_directory) / "partial"
+            checkpoint = output_root / "checkpoint.jsonl"
+            lines = checkpoint.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 4)
+
+            # Simulate a crash after two cells, mid-write on the third.
+            checkpoint.write_text("\n".join(lines[:2]) + "\n" + lines[2][:40], encoding="utf-8")
+            (output_root / "results_raw.csv").unlink()
+
+            resumed_finite = run(interrupted_directory, "partial", resume=True)
+
+            # Two cells came back from the checkpoint; the truncated third is refit.
+            self.assertEqual(resumed_finite.call_count, 2)
+            self.assertEqual(stable_rows(output_root / "results_raw.csv"), expected)
 
     def test_vomm_control_is_scored_once_across_model_seeds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

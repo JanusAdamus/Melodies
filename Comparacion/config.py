@@ -29,7 +29,10 @@ class LearningCurveConfig:
     finite_hmm_states: tuple[int, ...] = (12, 24, 48)
     finite_hmm_max_iterations: int = 100
     finite_hmm_tolerance: float = 1e-4
-    hdp_truncation_level: int = 40
+    # Truncacion de limite debil (Ishwaran & James 2001). El piloto ocupa 9-15 estados sea
+    # cual sea K, asi que 24 deja mas del doble de holgura, y bajarlo desde 40 da 1.2x.
+    # Ver docs/sources-and-methods.md, seccion 3.5.
+    hdp_truncation_level: int = 24
     hdp_n_iters: int = 120
     hdp_burn_in: int = 60
     hdp_hyperparameter_grid: tuple[tuple[float, float, float], ...] = (

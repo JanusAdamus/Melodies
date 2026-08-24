@@ -8,7 +8,12 @@ import math
 from numbers import Integral
 from pathlib import Path
 from statistics import mean, pstdev
+import sys
 import time
+
+import matplotlib
+
+matplotlib.use("Agg")  # El runner solo escribe PNG; sin esto Tk falla en headless.
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -65,6 +70,55 @@ def _json_safe(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
     return value
+
+
+_CHECKPOINT_ROW_KEYS = (
+    "raw_rows",
+    "piece_metric_rows",
+    "protocol_evidence",
+    "structural_predictions",
+)
+
+
+def _load_checkpoint(path: Path) -> tuple[set[str], dict[str, list[dict[str, object]]]]:
+    """Rehidrata las filas que dejo una corrida interrumpida.
+
+    La unidad es una celda (data_seed, fraction): al reanudar se saltan las celdas ya
+    completas en vez de reajustar sus modelos. Una linea truncada por una muerte a mitad
+    de escritura se descarta, y esa celda se recalcula.
+    """
+
+    completed: set[str] = set()
+    rows: dict[str, list[dict[str, object]]] = {key: [] for key in _CHECKPOINT_ROW_KEYS}
+    if not path.exists():
+        return completed, rows
+
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            print(
+                f"[runner] checkpoint: descarto la linea {number}, incompleta; "
+                "esa celda se recalcula",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
+        completed.add(str(payload["cell"]))
+        for key in _CHECKPOINT_ROW_KEYS:
+            rows[key].extend(payload.get(key, []))
+    return completed, rows
+
+
+def _append_checkpoint(path: Path, cell: str, rows: Mapping[str, list[dict[str, object]]]) -> None:
+    """Persiste una celda terminada. Append, nunca reescritura del archivo entero."""
+
+    payload = {"cell": cell, **{key: _json_safe(rows[key]) for key in _CHECKPOINT_ROW_KEYS}}
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, allow_nan=False) + "\n")
+        handle.flush()
 
 
 def _write_json(path: str | Path, payload: Mapping[str, object]) -> None:
@@ -513,36 +567,54 @@ def _append_protocol_evidence(
             or order_mismatch
         )
         failed = failed or item_failed
-        evidence.append(
-            {
-                "model": model_name,
-                "frac": fraction,
-                "data_seed": data_seed,
-                "model_seed": model_seed,
-                "piece_id": piece.piece_id,
-                "canonical_work_id": piece.canonical_work_id,
-                "status": "failed" if item_failed else "passed",
-                "expected_count": len(expected),
-                "scored_count": len(scored),
-                "expected_event_indices": expected,
-                "scored_event_indices": scored,
-                "duplicate_event_indices": duplicates,
-                "omitted_event_indices": omissions,
-                "out_of_range_event_indices": out_of_range,
-                "invalid_event_indices": invalid_values,
-                "count_mismatch": count_mismatch,
-                "order_mismatch": order_mismatch,
-            }
-        )
+        entry: dict[str, object] = {
+            "model": model_name,
+            "frac": fraction,
+            "data_seed": data_seed,
+            "model_seed": model_seed,
+            "piece_id": piece.piece_id,
+            "canonical_work_id": piece.canonical_work_id,
+            "status": "failed" if item_failed else "passed",
+            "expected_count": len(expected),
+            "scored_count": len(scored),
+            "count_mismatch": count_mismatch,
+            "order_mismatch": order_mismatch,
+        }
+        if item_failed:
+            # Los indices solo informan cuando algo fallo. En una corrida que pasa,
+            # expected y scored son ambos list(range(n)): identicos y sin informacion.
+            entry.update(
+                {
+                    "expected_event_indices": expected,
+                    "scored_event_indices": scored,
+                    "duplicate_event_indices": duplicates,
+                    "omitted_event_indices": omissions,
+                    "out_of_range_event_indices": out_of_range,
+                    "invalid_event_indices": invalid_values,
+                }
+            )
+        evidence.append(entry)
 
-    payload = {
-        "status": "failed" if failed else "passed",
-        "policy": "every musical test event must be exposed by model evaluation exactly once",
-        "unexpected_piece_ids": unexpected_piece_ids,
-        "evidence": evidence,
-    }
-    _write_json(output_path, payload)
+    print(
+        f"[runner] {model_name} frac={fraction} data_seed={data_seed} "
+        f"model_seed={model_seed} done ({len(evaluated_pieces)} test pieces)",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    # El audit completo se escribe una sola vez al cerrar la corrida. Escribirlo aqui en
+    # cada bloque reescribia una lista que crece, con costo cuadratico. Solo se adelanta
+    # la escritura cuando algo fallo, para que el diagnostico sobreviva a la excepcion.
     if failed:
+        _write_json(
+            output_path,
+            {
+                "status": "failed",
+                "policy": "every musical test event must be exposed by model evaluation exactly once",
+                "unexpected_piece_ids": unexpected_piece_ids,
+                "evidence": evidence,
+            },
+        )
         raise ValueError(f"protocol coverage violation for model {model_name}")
 
 
@@ -837,11 +909,22 @@ def run_learning_curve_experiment(
     run_name: str = "learning_curve",
     max_files: int | None = None,
     plan_only: bool = False,
+    n_workers: int | None = None,
+    corpus_cache_path: str | Path | None = None,
+    corpus_sample_seed: int | None = None,
+    resume: bool = False,
 ) -> dict[str, object]:
     run_directory = Path(config.results_root) / run_name
-    _guard_fresh_run_directory(run_directory)
+    if not resume:
+        _guard_fresh_run_directory(run_directory)
     output_root = ensure_directory(run_directory)
-    preparation = prepare_corpus(config.experiment, max_files=max_files)
+    preparation = prepare_corpus(
+        config.experiment,
+        max_files=max_files,
+        n_workers=n_workers,
+        cache_path=corpus_cache_path,
+        sample_seed=corpus_sample_seed,
+    )
     fixed_splits = _build_grouped_fixed_splits(
         preparation.pieces,
         test_fraction=config.test_fraction,
@@ -888,14 +971,33 @@ def run_learning_curve_experiment(
         for piece in fixed_splits.test_pieces
     }
 
-    raw_rows: list[dict[str, object]] = []
-    piece_metric_rows: list[dict[str, object]] = []
-    protocol_evidence: list[dict[str, object]] = []
-    structural_predictions: list[dict[str, object]] = []
+    checkpoint_path = output_root / "checkpoint.jsonl"
+    completed_cells, restored = _load_checkpoint(checkpoint_path) if resume else (set(), None)
+    raw_rows: list[dict[str, object]] = list(restored["raw_rows"]) if restored else []
+    piece_metric_rows: list[dict[str, object]] = list(restored["piece_metric_rows"]) if restored else []
+    protocol_evidence: list[dict[str, object]] = list(restored["protocol_evidence"]) if restored else []
+    structural_predictions: list[dict[str, object]] = list(restored["structural_predictions"]) if restored else []
     protocol_path = output_root / "protocol_audit.json"
+
+    total_cells = sum(len(subsets) for subsets in nested_by_seed.values())
+    if completed_cells:
+        print(
+            f"[runner] reanudando: {len(completed_cells)} de {total_cells} celdas ya hechas",
+            file=sys.stderr,
+            flush=True,
+        )
 
     for data_seed, nested_subsets in sorted(nested_by_seed.items()):
         for fraction, train_pieces in nested_subsets:
+            cell = f"data_seed={data_seed},frac={fraction}"
+            if cell in completed_cells:
+                continue
+            marks = {
+                "raw_rows": len(raw_rows),
+                "piece_metric_rows": len(piece_metric_rows),
+                "protocol_evidence": len(protocol_evidence),
+                "structural_predictions": len(structural_predictions),
+            }
             n_train_tokens = sum(len(piece.tokens) for piece in train_pieces)
             n_train_pieces = len(train_pieces)
 
@@ -1182,6 +1284,25 @@ def run_learning_curve_experiment(
                         fixed_splits.test_pieces,
                     )
                 )
+
+            _append_checkpoint(
+                checkpoint_path,
+                cell,
+                {
+                    "raw_rows": raw_rows[marks["raw_rows"] :],
+                    "piece_metric_rows": piece_metric_rows[marks["piece_metric_rows"] :],
+                    "protocol_evidence": protocol_evidence[marks["protocol_evidence"] :],
+                    "structural_predictions": structural_predictions[
+                        marks["structural_predictions"] :
+                    ],
+                },
+            )
+            completed_cells.add(cell)
+            print(
+                f"[runner] celda {cell} lista ({len(completed_cells)}/{total_cells})",
+                file=sys.stderr,
+                flush=True,
+            )
 
     summary_rows = _aggregate_summary(raw_rows)
     write_csv(output_root / "results_raw.csv", raw_rows)

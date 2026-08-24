@@ -19,6 +19,13 @@ recomendada para orientarte es corta:
 - [`project-structure.md`](project-structure.md)
 - [`experiments.md`](experiments.md)
 - [`multidimensional-evaluation.md`](multidimensional-evaluation.md)
+- [`computational-complexity.md`](computational-complexity.md): costo del pipeline,
+  medidas de escalado y tamano de corpus viable.
+- [`resultados-comparacion-3000.md`](resultados-comparacion-3000.md): reporte de la
+  corrida sobre 3000 obras, con limites de lo que se puede afirmar.
+- [`sources-and-methods.md`](sources-and-methods.md): trazabilidad de cada cambio
+  algoritmico a su fuente, metodos descartados con su medicion, y la bibliografia
+  unica del proyecto en su seccion 4.
 - [`transformer.md`](transformer.md)
 - [`transformer-roadmap.md`](transformer-roadmap.md)
 - [`codex-multiagent-transformer-benchmark-prompt.md`](codex-multiagent-transformer-benchmark-prompt.md)

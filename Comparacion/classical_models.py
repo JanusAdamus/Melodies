@@ -10,7 +10,8 @@ from next_token_experiment.data.dataset import build_evaluation_slices
 from next_token_experiment.schemas import PreparedPiece
 from src.data.observations import PITCH_CLASS_NAMES, ObservationSequence
 from src.models.hdp_hmm import TruncatedHDPHMM
-from src.models.inference import forward_log_likelihood
+from src.models.inference import scaled_forward_log_likelihood
+from src.models.utils import length_buckets
 
 EPSILON = 1e-12
 BOS_TOKEN = "<BOS>"
@@ -47,16 +48,15 @@ def conditional_log_likelihood(
 ) -> float:
     """Score targets conditioned on a context token without scoring the context."""
 
-    context = np.array([context_token], dtype=int)
-    context_log_likelihood, _ = forward_log_likelihood(
+    if not target_tokens:
+        return 0.0
+    context_log_likelihood = scaled_forward_log_likelihood(
         initial_probs=initial_probs,
         transition_matrix=transition_matrix,
         emission_matrix=emission_matrix,
-        observations=context,
+        observations=np.array([context_token], dtype=int),
     )
-    if not target_tokens:
-        return 0.0
-    joint_log_likelihood, _ = forward_log_likelihood(
+    joint_log_likelihood = scaled_forward_log_likelihood(
         initial_probs=initial_probs,
         transition_matrix=transition_matrix,
         emission_matrix=emission_matrix,
@@ -65,24 +65,70 @@ def conditional_log_likelihood(
     return float(joint_log_likelihood - context_log_likelihood)
 
 
-def _backward_log_probs(transition_matrix: np.ndarray, emission_log_probs: np.ndarray) -> np.ndarray:
-    n_states, n_steps = emission_log_probs.shape
-    beta = np.zeros((n_steps, n_states), dtype=float)
-    log_transition = np.log(transition_matrix + EPSILON)
-    for step in range(n_steps - 2, -1, -1):
-        scores = log_transition + emission_log_probs[:, step + 1][None, :] + beta[step + 1][None, :]
-        beta[step] = _logsumexp(scores, axis=1)
-    return beta
+def _pad_sequences(sequences: list[np.ndarray]) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Lotes rectangulares (padded, lengths) agrupados por longitud."""
+
+    return [(padded, lengths) for _, padded, lengths in length_buckets(sequences)]
 
 
-def _logsumexp(values: np.ndarray, axis: int | None = None) -> np.ndarray:
-    max_values = np.max(values, axis=axis, keepdims=True)
-    stable = np.exp(values - max_values)
-    summed = np.sum(stable, axis=axis, keepdims=True)
-    result = max_values + np.log(np.maximum(summed, EPSILON))
-    if axis is None:
-        return result.reshape(())
-    return np.squeeze(result, axis=axis)
+def _expectation_batch(
+    initial_probs: np.ndarray,
+    transition_matrix: np.ndarray,
+    emission_matrix: np.ndarray,
+    padded: np.ndarray,
+    lengths: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Paso E de Baum-Welch con reescalado (Rabiner) sobre un lote de secuencias.
+
+    Equivale al recorrido por secuencia en dominio logaritmico, pero cada paso temporal
+    es un producto matricial en vez de un logsumexp sobre un bloque K*K.
+    """
+
+    n_sequences, max_steps = padded.shape
+    n_states = transition_matrix.shape[0]
+    live = np.arange(max_steps)[None, :] < lengths[:, None]
+
+    emission = emission_matrix[:, padded].transpose(1, 0, 2)  # (B, K, T)
+
+    alpha = np.zeros((n_sequences, max_steps, n_states), dtype=float)
+    scale = np.ones((n_sequences, max_steps), dtype=float)
+
+    current = initial_probs[None, :] * emission[:, :, 0]
+    scale[:, 0] = np.maximum(current.sum(axis=1), EPSILON)
+    current = current / scale[:, 0][:, None]
+    alpha[:, 0] = current
+    for step in range(1, max_steps):
+        moved = (current @ transition_matrix) * emission[:, :, step]
+        step_scale = np.maximum(moved.sum(axis=1), EPSILON)
+        moved = moved / step_scale[:, None]
+        mask = live[:, step]
+        current = np.where(mask[:, None], moved, current)
+        scale[:, step] = np.where(mask, step_scale, 1.0)
+        alpha[:, step] = current
+
+    log_likelihood = float(np.sum(np.log(scale)))
+
+    beta = np.ones((n_sequences, max_steps, n_states), dtype=float)
+    for step in range(max_steps - 2, -1, -1):
+        nxt = live[:, step + 1]
+        weighted = emission[:, :, step + 1] * beta[:, step + 1] / scale[:, step + 1][:, None]
+        beta[:, step] = np.where(nxt[:, None], weighted @ transition_matrix.T, 1.0)
+
+    gamma = alpha * beta * live[:, :, None]
+
+    initial_counts = gamma[:, 0].sum(axis=0)
+
+    emission_counts = np.zeros((emission_matrix.shape[1], n_states), dtype=float)
+    np.add.at(emission_counts, padded[live], gamma[live])
+
+    # xi[t] = alpha[t] (x) (B[:, y_{t+1}] * beta[t+1] / c[t+1]), sumado sobre t, por A.
+    tail = live[:, 1:]
+    left = alpha[:, :-1] * tail[:, :, None]
+    right = (emission[:, :, 1:].transpose(0, 2, 1) * beta[:, 1:]
+             / scale[:, 1:][:, :, None]) * tail[:, :, None]
+    transition_counts = transition_matrix * np.einsum("bti,btj->ij", left, right)
+
+    return initial_counts, transition_counts, emission_counts.T, log_likelihood
 
 
 def _piece_metrics_from_log_likelihood(
@@ -184,7 +230,11 @@ class FiniteGlobalHMM:
         max_context_length: int,
         rng: np.random.Generator,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, list[dict[str, float | int]]]:
-        sequences = [_augment_piece_tokens(piece, bos_token_id) for piece in train_pieces]
+        sequences = [
+            np.asarray(_augment_piece_tokens(piece, bos_token_id), dtype=int)
+            for piece in train_pieces
+        ]
+        batches = _pad_sequences(sequences)
         initial_probs, transition_matrix, emission_matrix = self._initialize_parameters(n_states, rng)
         best_validation_nll = math.inf
         best_params = (initial_probs.copy(), transition_matrix.copy(), emission_matrix.copy())
@@ -196,35 +246,16 @@ class FiniteGlobalHMM:
             emission_counts = np.full((n_states, self.vocab_size), 1e-3, dtype=float)
             train_log_likelihood = 0.0
 
-            log_transition = np.log(transition_matrix + EPSILON)
-            log_emission = np.log(emission_matrix + EPSILON)
-            log_initial = np.log(initial_probs + EPSILON)
-
-            for tokens in sequences:
-                observations = np.array(tokens, dtype=int)
-                emission_log_probs = log_emission[:, observations]
-                alpha = np.full((len(observations), n_states), -np.inf, dtype=float)
-                alpha[0] = log_initial + emission_log_probs[:, 0]
-                for step in range(1, len(observations)):
-                    scores = alpha[step - 1][:, None] + log_transition
-                    alpha[step] = emission_log_probs[:, step] + _logsumexp(scores, axis=0)
-                log_likelihood = float(_logsumexp(alpha[-1], axis=0))
-                beta = _backward_log_probs(transition_matrix, emission_log_probs)
-                gamma = np.exp(alpha + beta - log_likelihood)
-                train_log_likelihood += log_likelihood
-
-                initial_counts += gamma[0]
-                for step, token in enumerate(observations):
-                    emission_counts[:, int(token)] += gamma[step]
-                for step in range(len(observations) - 1):
-                    scores = (
-                        alpha[step][:, None]
-                        + log_transition
-                        + emission_log_probs[:, step + 1][None, :]
-                        + beta[step + 1][None, :]
-                        - log_likelihood
+            for padded, lengths in batches:
+                batch_initial, batch_transition, batch_emission, batch_log_likelihood = (
+                    _expectation_batch(
+                        initial_probs, transition_matrix, emission_matrix, padded, lengths
                     )
-                    transition_counts += np.exp(scores)
+                )
+                initial_counts += batch_initial
+                transition_counts += batch_transition
+                emission_counts += batch_emission
+                train_log_likelihood += batch_log_likelihood
 
             initial_probs = initial_counts / np.maximum(initial_counts.sum(), EPSILON)
             transition_matrix = _normalize_rows(transition_counts)

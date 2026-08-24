@@ -7,11 +7,12 @@ import pandas as pd
 
 from src.data.observations import ObservationSequence
 
-from .inference import ffbs_sample
+from .inference import ffbs_sample_batch
 from .utils import (
     EPSILON,
     contiguous_segments,
     count_emissions,
+    count_transitions,
     dirichlet_logpdf,
     normalize,
     sample_truncated_stick_breaking,
@@ -34,8 +35,7 @@ def _count_segmented_transitions(
 ) -> np.ndarray:
     counts = np.zeros((n_states, n_states), dtype=int)
     for states in state_sequences:
-        for left, right in zip(states[:-1], states[1:]):
-            counts[int(left), int(right)] += 1
+        counts += count_transitions(states, n_states)
     return counts
 
 
@@ -314,21 +314,17 @@ class TruncatedHDPHMM:
             initial_probs = self._sample_initial(state_sequences, beta)
             beta, beta_update_mode = self._update_beta(beta, transition_matrix, initial_probs, states)
 
-            sampled = [
-                ffbs_sample(
-                    initial_probs=initial_probs,
-                    transition_matrix=transition_matrix,
-                    emission_matrix=emission_matrix,
-                    observations=item,
-                    rng=self.rng,
-                )
-                for item in sequences
-            ]
-            state_sequences = [item[0] for item in sampled]
+            state_sequences, sequence_log_likelihoods = ffbs_sample_batch(
+                initial_probs=initial_probs,
+                transition_matrix=transition_matrix,
+                emission_matrix=emission_matrix,
+                sequences=sequences,
+                rng=self.rng,
+            )
             states = np.concatenate(state_sequences)
-            log_likelihood = float(sum(item[1] for item in sampled))
+            log_likelihood = float(sequence_log_likelihoods.sum())
 
-            active_states = len(set(int(state) for state in states))
+            active_states = int(np.unique(states).size)
             beta_entropy = -float(np.sum(beta * np.log(beta + EPSILON)))
 
             log_likelihood_history.append(log_likelihood)
