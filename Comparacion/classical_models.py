@@ -156,6 +156,14 @@ class FiniteHMMFitResult:
     validation_nll: float
     train_log: list[dict[str, float | int]]
     train_wall_clock_s: float
+    #: Tiempo de toda la búsqueda de capacidad, incluidos los candidatos descartados.
+    selection_wall_clock_s: float = 0.0
+    #: Tiempo de EM del candidato que quedó seleccionado, sin su validación.
+    selected_fit_wall_clock_s: float = 0.0
+    #: Tiempo de puntuar validación dentro del candidato seleccionado.
+    selected_validation_wall_clock_s: float = 0.0
+    #: Una entrada por candidato: costo y NLL de validación.
+    candidate_log: tuple[dict[str, float | int], ...] = ()
 
 
 class FiniteGlobalHMM:
@@ -229,7 +237,9 @@ class FiniteGlobalHMM:
         bos_token_id: int,
         max_context_length: int,
         rng: np.random.Generator,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, list[dict[str, float | int]]]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, list[dict[str, float | int]], dict[str, float]]:
+        fit_wall_clock_s = 0.0
+        validation_wall_clock_s = 0.0
         sequences = [
             np.asarray(_augment_piece_tokens(piece, bos_token_id), dtype=int)
             for piece in train_pieces
@@ -241,6 +251,7 @@ class FiniteGlobalHMM:
         train_log: list[dict[str, float | int]] = []
 
         for iteration in range(1, self.max_iterations + 1):
+            iteration_start = time.perf_counter()
             initial_counts = np.full(n_states, 1e-3, dtype=float)
             transition_counts = np.full((n_states, n_states), 1e-3, dtype=float)
             emission_counts = np.full((n_states, self.vocab_size), 1e-3, dtype=float)
@@ -264,7 +275,10 @@ class FiniteGlobalHMM:
             self.initial_probs = initial_probs
             self.transition_matrix = transition_matrix
             self.emission_matrix = emission_matrix
+            fit_wall_clock_s += time.perf_counter() - iteration_start
+            validation_start = time.perf_counter()
             validation_nll = self._evaluate_split_nll(validation_pieces, bos_token_id, max_context_length)
+            validation_wall_clock_s += time.perf_counter() - validation_start
             train_log.append(
                 {
                     "iteration": iteration,
@@ -279,7 +293,17 @@ class FiniteGlobalHMM:
             elif train_log and abs(train_log[-1]["validation_nll_per_token"] - best_validation_nll) <= self.tolerance:
                 break
 
-        return best_params[0], best_params[1], best_params[2], best_validation_nll, train_log
+        return (
+            best_params[0],
+            best_params[1],
+            best_params[2],
+            best_validation_nll,
+            train_log,
+            {
+                "fit_wall_clock_s": fit_wall_clock_s,
+                "validation_wall_clock_s": validation_wall_clock_s,
+            },
+        )
 
     def fit(
         self,
@@ -294,6 +318,8 @@ class FiniteGlobalHMM:
         best_validation_nll = math.inf
         best_log: list[dict[str, float | int]] = []
         best_candidate: tuple[int, np.ndarray, np.ndarray, np.ndarray] | None = None
+        candidate_log: list[dict[str, float | int]] = []
+        selected_timing = {"fit_wall_clock_s": 0.0, "validation_wall_clock_s": 0.0}
 
         for n_states in self.candidate_num_states:
             params = self._fit_candidate(
@@ -304,7 +330,16 @@ class FiniteGlobalHMM:
                 max_context_length=max_context_length,
                 rng=np.random.default_rng(rng.integers(0, 2**32 - 1)),
             )
-            initial_probs, transition_matrix, emission_matrix, validation_nll, train_log = params
+            initial_probs, transition_matrix, emission_matrix, validation_nll, train_log, timing = params
+            candidate_log.append(
+                {
+                    "n_states": n_states,
+                    "validation_nll_per_token": validation_nll,
+                    "fit_wall_clock_s": timing["fit_wall_clock_s"],
+                    "validation_wall_clock_s": timing["validation_wall_clock_s"],
+                    "n_iterations": len(train_log),
+                }
+            )
             if validation_nll < best_validation_nll:
                 best_validation_nll = validation_nll
                 best_candidate = (
@@ -314,16 +349,22 @@ class FiniteGlobalHMM:
                     emission_matrix.copy(),
                 )
                 best_log = train_log
+                selected_timing = timing
 
         if best_candidate is None:
             raise ValueError("Finite HMM fitting did not produce a selected state count.")
         self.selected_states, self.initial_probs, self.transition_matrix, self.emission_matrix = best_candidate
 
+        selection_wall_clock_s = time.perf_counter() - start_time
         self.fit_result = FiniteHMMFitResult(
             selected_states=self.selected_states,
             validation_nll=best_validation_nll,
             train_log=best_log,
-            train_wall_clock_s=time.perf_counter() - start_time,
+            train_wall_clock_s=selection_wall_clock_s,
+            selection_wall_clock_s=selection_wall_clock_s,
+            selected_fit_wall_clock_s=selected_timing["fit_wall_clock_s"],
+            selected_validation_wall_clock_s=selected_timing["validation_wall_clock_s"],
+            candidate_log=tuple(candidate_log),
         )
         return self.fit_result
 
@@ -372,9 +413,13 @@ class FiniteGlobalHMM:
                 "n_tokens": total_tokens,
                 "n_params": int(n_params),
                 "train_time_sec": self.fit_result.train_wall_clock_s,
+                "selection_wall_clock_s": self.fit_result.selection_wall_clock_s,
+                "selected_fit_wall_clock_s": self.fit_result.selected_fit_wall_clock_s,
+                "selected_validation_wall_clock_s": self.fit_result.selected_validation_wall_clock_s,
             },
             "piece_metrics": piece_metrics,
             "train_log": self.fit_result.train_log,
+            "candidate_log": list(self.fit_result.candidate_log),
         }
 
 
@@ -399,6 +444,9 @@ class GlobalHDPHMM:
         self.best_hyperparameters: tuple[float, float, float] | None = None
         self.validation_nll_per_token: float | None = None
         self.train_time_sec: float | None = None
+        self.selection_wall_clock_s: float | None = None
+        self.selected_fit_wall_clock_s: float | None = None
+        self.selected_validation_wall_clock_s: float | None = None
 
     def _score_piece(
         self,
@@ -474,16 +522,22 @@ class GlobalHDPHMM:
                 burn_in=self.burn_in,
                 seed=self.seed + index,
             )
+            candidate_fit_start = time.perf_counter()
             result = model.fit_sequences(train_sequences)
+            candidate_fit_wall_clock_s = time.perf_counter() - candidate_fit_start
+            candidate_validation_start = time.perf_counter()
             validation_nll = self._evaluate_validation_nll(
                 validation_pieces,
                 bos_token_id,
                 max_context_length,
                 result=result,
             )
+            candidate_validation_wall_clock_s = time.perf_counter() - candidate_validation_start
             train_log.append(
                 {
                     "candidate_index": index,
+                    "fit_wall_clock_s": candidate_fit_wall_clock_s,
+                    "validation_wall_clock_s": candidate_validation_wall_clock_s,
                     "alpha": alpha,
                     "alpha0": alpha0,
                     "gamma": gamma,
@@ -497,12 +551,18 @@ class GlobalHDPHMM:
                 self.best_hyperparameters = (alpha, alpha0, gamma)
                 self.validation_nll_per_token = validation_nll
                 self.best_result = result
+                self.selected_fit_wall_clock_s = candidate_fit_wall_clock_s
+                self.selected_validation_wall_clock_s = candidate_validation_wall_clock_s
 
         if self.best_result is None or self.best_hyperparameters is None or self.validation_nll_per_token is None:
             raise ValueError("HDP-HMM fitting did not yield a valid result.")
 
         self.train_time_sec = time.perf_counter() - start_time
+        self.selection_wall_clock_s = self.train_time_sec
         return {
+            "selection_wall_clock_s": self.selection_wall_clock_s,
+            "selected_fit_wall_clock_s": self.selected_fit_wall_clock_s,
+            "selected_validation_wall_clock_s": self.selected_validation_wall_clock_s,
             "selected_hyperparameters": {
                 "alpha": self.best_hyperparameters[0],
                 "alpha0": self.best_hyperparameters[1],
@@ -559,6 +619,9 @@ class GlobalHDPHMM:
                 "n_params": int(n_params),
                 "effective_states": int(self.best_result.effective_states),
                 "train_time_sec": self.train_time_sec,
+                "selection_wall_clock_s": self.selection_wall_clock_s,
+                "selected_fit_wall_clock_s": self.selected_fit_wall_clock_s,
+                "selected_validation_wall_clock_s": self.selected_validation_wall_clock_s,
                 "alpha": self.best_hyperparameters[0],
                 "alpha0": self.best_hyperparameters[1],
                 "gamma": self.best_hyperparameters[2],

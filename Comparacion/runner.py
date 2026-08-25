@@ -6,7 +6,9 @@ from dataclasses import asdict
 import json
 import math
 from numbers import Integral
+import os
 from pathlib import Path
+import platform
 from statistics import mean, pstdev
 import sys
 import time
@@ -16,7 +18,9 @@ import matplotlib
 matplotlib.use("Agg")  # El runner solo escribe PNG; sin esto Tk falla en headless.
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import torch
 
 from next_token_experiment.data.dataset import WindowedSequenceDataset, build_dataloaders
 from next_token_experiment.data.preprocess import build_preprocessing_report, prepare_corpus
@@ -239,6 +243,13 @@ def _transformer_summary_row(fit_result: dict, eval_result: dict) -> dict[str, o
         ),
         "evaluation_wall_clock_s": summary["eval_wall_clock_s"],
         "device": summary.get("runtime", {}).get("device", "unknown"),
+        "selection_wall_clock_s": fit_summary.get("selection_wall_clock_s"),
+        "selected_fit_wall_clock_s": fit_summary.get("selected_fit_wall_clock_s"),
+        "selected_validation_wall_clock_s": fit_summary.get("selected_validation_wall_clock_s"),
+        "best_epoch": fit_summary.get("best_epoch"),
+        "epochs_completed": fit_summary.get("epochs_completed"),
+        "early_stopped": fit_summary.get("early_stopped"),
+        "best_state_restore_wall_clock_s": fit_summary.get("best_state_restore_wall_clock_s"),
     }
 
 
@@ -672,6 +683,116 @@ def _plot_learning_curve(summary_rows: list[dict[str, object]], output_path: Pat
     plt.close()
 
 
+PROTOCOL_COST_FIELDS = (
+    "selection_wall_clock_s",
+    "selected_fit_wall_clock_s",
+    "selected_validation_wall_clock_s",
+    "evaluation_wall_clock_s",
+    "total_protocol_wall_clock_s",
+)
+
+
+def _finite_seconds(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0.0 else None
+
+
+def _protocol_cost_fields(
+    summary: Mapping[str, object],
+    *,
+    evaluation_wall_clock_s: object,
+) -> dict[str, object]:
+    """Separa selección, ajuste seleccionado, validación y evaluación.
+
+    Un único tiempo agregado nunca se presenta como "costo de entrenar": si sólo
+    existe el total heredado, los campos separados quedan en ``None`` y
+    ``cost_status`` lo dice.
+    """
+
+    selection = _finite_seconds(summary.get("selection_wall_clock_s"))
+    selected_fit = _finite_seconds(summary.get("selected_fit_wall_clock_s"))
+    selected_validation = _finite_seconds(
+        summary.get(
+            "selected_validation_wall_clock_s",
+            summary.get("selected_validation_evaluation_wall_clock_s"),
+        )
+    )
+    evaluation = _finite_seconds(evaluation_wall_clock_s)
+    legacy_total = _finite_seconds(summary.get("train_time_sec", summary.get("fit_wall_clock_s")))
+
+    if selection is not None:
+        protocol_total = selection
+        status = "separated" if selected_fit is not None else "partially_separated"
+    elif selected_fit is not None or selected_validation is not None:
+        protocol_total = (selected_fit or 0.0) + (selected_validation or 0.0)
+        status = "partially_separated"
+    elif legacy_total is not None:
+        protocol_total = legacy_total
+        status = "unseparated_legacy_total"
+    else:
+        protocol_total = 0.0
+        status = "unmeasured"
+
+    total = protocol_total + (evaluation or 0.0)
+    return {
+        "selection_wall_clock_s": selection,
+        "selected_fit_wall_clock_s": selected_fit,
+        "selected_validation_wall_clock_s": selected_validation,
+        "evaluation_wall_clock_s": evaluation,
+        "total_protocol_wall_clock_s": total,
+        "cost_status": status,
+    }
+
+
+def _build_hardware_manifest(*, target_device: str, precision: str) -> dict[str, object]:
+    """Registra el entorno de medición. Lo no medible queda en null con motivo."""
+
+    manifest: dict[str, object] = {
+        "target_device": target_device,
+        "precision": precision,
+        "platform": platform.platform(),
+        "processor": platform.processor() or None,
+        "python_version": platform.python_version(),
+        "numpy_version": np.__version__,
+        "torch_version": getattr(torch, "__version__", None),
+        "cpu_count": os.cpu_count(),
+        "process_count_status": "not_measured_reliably",
+        "process_count": None,
+    }
+
+    total_ram_bytes: int | None = None
+    total_ram_status = "psutil_not_installed"
+    try:  # psutil es opcional: sin él la RAM total no se inventa.
+        import psutil
+
+        total_ram_bytes = int(psutil.virtual_memory().total)
+        total_ram_status = "measured"
+    except Exception as error:  # noqa: BLE001 - el motivo se registra tal cual
+        total_ram_status = f"unavailable: {error.__class__.__name__}"
+    manifest["total_ram_bytes"] = total_ram_bytes
+    manifest["total_ram_status"] = total_ram_status
+
+    gpu_name: str | None = None
+    peak_gpu_memory_bytes: int | None = None
+    gpu_status = "cuda_not_available"
+    try:
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            peak_gpu_memory_bytes = int(torch.cuda.max_memory_allocated())
+            gpu_status = "measured"
+    except Exception as error:  # noqa: BLE001
+        gpu_status = f"unavailable: {error.__class__.__name__}"
+    manifest["gpu_name"] = gpu_name
+    manifest["peak_gpu_memory_bytes"] = peak_gpu_memory_bytes
+    manifest["peak_gpu_memory_status"] = gpu_status
+    return manifest
+
+
 def _engineering_cost_rows(raw_rows: list[dict[str, object]]) -> list[dict[str, object]]:
     fields = (
         "model",
@@ -681,7 +802,8 @@ def _engineering_cost_rows(raw_rows: list[dict[str, object]]) -> list[dict[str, 
         "n_train_pieces",
         "n_train_tokens",
         "fit_wall_clock_s",
-        "evaluation_wall_clock_s",
+        *PROTOCOL_COST_FIELDS,
+        "cost_status",
         "n_params",
         "selected_states",
         "effective_states",
@@ -1054,7 +1176,10 @@ def run_learning_curve_experiment(
                         "test_brier_score": vomm_summary["brier_score"],
                         "train_time_sec": vomm_summary["train_time_sec"],
                         "fit_wall_clock_s": vomm_summary["train_time_sec"],
-                        "evaluation_wall_clock_s": vomm_summary["evaluation_wall_clock_s"],
+                        **_protocol_cost_fields(
+                            vomm_summary,
+                            evaluation_wall_clock_s=vomm_summary["evaluation_wall_clock_s"],
+                        ),
                         "hyperparams_json": json.dumps({"selected_order": vomm.selected_order}),
                     }
                 )
@@ -1127,7 +1252,9 @@ def run_learning_curve_experiment(
                         "test_nll": finite_summary["test_nll_per_token"],
                         "train_time_sec": finite_summary["train_time_sec"],
                         "fit_wall_clock_s": finite_summary["train_time_sec"],
-                        "evaluation_wall_clock_s": finite_eval_elapsed,
+                        **_protocol_cost_fields(
+                            finite_summary, evaluation_wall_clock_s=finite_eval_elapsed
+                        ),
                         "hyperparams_json": json.dumps({"selected_states": finite_summary["selected_states"]}),
                     }
                 )
@@ -1200,7 +1327,9 @@ def run_learning_curve_experiment(
                         "test_nll": hdp_summary["test_nll_per_token"],
                         "train_time_sec": hdp_summary["train_time_sec"],
                         "fit_wall_clock_s": hdp_summary["train_time_sec"],
-                        "evaluation_wall_clock_s": hdp_eval_elapsed,
+                        **_protocol_cost_fields(
+                            hdp_summary, evaluation_wall_clock_s=hdp_eval_elapsed
+                        ),
                         "hyperparams_json": json.dumps(hdp_fit["selected_hyperparameters"]),
                     }
                 )
@@ -1272,7 +1401,10 @@ def run_learning_curve_experiment(
                         "test_brier_score": transformer_summary["test_brier_score"],
                         "train_time_sec": transformer_summary["train_time_sec"],
                         "fit_wall_clock_s": transformer_fit_wall_clock_s,
-                        "evaluation_wall_clock_s": transformer_summary["evaluation_wall_clock_s"],
+                        **_protocol_cost_fields(
+                            transformer_summary,
+                            evaluation_wall_clock_s=transformer_summary["evaluation_wall_clock_s"],
+                        ),
                         "hyperparams_json": json.dumps(
                             {"architecture": config.experiment.transformer.architecture}
                         ),
@@ -1313,6 +1445,13 @@ def run_learning_curve_experiment(
     write_csv(output_root / "results_summary.csv", summary_rows)
     write_csv(output_root / "piece_metrics_raw.csv", piece_metric_rows)
     write_csv(output_root / "engineering_costs.csv", _engineering_cost_rows(raw_rows))
+    _write_json(
+        output_root / "hardware_manifest.json",
+        _build_hardware_manifest(
+            target_device=config.experiment.hardware.target_device,
+            precision=config.experiment.hardware.precision,
+        ),
+    )
     _plot_learning_curve(summary_rows, output_root / "learning_curve.png")
 
     pairwise_payload = pairwise_model_comparisons(

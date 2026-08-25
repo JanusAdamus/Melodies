@@ -294,6 +294,7 @@ class ClassicalModelTests(unittest.TestCase):
                     emission_matrix,
                     validation_nll,
                     [{"n_states": n_states, "validation_nll_per_token": validation_nll}],
+                    {"fit_wall_clock_s": 0.0, "validation_wall_clock_s": 0.0},
                 )
 
         model = DeterministicFiniteHMM(
@@ -734,6 +735,10 @@ class ComparisonRunnerTests(unittest.TestCase):
             "train_time_sec",
             "fit_wall_clock_s",
             "evaluation_wall_clock_s",
+            "selection_wall_clock_s",
+            "selected_fit_wall_clock_s",
+            "selected_validation_wall_clock_s",
+            "total_protocol_wall_clock_s",
         }
 
         def stable_rows(path: Path) -> list[dict[str, str]]:

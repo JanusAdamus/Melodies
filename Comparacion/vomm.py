@@ -257,6 +257,9 @@ class VariableOrderMarkovModel:
                 "selection_wall_clock_s": self.selection_wall_clock_s,
                 "selected_fit_wall_clock_s": selected_fit_wall_clock_s,
                 "selected_validation_evaluation_wall_clock_s": self.selected_validation_evaluation_wall_clock_s,
+                # Nombre del contrato común de costo compartido con HMM, HDP-HMM
+                # y transformador.
+                "selected_validation_wall_clock_s": self.selected_validation_evaluation_wall_clock_s,
                 "evaluation_wall_clock_s": evaluation_wall_clock_s,
             },
             "piece_metrics": piece_metrics,

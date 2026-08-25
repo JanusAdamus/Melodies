@@ -34,7 +34,13 @@ REQUIRED_ARTIFACTS: tuple[str, ...] = (
 )
 
 #: Artefactos deseables cuya ausencia se registra, pero no invalida la corrida.
-OPTIONAL_ARTIFACTS: tuple[str, ...] = ("run_summary.json", "learning_curve.png")
+OPTIONAL_ARTIFACTS: tuple[str, ...] = (
+    "run_summary.json",
+    "learning_curve.png",
+    "hardware_manifest.json",
+    "denominator_audit.json",
+    "canonicalization_audit.json",
+)
 
 _JSON_ARTIFACTS: tuple[str, ...] = tuple(
     name for name in REQUIRED_ARTIFACTS + OPTIONAL_ARTIFACTS if name.endswith(".json")
