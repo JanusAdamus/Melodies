@@ -96,3 +96,44 @@ corridas que midan costo deben ejecutarse solas.
 - Actualizar la tesis sólo con artefactos cuya auditoría diga `passed`.
 - Citar 414 obras con la salvedad del grupo `after mr`, o rehacer la corrida con
   el identificador corregido y citar 415.
+
+## Preparación local verificada el 25 de agosto de 2026
+
+Esta preparación se realizó sobre el commit `f233c96` en una computadora
+portátil distinta de la que produjo la corrida principal. Su propósito fue
+comprobar el entorno y el flujo completo con un corpus pequeño. No constituye
+una sensibilidad del experimento de 3000 archivos ni aporta evidencia para la
+tesis.
+
+El entorno local utiliza Python 3.12.13 y PyTorch 2.11.0 con CUDA 12.8. La
+operación de prueba en la NVIDIA RTX PRO 500 Laptop fue satisfactoria. Las dos
+suites se ejecutaron con `unittest`: 149 pruebas en `tests` y 24 en
+`next_token_experiment/tests`, todas aprobadas. Para que las regresiones de
+`test_scaled_inference.py` fueran realmente descubiertas por el ejecutor usado
+en CI, ese archivo se convirtió del estilo funcional de `pytest` al patrón
+`unittest.TestCase` que utiliza el resto del repositorio.
+
+Se generaron cuatro planes locales con estado `planned_no_evidence`:
+
+- `plan_local_stride128`;
+- `plan_local_hmm_grid`;
+- `plan_local_split17`;
+- `plan_local_split29`.
+
+Los planes se construyeron con los 58 archivos disponibles en
+`D:\Melodies_preclone_backup_20260814`: 54 piezas fueron preparadas y 4 quedaron
+excluidas. Los archivos se conservan bajo `artifacts/Comparacion/`, que está
+excluido de Git.
+
+La corrida `smoke_local_58_20260825` utilizó ese mismo corpus, una fracción de
+entrenamiento, una semilla de datos, una semilla de modelo y una época del
+transformador. Terminó las cuatro familias y produjo cuatro filas de resultados
+sobre nueve obras de prueba. La auditoría de artefactos y la auditoría del
+protocolo terminaron en `passed`; la evaluación estructural permaneció en
+`not_evaluated`. Estas cifras describen únicamente la cobertura del ensayo y no
+deben compararse con los resultados del capítulo 4.
+
+La computadora todavía no contiene `external/PDMX/mxl`,
+`artifacts/corpus_cache_3000.jsonl` ni los artefactos originales de
+`tesis_3000_gpu_20260823_1941`. Por ello, no se inició ninguna de las corridas de
+sensibilidad de 3000 archivos.
