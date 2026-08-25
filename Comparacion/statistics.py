@@ -120,6 +120,84 @@ def _apply_holm_adjustment(comparisons: list[dict[str, object]]) -> int:
     return n_tests
 
 
+def _split_seed_of(row: Mapping[str, object]) -> int | None:
+    value = row.get("split_seed")
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def summarize_split_variation(rows: Iterable[Mapping[str, object]]) -> dict[str, object]:
+    """Separa la variación entre obras de la variación entre particiones.
+
+    Una misma obra evaluada bajo varias semillas de partición no aporta
+    observaciones independientes: la unidad sigue siendo la obra dentro de una
+    partición.
+    """
+
+    per_model_split: dict[str, dict[int, dict[str, list[float]]]] = {}
+    works: set[str] = set()
+    work_split_pairs: set[tuple[str, int]] = set()
+    split_seeds: set[int] = set()
+
+    for row in rows:
+        if not isinstance(row, Mapping) or not _full_fraction(row):
+            continue
+        model = row.get("model")
+        canonical_work_id = row.get("canonical_work_id")
+        split_seed = _split_seed_of(row)
+        value = _row_test_nll(row)
+        if not isinstance(model, str) or not isinstance(canonical_work_id, str):
+            continue
+        if not canonical_work_id.strip() or split_seed is None or value is None:
+            continue
+        split_seeds.add(split_seed)
+        works.add(canonical_work_id)
+        work_split_pairs.add((canonical_work_id, split_seed))
+        by_split = per_model_split.setdefault(model, {})
+        by_split.setdefault(split_seed, {}).setdefault(canonical_work_id, []).append(value)
+
+    models_payload: dict[str, object] = {}
+    for model, by_split in sorted(per_model_split.items()):
+        # Las repeticiones de una misma obra dentro de una partición se promedian
+        # antes de medir dispersión: no son observaciones nuevas.
+        work_means = {
+            split_seed: {work: float(np.mean(values)) for work, values in works_by_id.items()}
+            for split_seed, works_by_id in by_split.items()
+        }
+        per_split_mean = {
+            str(split_seed): float(np.mean(list(values.values())))
+            for split_seed, values in sorted(work_means.items())
+        }
+        within_split_stds = [
+            float(np.std(list(values.values()), ddof=0))
+            for values in work_means.values()
+            if len(values) > 1
+        ]
+        split_means = list(per_split_mean.values())
+        models_payload[model] = {
+            "per_split_mean_nll": per_split_mean,
+            "between_split_std": float(np.std(split_means, ddof=0)) if len(split_means) > 1 else None,
+            "between_work_std": float(np.mean(within_split_stds)) if within_split_stds else 0.0,
+            "n_works_per_split": {
+                str(split_seed): len(values) for split_seed, values in sorted(work_means.items())
+            },
+        }
+
+    return {
+        "status": "single_split_seed" if len(split_seeds) < 2 else "multiple_split_seeds",
+        "split_seeds": sorted(split_seeds),
+        "n_split_seeds": len(split_seeds),
+        "n_distinct_works": len(works),
+        "n_work_split_observations": len(work_split_pairs),
+        "independence_unit": "canonical_work_within_split_seed",
+        "models": models_payload,
+    }
+
+
 def pairwise_model_comparisons(
     rows: Iterable[Mapping[str, object]],
     bootstrap_samples: int,
@@ -142,9 +220,10 @@ def pairwise_model_comparisons(
     )
     validated_seed = _nonnegative_integer(seed, name="seed")
 
+    rows_list = [row for row in rows if isinstance(row, Mapping)]
     model_names: set[str] = set()
     repeated_values: dict[tuple[str, str], list[float]] = {}
-    for row in rows:
+    for row in rows_list:
         if not isinstance(row, Mapping):
             continue
         model = row.get("model")
@@ -227,6 +306,25 @@ def pairwise_model_comparisons(
         comparisons_payload.append(comparison)
 
     n_valid_tests = _apply_holm_adjustment(comparisons_payload)
+    # Con varias semillas de partición, las obras se repiten entre particiones y
+    # no pueden agruparse como observaciones nuevas: se compara dentro de cada
+    # partición y se reporta la variación aparte.
+    materialized_rows = list(rows_list)
+    split_seeds = sorted(
+        {seed for seed in (_split_seed_of(row) for row in materialized_rows) if seed is not None}
+    )
+    comparisons_by_split_seed: dict[str, list[dict[str, object]]] = {}
+    if len(split_seeds) > 1:
+        for split_seed in split_seeds:
+            subset = [
+                row for row in materialized_rows if _split_seed_of(row) == split_seed
+            ]
+            nested = pairwise_model_comparisons(
+                subset,
+                bootstrap_samples=validated_bootstrap_samples,
+                seed=validated_seed,
+            )
+            comparisons_by_split_seed[str(split_seed)] = nested["comparisons"]
     # El denominador de cada comparación es una obra canónica, no un archivo:
     # dejarlo explícito evita citar 424 archivos donde hay 414 obras.
     denominators = {
@@ -238,6 +336,14 @@ def pairwise_model_comparisons(
     }
     return {
         "denominators": denominators,
+        "split_seeds": split_seeds,
+        "pooling": (
+            "per_split_seed_never_pooled_across_splits"
+            if len(split_seeds) > 1
+            else "single_split_seed"
+        ),
+        "comparisons_by_split_seed": comparisons_by_split_seed,
+        "split_variation": summarize_split_variation(materialized_rows),
         "metric": "test_nll",
         "difference_orientation": "model_a_minus_model_b",
         "interpretation": "negative_favors_model_a",

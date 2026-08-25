@@ -556,6 +556,8 @@ def _build_piece_metric_rows(
     model_seed: int | str,
     piece_metrics: list[dict[str, object]],
     evaluated_pieces: list[PreparedPiece],
+    *,
+    split_seed: int,
 ) -> list[dict[str, object]]:
     pieces_by_id = {piece.piece_id: piece for piece in evaluated_pieces}
     rows = []
@@ -570,6 +572,7 @@ def _build_piece_metric_rows(
         row["piece_id"] = piece.piece_id
         row["canonical_work_id"] = piece.canonical_work_id
         row["model"] = model_name
+        row["split_seed"] = split_seed
         row["frac"] = fraction
         row["data_seed"] = data_seed
         row["model_seed"] = model_seed
@@ -1224,7 +1227,7 @@ def run_learning_curve_experiment(
 
     for data_seed, nested_subsets in sorted(nested_by_seed.items()):
         for fraction, train_pieces in nested_subsets:
-            cell = f"data_seed={data_seed},frac={fraction}"
+            cell = f"split_seed={config.split_seed},data_seed={data_seed},frac={fraction}"
             if cell in completed_cells:
                 continue
             marks = {
@@ -1268,6 +1271,7 @@ def run_learning_curve_experiment(
                 raw_rows.append(
                     {
                         "model": "vomm",
+                        "split_seed": config.split_seed,
                         "data_seed": data_seed,
                         "model_seed": _VOMM_DETERMINISTIC_SEED,
                         "frac": fraction,
@@ -1300,6 +1304,7 @@ def run_learning_curve_experiment(
                         _VOMM_DETERMINISTIC_SEED,
                         vomm_eval["piece_metrics"],
                         fixed_splits.test_pieces,
+                        split_seed=config.split_seed,
                     )
                 )
 
@@ -1346,6 +1351,7 @@ def run_learning_curve_experiment(
                 raw_rows.append(
                     {
                         "model": "finite_hmm",
+                        "split_seed": config.split_seed,
                         "data_seed": data_seed,
                         "model_seed": model_seed,
                         "frac": fraction,
@@ -1375,6 +1381,7 @@ def run_learning_curve_experiment(
                         model_seed,
                         finite_eval["piece_metrics"],
                         fixed_splits.test_pieces,
+                        split_seed=config.split_seed,
                     )
                 )
 
@@ -1421,6 +1428,7 @@ def run_learning_curve_experiment(
                 raw_rows.append(
                     {
                         "model": "hdp_hmm",
+                        "split_seed": config.split_seed,
                         "data_seed": data_seed,
                         "model_seed": model_seed,
                         "frac": fraction,
@@ -1450,6 +1458,7 @@ def run_learning_curve_experiment(
                         model_seed,
                         hdp_eval["piece_metrics"],
                         fixed_splits.test_pieces,
+                        split_seed=config.split_seed,
                     )
                 )
 
@@ -1493,6 +1502,7 @@ def run_learning_curve_experiment(
                 raw_rows.append(
                     {
                         "model": "transformer",
+                        "split_seed": config.split_seed,
                         "data_seed": data_seed,
                         "model_seed": model_seed,
                         "frac": fraction,
@@ -1527,6 +1537,7 @@ def run_learning_curve_experiment(
                         model_seed,
                         transformer_eval["piece_metrics"],
                         fixed_splits.test_pieces,
+                        split_seed=config.split_seed,
                     )
                 )
 

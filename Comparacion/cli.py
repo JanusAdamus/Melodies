@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plan-only", action="store_true", help="Write an execution plan without constructing or fitting models.")
     parser.add_argument("--without-vomm", action="store_true", help="Disable the optional PPM-inspired VOMM diagnostic control.")
     parser.add_argument("--structural-annotations", default=None, help="Optional CSV with piece_id,event_index,segment_label,boundary columns.")
+    parser.add_argument("--split-seed", type=int, default=None, help="Seed of the fixed train/validation/test partition. Repeat the run with different values to measure sensitivity to the partition.")
     parser.add_argument("--finite-hmm-states", default=None, help="Comma-separated candidate state counts for the finite HMM, for example 48,72,96. Must be increasing, unique and at least 2.")
     parser.add_argument("--train-stride", type=int, default=None, help="Training window stride. Equal to --max-context-length means non-overlapping training windows; the default 64 exposes each event more than once per epoch.")
     parser.add_argument("--audit-run", default=None, help="Audit an existing run directory read-only and exit; writes the manifest and the audit outside it.")
@@ -132,6 +133,13 @@ def main() -> None:
     parsed_fractions = _parse_float_tuple(args.fractions)
     if parsed_fractions is not None:
         updates["train_fractions"] = parsed_fractions
+    if args.split_seed is not None:
+        updates["split_seed"] = args.split_seed
+        experiment = replace(
+            experiment,
+            split=replace(experiment.split, seed=args.split_seed),
+        )
+        updates["experiment"] = experiment
     parsed_states = _parse_int_tuple(args.finite_hmm_states)
     if parsed_states is not None:
         updates["finite_hmm_states"] = parsed_states
