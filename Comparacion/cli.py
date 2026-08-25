@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plan-only", action="store_true", help="Write an execution plan without constructing or fitting models.")
     parser.add_argument("--without-vomm", action="store_true", help="Disable the optional PPM-inspired VOMM diagnostic control.")
     parser.add_argument("--structural-annotations", default=None, help="Optional CSV with piece_id,event_index,segment_label,boundary columns.")
+    parser.add_argument("--train-stride", type=int, default=None, help="Training window stride. Equal to --max-context-length means non-overlapping training windows; the default 64 exposes each event more than once per epoch.")
     parser.add_argument("--audit-run", default=None, help="Audit an existing run directory read-only and exit; writes the manifest and the audit outside it.")
     parser.add_argument("--audit-output", default=None, help="Directory for --audit-run reports. Defaults to <run>/../audits/<run name>.")
     return parser
@@ -102,6 +103,13 @@ def main() -> None:
         experiment = replace(
             experiment,
             transformer=replace(experiment.transformer, max_epochs=args.transformer_max_epochs),
+        )
+    if args.train_stride is not None:
+        if args.train_stride <= 0:
+            parser.error("--train-stride must be positive")
+        experiment = replace(
+            experiment,
+            windows=replace(experiment.windows, train_stride=args.train_stride),
         )
     if args.transformer_device is not None:
         experiment = replace(

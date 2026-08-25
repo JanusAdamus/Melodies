@@ -4,6 +4,7 @@ import unittest
 
 from next_token_experiment.data import dataset as dataset_module
 from next_token_experiment.data.dataset import WindowedSequenceDataset
+from next_token_experiment.data.dataset import build_training_exposure_audit
 from next_token_experiment.data.dataset import build_window_slices
 from next_token_experiment.data.tokenizer import SequenceTokenizer
 from next_token_experiment.experiment.splits import canonicalize_work_label
@@ -100,3 +101,63 @@ class ProtocolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrainingExposureAuditTests(unittest.TestCase):
+    def _piece(self, piece_id: str, length: int) -> PreparedPiece:
+        return PreparedPiece(
+            piece_id=piece_id,
+            source_path=f"/tmp/{piece_id}.musicxml",
+            title=piece_id,
+            composer="composer",
+            canonical_work_id=piece_id,
+            representation="pitch_class",
+            vocabulary=[str(index) for index in range(12)],
+            tokens=[index % 12 for index in range(length)],
+            n_events=length,
+            metadata={},
+        )
+
+    def _dataset(self, split: str, stride: int) -> WindowedSequenceDataset:
+        piece = self._piece("piece", 320)
+        tokenizer = SequenceTokenizer(
+            representation="pitch_class",
+            musical_vocabulary=tuple(piece.vocabulary),
+        )
+        return WindowedSequenceDataset(
+            pieces=[piece],
+            tokenizer=tokenizer,
+            split=split,
+            max_context_length=128,
+            stride=stride,
+            min_window_length=32,
+        )
+
+    def test_stride_64_exposes_targets_more_than_once(self) -> None:
+        audit = build_training_exposure_audit(self._dataset("train", 64), stride=64)
+
+        self.assertEqual(audit["split"], "train")
+        self.assertEqual(audit["stride"], 64)
+        self.assertEqual(audit["n_unique_targets"], 320)
+        self.assertGreater(audit["n_target_exposures"], audit["n_unique_targets"])
+        self.assertGreater(audit["max_exposure"], 1)
+        self.assertEqual(audit["n_bos_restarts"], audit["n_windows"])
+        self.assertEqual(
+            sum(audit["exposure_multiplicity"].values()), audit["n_unique_targets"]
+        )
+
+    def test_stride_128_exposes_each_target_once(self) -> None:
+        audit = build_training_exposure_audit(self._dataset("train", 128), stride=128)
+
+        self.assertEqual(audit["n_target_exposures"], audit["n_unique_targets"])
+        self.assertEqual(audit["max_exposure"], 1)
+        self.assertEqual(audit["mean_exposure"], 1.0)
+
+    def test_validation_and_test_never_overlap(self) -> None:
+        for split in ("validation", "test"):
+            with self.subTest(split=split):
+                audit = build_training_exposure_audit(self._dataset(split, 64), stride=64)
+
+                self.assertEqual(audit["max_exposure"], 1)
+                self.assertEqual(audit["n_target_exposures"], audit["n_unique_targets"])
+                self.assertTrue(audit["non_overlapping"])

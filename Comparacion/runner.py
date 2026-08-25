@@ -22,7 +22,11 @@ import numpy as np
 import pandas as pd
 import torch
 
-from next_token_experiment.data.dataset import WindowedSequenceDataset, build_dataloaders
+from next_token_experiment.data.dataset import (
+    WindowedSequenceDataset,
+    build_dataloaders,
+    build_training_exposure_audit,
+)
 from next_token_experiment.data.preprocess import build_preprocessing_report, prepare_corpus
 from next_token_experiment.data.tokenizer import build_tokenizer
 from next_token_experiment.experiment.storage import ensure_directory, write_csv
@@ -225,6 +229,45 @@ def _build_transformer_dataloaders(
         validation_dataset=validation_dataset,
         test_dataset=test_dataset,
     )
+
+
+def _build_training_exposure_audit(
+    config: LearningCurveConfig,
+    *,
+    train_pieces,
+    validation_pieces,
+    test_pieces,
+) -> dict[str, object]:
+    """Mide cuántas veces se predice cada evento por época en cada partición."""
+
+    tokenizer = build_tokenizer(config.experiment.representation)
+    windows = config.experiment.windows
+    splits = {
+        "train": (train_pieces, windows.train_stride),
+        "validation": (validation_pieces, windows.eval_stride),
+        "test": (test_pieces, windows.eval_stride),
+    }
+    audits = {}
+    for split, (pieces, stride) in splits.items():
+        dataset = WindowedSequenceDataset(
+            pieces=pieces,
+            tokenizer=tokenizer,
+            split=split,
+            max_context_length=windows.max_context_length,
+            stride=stride,
+            min_window_length=windows.min_window_length,
+        )
+        audits[split] = build_training_exposure_audit(dataset, stride=stride)
+
+    return {
+        "max_context_length": windows.max_context_length,
+        "train_stride": windows.train_stride,
+        "eval_stride": windows.eval_stride,
+        "splits": audits,
+        "evaluation_is_non_overlapping": bool(
+            audits["validation"]["non_overlapping"] and audits["test"]["non_overlapping"]
+        ),
+    }
 
 
 def _transformer_summary_row(fit_result: dict, eval_result: dict) -> dict[str, object]:
@@ -1070,6 +1113,17 @@ def run_learning_curve_experiment(
     _write_json(output_root / "preprocessing_report.json", build_preprocessing_report(preparation))
     write_csv(output_root / "exclusions.csv", [item.__dict__ for item in preparation.exclusions])
     _write_split_artifacts(output_root, fixed_splits, nested_by_seed)
+    # La exposición depende sólo de la partición y de los desplazamientos, así
+    # que se mide una vez por corrida con el pozo de entrenamiento completo.
+    _write_json(
+        output_root / "training_exposure_audit.json",
+        _build_training_exposure_audit(
+            config,
+            train_pieces=fixed_splits.train_pool_pieces,
+            validation_pieces=fixed_splits.validation_pieces,
+            test_pieces=fixed_splits.test_pieces,
+        ),
+    )
     structural_reference = _load_structural_annotations(config.structural_annotations_path)
 
     if plan_only:

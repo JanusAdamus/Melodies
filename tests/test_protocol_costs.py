@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from Comparacion.cli import build_parser
 from Comparacion.classical_models import FiniteGlobalHMM, GlobalHDPHMM
 from Comparacion.runner import (
     PROTOCOL_COST_FIELDS,
@@ -171,6 +172,18 @@ class ClassicalFamilyCostContractTests(unittest.TestCase):
             all("fit_wall_clock_s" in row for row in fit_summary["train_log"]),
             "cada candidato del HDP-HMM registra su propio costo",
         )
+
+
+class TrainStrideCliTests(unittest.TestCase):
+    def test_train_stride_flag_is_parsed(self) -> None:
+        args = build_parser().parse_args(["--train-stride", "128"])
+
+        self.assertEqual(args.train_stride, 128)
+
+    def test_train_stride_defaults_to_the_configured_value(self) -> None:
+        args = build_parser().parse_args([])
+
+        self.assertIsNone(args.train_stride)
 
 if __name__ == "__main__":
     unittest.main()
