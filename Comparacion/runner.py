@@ -1346,7 +1346,7 @@ def run_learning_curve_experiment(
         "pareto_summary": str(output_root / "pareto_summary.json"),
         "learning_curve": str(output_root / "learning_curve.png"),
     }
-    return {
+    summary = {
         "status": "completed",
         "output_root": str(output_root),
         "n_prepared_pieces": len(preparation.pieces),
@@ -1355,3 +1355,7 @@ def run_learning_curve_experiment(
         "pairwise_comparisons": pairwise_payload,
         "artifacts": artifacts,
     }
+    # run_summary.json deja el resumen en disco para que la auditoría de
+    # artefactos pueda contrastar archivos y cifras sin re-ejecutar nada.
+    _write_json(output_root / "run_summary.json", {key: value for key, value in summary.items() if key != "pairwise_comparisons"})
+    return summary

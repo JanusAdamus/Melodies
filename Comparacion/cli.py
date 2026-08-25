@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import replace
+from pathlib import Path
 
 from next_token_experiment.config import HardwareConfig, TransformerConfig
 
+from .artifact_audit import write_audit_reports
 from .config import build_default_learning_curve_config
 from .runner import run_learning_curve_experiment
 
@@ -28,6 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plan-only", action="store_true", help="Write an execution plan without constructing or fitting models.")
     parser.add_argument("--without-vomm", action="store_true", help="Disable the optional PPM-inspired VOMM diagnostic control.")
     parser.add_argument("--structural-annotations", default=None, help="Optional CSV with piece_id,event_index,segment_label,boundary columns.")
+    parser.add_argument("--audit-run", default=None, help="Audit an existing run directory read-only and exit; writes the manifest and the audit outside it.")
+    parser.add_argument("--audit-output", default=None, help="Directory for --audit-run reports. Defaults to <run>/../audits/<run name>.")
     return parser
 
 
@@ -48,6 +52,12 @@ def _parse_float_tuple(raw: str | None) -> tuple[float, ...] | None:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.audit_run is not None:
+        run_dir = Path(args.audit_run)
+        output_dir = Path(args.audit_output) if args.audit_output else run_dir.parent / "audits" / run_dir.name
+        print(json.dumps(write_audit_reports(run_dir, output_dir), indent=2, ensure_ascii=False))
+        return
 
     config = build_default_learning_curve_config(
         corpus_root=args.corpus_root,
