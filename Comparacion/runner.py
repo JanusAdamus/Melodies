@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict
 import json
 import math
@@ -792,6 +792,61 @@ def _protocol_cost_fields(
     }
 
 
+def build_finite_hmm_grid_audit(
+    raw_rows: Iterable[Mapping[str, object]],
+    *,
+    grid: Sequence[int],
+    resource_limit_reason: str | None = None,
+) -> dict[str, object]:
+    """Dice si la rejilla de capacidad fue informativa.
+
+    Que la selección siga tocando el máximo no es una meseta del modelo: es una
+    rejilla corta. Un límite de recursos documentado tampoco lo es; se registra
+    como tal.
+    """
+
+    grid_values = [int(value) for value in grid]
+    grid_maximum = max(grid_values) if grid_values else None
+    selections: list[int] = []
+    for row in raw_rows:
+        if row.get("model") != "finite_hmm":
+            continue
+        selected = row.get("selected_states")
+        if isinstance(selected, bool) or not isinstance(selected, (int, float)):
+            continue
+        if not math.isfinite(float(selected)):
+            continue
+        selections.append(int(selected))
+
+    n_at_maximum = sum(1 for value in selections if value == grid_maximum)
+    if not selections:
+        verdict = "no_selections"
+    elif resource_limit_reason:
+        verdict = (
+            "grid_limited_by_resources"
+            if n_at_maximum * 2 >= len(selections)
+            else "grid_informative"
+        )
+    elif n_at_maximum * 2 >= len(selections):
+        verdict = "grid_too_small"
+    else:
+        verdict = "grid_informative"
+
+    return {
+        "grid": grid_values,
+        "grid_maximum": grid_maximum,
+        "n_selections": len(selections),
+        "n_at_grid_maximum": n_at_maximum,
+        "selected_states": selections,
+        "verdict": verdict,
+        "informative": verdict == "grid_informative",
+        # Nunca se afirma una meseta desde esta evidencia sola.
+        "plateau_claimed": False,
+        "resource_limit_reason": resource_limit_reason,
+        "policy": "selection_touching_the_maximum_means_a_short_grid_not_a_model_plateau",
+    }
+
+
 def _build_hardware_manifest(*, target_device: str, precision: str) -> dict[str, object]:
     """Registra el entorno de medición. Lo no medible queda en null con motivo."""
 
@@ -1499,6 +1554,10 @@ def run_learning_curve_experiment(
     write_csv(output_root / "results_summary.csv", summary_rows)
     write_csv(output_root / "piece_metrics_raw.csv", piece_metric_rows)
     write_csv(output_root / "engineering_costs.csv", _engineering_cost_rows(raw_rows))
+    _write_json(
+        output_root / "finite_hmm_grid_audit.json",
+        build_finite_hmm_grid_audit(raw_rows, grid=config.finite_hmm_states),
+    )
     _write_json(
         output_root / "hardware_manifest.json",
         _build_hardware_manifest(
