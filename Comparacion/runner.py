@@ -30,6 +30,8 @@ from next_token_experiment.schemas import PreparedPiece
 
 from .classical_models import FiniteGlobalHMM, GlobalHDPHMM
 from .config import LearningCurveConfig
+from .canonicalization_audit import AUDIT_FILENAME as CANONICALIZATION_AUDIT_FILENAME
+from .canonicalization_audit import build_canonicalization_audit
 from .decision import pareto_front
 from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
 from .denominator_audit import build_denominator_audit
@@ -1327,6 +1329,11 @@ def run_learning_curve_experiment(
         validation_piece_ids=[piece.piece_id for piece in fixed_splits.validation_pieces],
     )
     _write_json(output_root / DENOMINATOR_AUDIT_FILENAME, denominator_payload)
+    # Informe de riesgo del agrupamiento por obra: no cambia ninguna asignación.
+    _write_json(
+        output_root / CANONICALIZATION_AUDIT_FILENAME,
+        build_canonicalization_audit(preparation.pieces),
+    )
     structural_payload = _build_structural_evaluation(
         structural_reference,
         structural_predictions,

@@ -8,9 +8,11 @@ from pathlib import Path
 from next_token_experiment.config import HardwareConfig, TransformerConfig
 
 from .artifact_audit import write_audit_reports
+from .canonicalization_audit import AUDIT_FILENAME as CANONICALIZATION_AUDIT_FILENAME
+from .canonicalization_audit import write_canonicalization_audit
 from .config import build_default_learning_curve_config
 from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
-from .denominator_audit import audit_run_directory
+from .denominator_audit import audit_run_directory, read_piece_metric_rows
 from .runner import run_learning_curve_experiment
 
 
@@ -63,6 +65,26 @@ def main() -> None:
         denominator_path = Path(report["audit_path"]).parent / DENOMINATOR_AUDIT_FILENAME
         denominator_path.write_text(json.dumps(denominators, indent=2, ensure_ascii=False), encoding="utf-8")
         report["denominator_audit_path"] = str(denominator_path)
+        metrics_path = run_dir / "piece_metrics_raw.csv"
+        if metrics_path.exists():
+            # Una fila por (pieza, modelo, celda): basta una por pieza para el
+            # informe de agrupamiento, y los CSV guardados no traen tokens, así
+            # que la huella melódica queda vacía en corridas ya terminadas.
+            unique_pieces = {}
+            for row in read_piece_metric_rows(metrics_path):
+                unique_pieces.setdefault(row.get("piece_id"), row)
+            canonicalization = write_canonicalization_audit(
+                unique_pieces.values(),
+                denominator_path.parent / CANONICALIZATION_AUDIT_FILENAME,
+            )
+            report["canonicalization_audit_path"] = str(
+                denominator_path.parent / CANONICALIZATION_AUDIT_FILENAME
+            )
+            report["canonicalization"] = {
+                "n_files": canonicalization["n_files"],
+                "n_canonical_works": canonicalization["n_canonical_works"],
+                "n_review_required": len(canonicalization["review_required"]),
+            }
         report["denominators"] = {
             key: denominators.get(key)
             for key in ("status", "n_scored_files", "n_canonical_works", "n_files_absorbed_by_grouping", "explanation")

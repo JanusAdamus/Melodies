@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 import random
 import re
+import unicodedata
 
 from ..config import SplitConfig
 from ..schemas import PreparedPiece
@@ -31,6 +32,44 @@ def canonicalize_work_label(label: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     tokens = [token for token in text.split() if token not in NOISE_TOKENS]
     return " ".join(tokens).strip()
+
+
+GENERIC_LABELS = {
+    "untitled",
+    "unknown",
+    "score",
+    "sheet music",
+    "no title",
+    "sin titulo",
+}
+
+
+def canonicalization_details(label: str) -> dict[str, object]:
+    """Diagnóstico del agrupamiento por obra canónica.
+
+    Devuelve el mismo identificador que ``canonicalize_work_label`` más señales
+    de riesgo. ``aggressive_key`` ignora puntuación, espacios y diacríticos: sólo
+    sirve para señalar títulos cercanos que quedaron separados, nunca para
+    fusionarlos automáticamente.
+    """
+
+    canonical_work_id = canonicalize_work_label(label)
+    # canonicalize_work_label usa Path().stem, así que un sufijo final con punto
+    # ("Sonata No.2") desaparece del identificador. Se registra como riesgo en
+    # lugar de cambiar el agrupamiento de corridas ya publicadas.
+    dropped_suffix_text = Path(label).suffix
+    folded = unicodedata.normalize("NFKD", canonical_work_id)
+    folded = "".join(character for character in folded if not unicodedata.combining(character))
+    aggressive_key = re.sub(r"[^a-z0-9]+", "", folded)
+    return {
+        "canonical_work_id": canonical_work_id,
+        "aggressive_key": aggressive_key,
+        "is_empty": not canonical_work_id,
+        "is_generic": canonical_work_id in GENERIC_LABELS,
+        "is_short": bool(canonical_work_id) and len(canonical_work_id.split()) < 2,
+        "dropped_suffix": bool(dropped_suffix_text),
+        "dropped_suffix_text": dropped_suffix_text,
+    }
 
 
 def _allocate_group_counts(

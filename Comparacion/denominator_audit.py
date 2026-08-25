@@ -158,6 +158,11 @@ def build_denominator_audit(
     }
 
 
+def read_piece_metric_rows(path: str | Path) -> list[dict[str, str]]:
+    with Path(path).open("r", encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
 def _split_piece_ids(path: Path) -> list[str] | None:
     if not path.exists():
         return None
@@ -177,9 +182,7 @@ def audit_run_directory(run_dir: str | Path) -> dict[str, object]:
     if not metrics_path.exists():
         return {"status": "incomplete", "reason": "piece_metrics_raw_not_found", "run_dir": str(root)}
 
-    with metrics_path.open("r", encoding="utf-8", newline="") as handle:
-        rows = list(csv.DictReader(handle))
-
+    rows = read_piece_metric_rows(metrics_path)
     audit = build_denominator_audit(
         rows,
         test_piece_ids=_split_piece_ids(root / "splits" / "test_pieces.json"),
