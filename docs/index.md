@@ -32,6 +32,12 @@ recomendada para orientarte es corta:
 - [`transformer-benchmark-suite.md`](transformer-benchmark-suite.md)
 - [`transformer-comparison-analysis.md`](transformer-comparison-analysis.md)
 - [`artifact-policy.md`](artifact-policy.md)
+- [`auditoria-ejecucion-pendiente.md`](auditoria-ejecucion-pendiente.md):
+  qué quedó resuelto sin entrenar y qué corridas faltan, con su orden.
+- [`canonicalizacion-revision-2026-08-24.md`](canonicalizacion-revision-2026-08-24.md):
+  revisión grupo por grupo del agrupamiento por obra canónica.
+- [`hmm-grid-sensitivity.md`](hmm-grid-sensitivity.md):
+  regla de decisión y escalones de la rejilla de capacidad del HMM finito.
 - [`superpowers/plans/2026-08-24-auditoria-comparacion-final.md`](superpowers/plans/2026-08-24-auditoria-comparacion-final.md):
   plan ejecutable para recuperar artefactos, auditar denominadores y ejecutar
   las sensibilidades pendientes en la computadora principal.
