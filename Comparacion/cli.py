@@ -9,6 +9,8 @@ from next_token_experiment.config import HardwareConfig, TransformerConfig
 
 from .artifact_audit import write_audit_reports
 from .config import build_default_learning_curve_config
+from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
+from .denominator_audit import audit_run_directory
 from .runner import run_learning_curve_experiment
 
 
@@ -56,7 +58,16 @@ def main() -> None:
     if args.audit_run is not None:
         run_dir = Path(args.audit_run)
         output_dir = Path(args.audit_output) if args.audit_output else run_dir.parent / "audits" / run_dir.name
-        print(json.dumps(write_audit_reports(run_dir, output_dir), indent=2, ensure_ascii=False))
+        report = write_audit_reports(run_dir, output_dir)
+        denominators = audit_run_directory(run_dir)
+        denominator_path = Path(report["audit_path"]).parent / DENOMINATOR_AUDIT_FILENAME
+        denominator_path.write_text(json.dumps(denominators, indent=2, ensure_ascii=False), encoding="utf-8")
+        report["denominator_audit_path"] = str(denominator_path)
+        report["denominators"] = {
+            key: denominators.get(key)
+            for key in ("status", "n_scored_files", "n_canonical_works", "n_files_absorbed_by_grouping", "explanation")
+        }
+        print(json.dumps(report, indent=2, ensure_ascii=False))
         return
 
     config = build_default_learning_curve_config(

@@ -227,7 +227,17 @@ def pairwise_model_comparisons(
         comparisons_payload.append(comparison)
 
     n_valid_tests = _apply_holm_adjustment(comparisons_payload)
+    # El denominador de cada comparación es una obra canónica, no un archivo:
+    # dejarlo explícito evita citar 424 archivos donde hay 414 obras.
+    denominators = {
+        "unit": "canonical_work",
+        "n_works_by_model": {
+            model: len(works_by_model.get(model, set())) for model in sorted(model_names)
+        },
+        "n_works_any_model": len({work for works in works_by_model.values() for work in works}),
+    }
     return {
+        "denominators": denominators,
         "metric": "test_nll",
         "difference_orientation": "model_a_minus_model_b",
         "interpretation": "negative_favors_model_a",

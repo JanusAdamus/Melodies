@@ -31,6 +31,8 @@ from next_token_experiment.schemas import PreparedPiece
 from .classical_models import FiniteGlobalHMM, GlobalHDPHMM
 from .config import LearningCurveConfig
 from .decision import pareto_front
+from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
+from .denominator_audit import build_denominator_audit
 from .splits import FixedSplits, build_fixed_splits, build_nested_training_subsets
 from .statistics import pairwise_model_comparisons
 from .structural_metrics import adjusted_rand_index, boundary_f1, normalized_mutual_information
@@ -1317,6 +1319,14 @@ def run_learning_curve_experiment(
         seed=config.bootstrap_seed,
     )
     _write_json(output_root / "pairwise_comparisons.json", pairwise_payload)
+    # Los dos denominadores del reporte (archivos evaluados y obras comparadas)
+    # se explican con evidencia en lugar de conciliarse a mano.
+    denominator_payload = build_denominator_audit(
+        piece_metric_rows,
+        test_piece_ids=[piece.piece_id for piece in fixed_splits.test_pieces],
+        validation_piece_ids=[piece.piece_id for piece in fixed_splits.validation_pieces],
+    )
+    _write_json(output_root / DENOMINATOR_AUDIT_FILENAME, denominator_payload)
     structural_payload = _build_structural_evaluation(
         structural_reference,
         structural_predictions,
