@@ -57,6 +57,45 @@ def build_evaluation_slices(
     ]
 
 
+def build_training_exposure_audit(dataset, *, stride: int) -> dict[str, Any]:
+    """Cuenta cuántas veces aparece cada token como objetivo.
+
+    Con ventanas solapadas (``stride`` menor que ``max_context_length``) un mismo
+    evento se predice varias veces por época. Validación y prueba usan cortes sin
+    solape, así que su multiplicidad debe ser exactamente uno.
+    """
+
+    exposures: dict[tuple[str, int], int] = {}
+    n_windows = 0
+    for example in dataset.examples:
+        n_windows += 1
+        for index in range(example.start_index, example.stop_index):
+            key = (example.piece_id, index)
+            exposures[key] = exposures.get(key, 0) + 1
+
+    multiplicity: dict[str, int] = {}
+    for count in exposures.values():
+        multiplicity[str(count)] = multiplicity.get(str(count), 0) + 1
+
+    n_unique_targets = len(exposures)
+    n_target_exposures = sum(exposures.values())
+    max_exposure = max(exposures.values(), default=0)
+    return {
+        "split": dataset.split,
+        "stride": int(stride),
+        "n_pieces": len({example.piece_id for example in dataset.examples}),
+        "n_windows": n_windows,
+        # Cada ventana reinicia el contexto con BOS.
+        "n_bos_restarts": n_windows,
+        "n_unique_targets": n_unique_targets,
+        "n_target_exposures": n_target_exposures,
+        "mean_exposure": (n_target_exposures / n_unique_targets) if n_unique_targets else 0.0,
+        "max_exposure": max_exposure,
+        "exposure_multiplicity": dict(sorted(multiplicity.items(), key=lambda item: int(item[0]))),
+        "non_overlapping": max_exposure <= 1,
+    }
+
+
 class WindowedSequenceDataset(Dataset):
     """Dataset of autoregressive windows built from prepared symbolic pieces."""
 

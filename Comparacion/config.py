@@ -59,6 +59,17 @@ class LearningCurveConfig:
             raise ValueError("vomm_candidate_orders must contain nonnegative integers.")
         if len(set(self.vomm_candidate_orders)) != len(self.vomm_candidate_orders):
             raise ValueError("vomm_candidate_orders must not contain duplicates.")
+        if not isinstance(self.finite_hmm_states, tuple) or not self.finite_hmm_states:
+            raise ValueError("finite_hmm_states must be a nonempty tuple.")
+        if any(
+            isinstance(states, bool) or not isinstance(states, Integral) or int(states) < 2
+            for states in self.finite_hmm_states
+        ):
+            raise ValueError("finite_hmm_states must contain integers of at least 2.")
+        if len(set(self.finite_hmm_states)) != len(self.finite_hmm_states):
+            raise ValueError("finite_hmm_states must not contain duplicates.")
+        if list(self.finite_hmm_states) != sorted(self.finite_hmm_states):
+            raise ValueError("finite_hmm_states must be sorted in increasing order.")
         if (
             isinstance(self.bootstrap_samples, bool)
             or not isinstance(self.bootstrap_samples, Integral)

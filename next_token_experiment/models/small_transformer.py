@@ -880,10 +880,25 @@ class SmallTransformerNextTokenModel(NextTokenModel):
                 if patience >= self.spec.early_stopping_patience:
                     break
 
+        restore_start = time.perf_counter()
         self.model.load_state_dict(self.best_state_dict)
+        best_state_restore_wall_clock_s = time.perf_counter() - restore_start
+
+        # Contrato común de costo: la búsqueda de la mejor época es selección; el
+        # ajuste seleccionado sólo cubre las épocas hasta la mejor.
+        selected_rows = [row for row in train_log if row["epoch"] <= self.best_epoch]
+        selection_wall_clock_s = sum(
+            row["train_wall_clock_s"] + row["validation_wall_clock_s"] for row in train_log
+        )
         return {
             "train_log": train_log,
             "summary": {
+                "selection_wall_clock_s": selection_wall_clock_s,
+                "selected_fit_wall_clock_s": sum(row["train_wall_clock_s"] for row in selected_rows),
+                "selected_validation_wall_clock_s": sum(
+                    row["validation_wall_clock_s"] for row in selected_rows
+                ),
+                "best_state_restore_wall_clock_s": best_state_restore_wall_clock_s,
                 "best_epoch": self.best_epoch,
                 "best_validation_nll": self.best_validation_nll,
                 "best_validation_perplexity": perplexity_from_nll(self.best_validation_nll),

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict
 import json
 import math
 from numbers import Integral
+import os
 from pathlib import Path
+import platform
 from statistics import mean, pstdev
 import sys
 import time
@@ -16,9 +18,15 @@ import matplotlib
 matplotlib.use("Agg")  # El runner solo escribe PNG; sin esto Tk falla en headless.
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import torch
 
-from next_token_experiment.data.dataset import WindowedSequenceDataset, build_dataloaders
+from next_token_experiment.data.dataset import (
+    WindowedSequenceDataset,
+    build_dataloaders,
+    build_training_exposure_audit,
+)
 from next_token_experiment.data.preprocess import build_preprocessing_report, prepare_corpus
 from next_token_experiment.data.tokenizer import build_tokenizer
 from next_token_experiment.experiment.storage import ensure_directory, write_csv
@@ -30,7 +38,12 @@ from next_token_experiment.schemas import PreparedPiece
 
 from .classical_models import FiniteGlobalHMM, GlobalHDPHMM
 from .config import LearningCurveConfig
+from .canonicalization_audit import AUDIT_FILENAME as CANONICALIZATION_AUDIT_FILENAME
+from .canonicalization_audit import build_canonicalization_audit
 from .decision import pareto_front
+from .hdp_diagnostics import build_chain_diagnostics, write_chain_traces
+from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
+from .denominator_audit import build_denominator_audit
 from .splits import FixedSplits, build_fixed_splits, build_nested_training_subsets
 from .statistics import pairwise_model_comparisons
 from .structural_metrics import adjusted_rand_index, boundary_f1, normalized_mutual_information
@@ -219,6 +232,45 @@ def _build_transformer_dataloaders(
     )
 
 
+def _build_training_exposure_audit(
+    config: LearningCurveConfig,
+    *,
+    train_pieces,
+    validation_pieces,
+    test_pieces,
+) -> dict[str, object]:
+    """Mide cuántas veces se predice cada evento por época en cada partición."""
+
+    tokenizer = build_tokenizer(config.experiment.representation)
+    windows = config.experiment.windows
+    splits = {
+        "train": (train_pieces, windows.train_stride),
+        "validation": (validation_pieces, windows.eval_stride),
+        "test": (test_pieces, windows.eval_stride),
+    }
+    audits = {}
+    for split, (pieces, stride) in splits.items():
+        dataset = WindowedSequenceDataset(
+            pieces=pieces,
+            tokenizer=tokenizer,
+            split=split,
+            max_context_length=windows.max_context_length,
+            stride=stride,
+            min_window_length=windows.min_window_length,
+        )
+        audits[split] = build_training_exposure_audit(dataset, stride=stride)
+
+    return {
+        "max_context_length": windows.max_context_length,
+        "train_stride": windows.train_stride,
+        "eval_stride": windows.eval_stride,
+        "splits": audits,
+        "evaluation_is_non_overlapping": bool(
+            audits["validation"]["non_overlapping"] and audits["test"]["non_overlapping"]
+        ),
+    }
+
+
 def _transformer_summary_row(fit_result: dict, eval_result: dict) -> dict[str, object]:
     summary = eval_result["summary"]
     fit_summary = fit_result["summary"]
@@ -235,6 +287,13 @@ def _transformer_summary_row(fit_result: dict, eval_result: dict) -> dict[str, o
         ),
         "evaluation_wall_clock_s": summary["eval_wall_clock_s"],
         "device": summary.get("runtime", {}).get("device", "unknown"),
+        "selection_wall_clock_s": fit_summary.get("selection_wall_clock_s"),
+        "selected_fit_wall_clock_s": fit_summary.get("selected_fit_wall_clock_s"),
+        "selected_validation_wall_clock_s": fit_summary.get("selected_validation_wall_clock_s"),
+        "best_epoch": fit_summary.get("best_epoch"),
+        "epochs_completed": fit_summary.get("epochs_completed"),
+        "early_stopped": fit_summary.get("early_stopped"),
+        "best_state_restore_wall_clock_s": fit_summary.get("best_state_restore_wall_clock_s"),
     }
 
 
@@ -498,6 +557,8 @@ def _build_piece_metric_rows(
     model_seed: int | str,
     piece_metrics: list[dict[str, object]],
     evaluated_pieces: list[PreparedPiece],
+    *,
+    split_seed: int,
 ) -> list[dict[str, object]]:
     pieces_by_id = {piece.piece_id: piece for piece in evaluated_pieces}
     rows = []
@@ -512,6 +573,7 @@ def _build_piece_metric_rows(
         row["piece_id"] = piece.piece_id
         row["canonical_work_id"] = piece.canonical_work_id
         row["model"] = model_name
+        row["split_seed"] = split_seed
         row["frac"] = fraction
         row["data_seed"] = data_seed
         row["model_seed"] = model_seed
@@ -668,6 +730,171 @@ def _plot_learning_curve(summary_rows: list[dict[str, object]], output_path: Pat
     plt.close()
 
 
+PROTOCOL_COST_FIELDS = (
+    "selection_wall_clock_s",
+    "selected_fit_wall_clock_s",
+    "selected_validation_wall_clock_s",
+    "evaluation_wall_clock_s",
+    "total_protocol_wall_clock_s",
+)
+
+
+def _finite_seconds(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0.0 else None
+
+
+def _protocol_cost_fields(
+    summary: Mapping[str, object],
+    *,
+    evaluation_wall_clock_s: object,
+) -> dict[str, object]:
+    """Separa selección, ajuste seleccionado, validación y evaluación.
+
+    Un único tiempo agregado nunca se presenta como "costo de entrenar": si sólo
+    existe el total heredado, los campos separados quedan en ``None`` y
+    ``cost_status`` lo dice.
+    """
+
+    selection = _finite_seconds(summary.get("selection_wall_clock_s"))
+    selected_fit = _finite_seconds(summary.get("selected_fit_wall_clock_s"))
+    selected_validation = _finite_seconds(
+        summary.get(
+            "selected_validation_wall_clock_s",
+            summary.get("selected_validation_evaluation_wall_clock_s"),
+        )
+    )
+    evaluation = _finite_seconds(evaluation_wall_clock_s)
+    legacy_total = _finite_seconds(summary.get("train_time_sec", summary.get("fit_wall_clock_s")))
+
+    if selection is not None:
+        protocol_total = selection
+        status = "separated" if selected_fit is not None else "partially_separated"
+    elif selected_fit is not None or selected_validation is not None:
+        protocol_total = (selected_fit or 0.0) + (selected_validation or 0.0)
+        status = "partially_separated"
+    elif legacy_total is not None:
+        protocol_total = legacy_total
+        status = "unseparated_legacy_total"
+    else:
+        protocol_total = 0.0
+        status = "unmeasured"
+
+    total = protocol_total + (evaluation or 0.0)
+    return {
+        "selection_wall_clock_s": selection,
+        "selected_fit_wall_clock_s": selected_fit,
+        "selected_validation_wall_clock_s": selected_validation,
+        "evaluation_wall_clock_s": evaluation,
+        "total_protocol_wall_clock_s": total,
+        "cost_status": status,
+    }
+
+
+def build_finite_hmm_grid_audit(
+    raw_rows: Iterable[Mapping[str, object]],
+    *,
+    grid: Sequence[int],
+    resource_limit_reason: str | None = None,
+) -> dict[str, object]:
+    """Dice si la rejilla de capacidad fue informativa.
+
+    Que la selección siga tocando el máximo no es una meseta del modelo: es una
+    rejilla corta. Un límite de recursos documentado tampoco lo es; se registra
+    como tal.
+    """
+
+    grid_values = [int(value) for value in grid]
+    grid_maximum = max(grid_values) if grid_values else None
+    selections: list[int] = []
+    for row in raw_rows:
+        if row.get("model") != "finite_hmm":
+            continue
+        selected = row.get("selected_states")
+        if isinstance(selected, bool) or not isinstance(selected, (int, float)):
+            continue
+        if not math.isfinite(float(selected)):
+            continue
+        selections.append(int(selected))
+
+    n_at_maximum = sum(1 for value in selections if value == grid_maximum)
+    if not selections:
+        verdict = "no_selections"
+    elif resource_limit_reason:
+        verdict = (
+            "grid_limited_by_resources"
+            if n_at_maximum * 2 >= len(selections)
+            else "grid_informative"
+        )
+    elif n_at_maximum * 2 >= len(selections):
+        verdict = "grid_too_small"
+    else:
+        verdict = "grid_informative"
+
+    return {
+        "grid": grid_values,
+        "grid_maximum": grid_maximum,
+        "n_selections": len(selections),
+        "n_at_grid_maximum": n_at_maximum,
+        "selected_states": selections,
+        "verdict": verdict,
+        "informative": verdict == "grid_informative",
+        # Nunca se afirma una meseta desde esta evidencia sola.
+        "plateau_claimed": False,
+        "resource_limit_reason": resource_limit_reason,
+        "policy": "selection_touching_the_maximum_means_a_short_grid_not_a_model_plateau",
+    }
+
+
+def _build_hardware_manifest(*, target_device: str, precision: str) -> dict[str, object]:
+    """Registra el entorno de medición. Lo no medible queda en null con motivo."""
+
+    manifest: dict[str, object] = {
+        "target_device": target_device,
+        "precision": precision,
+        "platform": platform.platform(),
+        "processor": platform.processor() or None,
+        "python_version": platform.python_version(),
+        "numpy_version": np.__version__,
+        "torch_version": getattr(torch, "__version__", None),
+        "cpu_count": os.cpu_count(),
+        "process_count_status": "not_measured_reliably",
+        "process_count": None,
+    }
+
+    total_ram_bytes: int | None = None
+    total_ram_status = "psutil_not_installed"
+    try:  # psutil es opcional: sin él la RAM total no se inventa.
+        import psutil
+
+        total_ram_bytes = int(psutil.virtual_memory().total)
+        total_ram_status = "measured"
+    except Exception as error:  # noqa: BLE001 - el motivo se registra tal cual
+        total_ram_status = f"unavailable: {error.__class__.__name__}"
+    manifest["total_ram_bytes"] = total_ram_bytes
+    manifest["total_ram_status"] = total_ram_status
+
+    gpu_name: str | None = None
+    peak_gpu_memory_bytes: int | None = None
+    gpu_status = "cuda_not_available"
+    try:
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            peak_gpu_memory_bytes = int(torch.cuda.max_memory_allocated())
+            gpu_status = "measured"
+    except Exception as error:  # noqa: BLE001
+        gpu_status = f"unavailable: {error.__class__.__name__}"
+    manifest["gpu_name"] = gpu_name
+    manifest["peak_gpu_memory_bytes"] = peak_gpu_memory_bytes
+    manifest["peak_gpu_memory_status"] = gpu_status
+    return manifest
+
+
 def _engineering_cost_rows(raw_rows: list[dict[str, object]]) -> list[dict[str, object]]:
     fields = (
         "model",
@@ -677,7 +904,8 @@ def _engineering_cost_rows(raw_rows: list[dict[str, object]]) -> list[dict[str, 
         "n_train_pieces",
         "n_train_tokens",
         "fit_wall_clock_s",
-        "evaluation_wall_clock_s",
+        *PROTOCOL_COST_FIELDS,
+        "cost_status",
         "n_params",
         "selected_states",
         "effective_states",
@@ -944,6 +1172,17 @@ def run_learning_curve_experiment(
     _write_json(output_root / "preprocessing_report.json", build_preprocessing_report(preparation))
     write_csv(output_root / "exclusions.csv", [item.__dict__ for item in preparation.exclusions])
     _write_split_artifacts(output_root, fixed_splits, nested_by_seed)
+    # La exposición depende sólo de la partición y de los desplazamientos, así
+    # que se mide una vez por corrida con el pozo de entrenamiento completo.
+    _write_json(
+        output_root / "training_exposure_audit.json",
+        _build_training_exposure_audit(
+            config,
+            train_pieces=fixed_splits.train_pool_pieces,
+            validation_pieces=fixed_splits.validation_pieces,
+            test_pieces=fixed_splits.test_pieces,
+        ),
+    )
     structural_reference = _load_structural_annotations(config.structural_annotations_path)
 
     if plan_only:
@@ -979,6 +1218,7 @@ def run_learning_curve_experiment(
     structural_predictions: list[dict[str, object]] = list(restored["structural_predictions"]) if restored else []
     protocol_path = output_root / "protocol_audit.json"
 
+    hdp_traces_by_seed: dict[int, list[dict[str, object]]] = {}
     total_cells = sum(len(subsets) for subsets in nested_by_seed.values())
     if completed_cells:
         print(
@@ -989,7 +1229,7 @@ def run_learning_curve_experiment(
 
     for data_seed, nested_subsets in sorted(nested_by_seed.items()):
         for fraction, train_pieces in nested_subsets:
-            cell = f"data_seed={data_seed},frac={fraction}"
+            cell = f"split_seed={config.split_seed},data_seed={data_seed},frac={fraction}"
             if cell in completed_cells:
                 continue
             marks = {
@@ -1033,6 +1273,7 @@ def run_learning_curve_experiment(
                 raw_rows.append(
                     {
                         "model": "vomm",
+                        "split_seed": config.split_seed,
                         "data_seed": data_seed,
                         "model_seed": _VOMM_DETERMINISTIC_SEED,
                         "frac": fraction,
@@ -1050,7 +1291,10 @@ def run_learning_curve_experiment(
                         "test_brier_score": vomm_summary["brier_score"],
                         "train_time_sec": vomm_summary["train_time_sec"],
                         "fit_wall_clock_s": vomm_summary["train_time_sec"],
-                        "evaluation_wall_clock_s": vomm_summary["evaluation_wall_clock_s"],
+                        **_protocol_cost_fields(
+                            vomm_summary,
+                            evaluation_wall_clock_s=vomm_summary["evaluation_wall_clock_s"],
+                        ),
                         "hyperparams_json": json.dumps({"selected_order": vomm.selected_order}),
                     }
                 )
@@ -1062,6 +1306,7 @@ def run_learning_curve_experiment(
                         _VOMM_DETERMINISTIC_SEED,
                         vomm_eval["piece_metrics"],
                         fixed_splits.test_pieces,
+                        split_seed=config.split_seed,
                     )
                 )
 
@@ -1108,6 +1353,7 @@ def run_learning_curve_experiment(
                 raw_rows.append(
                     {
                         "model": "finite_hmm",
+                        "split_seed": config.split_seed,
                         "data_seed": data_seed,
                         "model_seed": model_seed,
                         "frac": fraction,
@@ -1123,7 +1369,9 @@ def run_learning_curve_experiment(
                         "test_nll": finite_summary["test_nll_per_token"],
                         "train_time_sec": finite_summary["train_time_sec"],
                         "fit_wall_clock_s": finite_summary["train_time_sec"],
-                        "evaluation_wall_clock_s": finite_eval_elapsed,
+                        **_protocol_cost_fields(
+                            finite_summary, evaluation_wall_clock_s=finite_eval_elapsed
+                        ),
                         "hyperparams_json": json.dumps({"selected_states": finite_summary["selected_states"]}),
                     }
                 )
@@ -1135,6 +1383,7 @@ def run_learning_curve_experiment(
                         model_seed,
                         finite_eval["piece_metrics"],
                         fixed_splits.test_pieces,
+                        split_seed=config.split_seed,
                     )
                 )
 
@@ -1152,6 +1401,16 @@ def run_learning_curve_experiment(
                     bos_token_id=bos_token_id,
                     max_context_length=max_context_length,
                 )
+                for trace_row in hdp_fit.get("selected_chain_trace", []) or []:
+                    hdp_traces_by_seed.setdefault(model_seed, []).append(
+                        {
+                            "split_seed": config.split_seed,
+                            "data_seed": data_seed,
+                            "model_seed": model_seed,
+                            "frac": fraction,
+                            **trace_row,
+                        }
+                    )
                 hdp_eval_start = time.perf_counter()
                 hdp_eval = hdp_hmm.evaluate(
                     fixed_splits.test_pieces,
@@ -1181,6 +1440,7 @@ def run_learning_curve_experiment(
                 raw_rows.append(
                     {
                         "model": "hdp_hmm",
+                        "split_seed": config.split_seed,
                         "data_seed": data_seed,
                         "model_seed": model_seed,
                         "frac": fraction,
@@ -1196,7 +1456,9 @@ def run_learning_curve_experiment(
                         "test_nll": hdp_summary["test_nll_per_token"],
                         "train_time_sec": hdp_summary["train_time_sec"],
                         "fit_wall_clock_s": hdp_summary["train_time_sec"],
-                        "evaluation_wall_clock_s": hdp_eval_elapsed,
+                        **_protocol_cost_fields(
+                            hdp_summary, evaluation_wall_clock_s=hdp_eval_elapsed
+                        ),
                         "hyperparams_json": json.dumps(hdp_fit["selected_hyperparameters"]),
                     }
                 )
@@ -1208,6 +1470,7 @@ def run_learning_curve_experiment(
                         model_seed,
                         hdp_eval["piece_metrics"],
                         fixed_splits.test_pieces,
+                        split_seed=config.split_seed,
                     )
                 )
 
@@ -1251,6 +1514,7 @@ def run_learning_curve_experiment(
                 raw_rows.append(
                     {
                         "model": "transformer",
+                        "split_seed": config.split_seed,
                         "data_seed": data_seed,
                         "model_seed": model_seed,
                         "frac": fraction,
@@ -1268,7 +1532,10 @@ def run_learning_curve_experiment(
                         "test_brier_score": transformer_summary["test_brier_score"],
                         "train_time_sec": transformer_summary["train_time_sec"],
                         "fit_wall_clock_s": transformer_fit_wall_clock_s,
-                        "evaluation_wall_clock_s": transformer_summary["evaluation_wall_clock_s"],
+                        **_protocol_cost_fields(
+                            transformer_summary,
+                            evaluation_wall_clock_s=transformer_summary["evaluation_wall_clock_s"],
+                        ),
                         "hyperparams_json": json.dumps(
                             {"architecture": config.experiment.transformer.architecture}
                         ),
@@ -1282,6 +1549,7 @@ def run_learning_curve_experiment(
                         model_seed,
                         transformer_eval["piece_metrics"],
                         fixed_splits.test_pieces,
+                        split_seed=config.split_seed,
                     )
                 )
 
@@ -1309,6 +1577,29 @@ def run_learning_curve_experiment(
     write_csv(output_root / "results_summary.csv", summary_rows)
     write_csv(output_root / "piece_metrics_raw.csv", piece_metric_rows)
     write_csv(output_root / "engineering_costs.csv", _engineering_cost_rows(raw_rows))
+    # Las trazas del HDP-HMM se conservan por semilla; el diagnóstico las lee sin
+    # volver a muestrear y nunca declara convergencia.
+    trace_paths = write_chain_traces(hdp_traces_by_seed, output_root)
+    _write_json(
+        output_root / "hdp_chain_diagnostics.json",
+        {
+            **build_chain_diagnostics(
+                hdp_traces_by_seed, min_iterations=max(1, config.hdp_n_iters // 2)
+            ),
+            "trace_files": [Path(path).name for path in trace_paths],
+        },
+    )
+    _write_json(
+        output_root / "finite_hmm_grid_audit.json",
+        build_finite_hmm_grid_audit(raw_rows, grid=config.finite_hmm_states),
+    )
+    _write_json(
+        output_root / "hardware_manifest.json",
+        _build_hardware_manifest(
+            target_device=config.experiment.hardware.target_device,
+            precision=config.experiment.hardware.precision,
+        ),
+    )
     _plot_learning_curve(summary_rows, output_root / "learning_curve.png")
 
     pairwise_payload = pairwise_model_comparisons(
@@ -1317,6 +1608,19 @@ def run_learning_curve_experiment(
         seed=config.bootstrap_seed,
     )
     _write_json(output_root / "pairwise_comparisons.json", pairwise_payload)
+    # Los dos denominadores del reporte (archivos evaluados y obras comparadas)
+    # se explican con evidencia en lugar de conciliarse a mano.
+    denominator_payload = build_denominator_audit(
+        piece_metric_rows,
+        test_piece_ids=[piece.piece_id for piece in fixed_splits.test_pieces],
+        validation_piece_ids=[piece.piece_id for piece in fixed_splits.validation_pieces],
+    )
+    _write_json(output_root / DENOMINATOR_AUDIT_FILENAME, denominator_payload)
+    # Informe de riesgo del agrupamiento por obra: no cambia ninguna asignación.
+    _write_json(
+        output_root / CANONICALIZATION_AUDIT_FILENAME,
+        build_canonicalization_audit(preparation.pieces),
+    )
     structural_payload = _build_structural_evaluation(
         structural_reference,
         structural_predictions,
@@ -1346,7 +1650,7 @@ def run_learning_curve_experiment(
         "pareto_summary": str(output_root / "pareto_summary.json"),
         "learning_curve": str(output_root / "learning_curve.png"),
     }
-    return {
+    summary = {
         "status": "completed",
         "output_root": str(output_root),
         "n_prepared_pieces": len(preparation.pieces),
@@ -1355,3 +1659,7 @@ def run_learning_curve_experiment(
         "pairwise_comparisons": pairwise_payload,
         "artifacts": artifacts,
     }
+    # run_summary.json deja el resumen en disco para que la auditoría de
+    # artefactos pueda contrastar archivos y cifras sin re-ejecutar nada.
+    _write_json(output_root / "run_summary.json", {key: value for key, value in summary.items() if key != "pairwise_comparisons"})
+    return summary

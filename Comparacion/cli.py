@@ -3,10 +3,16 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import replace
+from pathlib import Path
 
 from next_token_experiment.config import HardwareConfig, TransformerConfig
 
+from .artifact_audit import write_audit_reports
+from .canonicalization_audit import AUDIT_FILENAME as CANONICALIZATION_AUDIT_FILENAME
+from .canonicalization_audit import write_canonicalization_audit
 from .config import build_default_learning_curve_config
+from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
+from .denominator_audit import audit_run_directory, read_piece_metric_rows
 from .runner import run_learning_curve_experiment
 
 
@@ -28,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plan-only", action="store_true", help="Write an execution plan without constructing or fitting models.")
     parser.add_argument("--without-vomm", action="store_true", help="Disable the optional PPM-inspired VOMM diagnostic control.")
     parser.add_argument("--structural-annotations", default=None, help="Optional CSV with piece_id,event_index,segment_label,boundary columns.")
+    parser.add_argument("--split-seed", type=int, default=None, help="Seed of the fixed train/validation/test partition. Repeat the run with different values to measure sensitivity to the partition.")
+    parser.add_argument("--finite-hmm-states", default=None, help="Comma-separated candidate state counts for the finite HMM, for example 48,72,96. Must be increasing, unique and at least 2.")
+    parser.add_argument("--train-stride", type=int, default=None, help="Training window stride. Equal to --max-context-length means non-overlapping training windows; the default 64 exposes each event more than once per epoch.")
+    parser.add_argument("--audit-run", default=None, help="Audit an existing run directory read-only and exit; writes the manifest and the audit outside it.")
+    parser.add_argument("--audit-output", default=None, help="Directory for --audit-run reports. Defaults to <run>/../audits/<run name>.")
     return parser
 
 
@@ -49,6 +60,41 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.audit_run is not None:
+        run_dir = Path(args.audit_run)
+        output_dir = Path(args.audit_output) if args.audit_output else run_dir.parent / "audits" / run_dir.name
+        report = write_audit_reports(run_dir, output_dir)
+        denominators = audit_run_directory(run_dir)
+        denominator_path = Path(report["audit_path"]).parent / DENOMINATOR_AUDIT_FILENAME
+        denominator_path.write_text(json.dumps(denominators, indent=2, ensure_ascii=False), encoding="utf-8")
+        report["denominator_audit_path"] = str(denominator_path)
+        metrics_path = run_dir / "piece_metrics_raw.csv"
+        if metrics_path.exists():
+            # Una fila por (pieza, modelo, celda): basta una por pieza para el
+            # informe de agrupamiento, y los CSV guardados no traen tokens, así
+            # que la huella melódica queda vacía en corridas ya terminadas.
+            unique_pieces = {}
+            for row in read_piece_metric_rows(metrics_path):
+                unique_pieces.setdefault(row.get("piece_id"), row)
+            canonicalization = write_canonicalization_audit(
+                unique_pieces.values(),
+                denominator_path.parent / CANONICALIZATION_AUDIT_FILENAME,
+            )
+            report["canonicalization_audit_path"] = str(
+                denominator_path.parent / CANONICALIZATION_AUDIT_FILENAME
+            )
+            report["canonicalization"] = {
+                "n_files": canonicalization["n_files"],
+                "n_canonical_works": canonicalization["n_canonical_works"],
+                "n_review_required": len(canonicalization["review_required"]),
+            }
+        report["denominators"] = {
+            key: denominators.get(key)
+            for key in ("status", "n_scored_files", "n_canonical_works", "n_files_absorbed_by_grouping", "explanation")
+        }
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return
+
     config = build_default_learning_curve_config(
         corpus_root=args.corpus_root,
         results_root=args.results_root,
@@ -59,6 +105,13 @@ def main() -> None:
         experiment = replace(
             experiment,
             transformer=replace(experiment.transformer, max_epochs=args.transformer_max_epochs),
+        )
+    if args.train_stride is not None:
+        if args.train_stride <= 0:
+            parser.error("--train-stride must be positive")
+        experiment = replace(
+            experiment,
+            windows=replace(experiment.windows, train_stride=args.train_stride),
         )
     if args.transformer_device is not None:
         experiment = replace(
@@ -80,6 +133,16 @@ def main() -> None:
     parsed_fractions = _parse_float_tuple(args.fractions)
     if parsed_fractions is not None:
         updates["train_fractions"] = parsed_fractions
+    if args.split_seed is not None:
+        updates["split_seed"] = args.split_seed
+        experiment = replace(
+            experiment,
+            split=replace(experiment.split, seed=args.split_seed),
+        )
+        updates["experiment"] = experiment
+    parsed_states = _parse_int_tuple(args.finite_hmm_states)
+    if parsed_states is not None:
+        updates["finite_hmm_states"] = parsed_states
 
     config = replace(config, **updates)
     result = run_learning_curve_experiment(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -65,6 +65,32 @@ class HDPHMMDiagnostics:
     state_samples: list[np.ndarray]
     beta_update_mode: str
     best_iteration: int
+    #: Hiperparámetros de la cadena; van con la traza para que sea auditable.
+    hyperparameters: dict[str, float] = field(default_factory=dict)
+
+    def trace_rows(self) -> list[dict[str, float | int | str]]:
+        """Traza por iteración, con los hiperparámetros que la produjeron."""
+
+        rows: list[dict[str, float | int | str]] = []
+        for iteration, (log_likelihood, active_states, entropy) in enumerate(
+            zip(
+                self.log_likelihood_history,
+                self.active_state_history,
+                self.beta_entropy_history,
+            ),
+            start=1,
+        ):
+            rows.append(
+                {
+                    "iteration": iteration,
+                    "log_likelihood": float(log_likelihood),
+                    "active_states": int(active_states),
+                    "beta_entropy": float(entropy),
+                    "beta_update_mode": self.beta_update_mode,
+                    **{str(key): value for key, value in self.hyperparameters.items()},
+                }
+            )
+        return rows
 
     def to_dataframe(self) -> pd.DataFrame:
         rows = []
@@ -368,6 +394,15 @@ class TruncatedHDPHMM:
             state_samples=state_samples,
             beta_update_mode=beta_update_mode,
             best_iteration=best_iteration,
+            hyperparameters={
+                "alpha": float(self.alpha),
+                "alpha0": float(self.alpha0),
+                "gamma": float(self.gamma),
+                "kappa": float(self.kappa),
+                "eta": float(self.eta),
+                "n_states_truncation": int(self.n_states),
+                "burn_in": int(self.burn_in),
+            },
         )
         return HDPHMMResult(
             latent_states=best_states,
