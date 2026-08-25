@@ -7,8 +7,11 @@ them here so the test owns its own oracle.
 
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
+import unittest
+
 import numpy as np
-import pytest
 
 from Comparacion.classical_models import _expectation_batch, _pad_sequences
 from src.models.inference import (
@@ -104,120 +107,172 @@ def _reference_e_step(initial, transition, emission, sequences, n_states, vocab_
     return initial_counts, transition_counts, emission_counts, total
 
 
-def test_batched_e_step_matches_log_domain():
-    n_states, vocab_size = 24, 13
-    initial, transition, emission = _parameters(n_states, vocab_size)
-    sequences = _sequences(vocab_size)
+class ScaledInferenceRegressionTests(unittest.TestCase):
+    def test_batched_e_step_matches_log_domain(self) -> None:
+        n_states, vocab_size = 24, 13
+        initial, transition, emission = _parameters(n_states, vocab_size)
+        sequences = _sequences(vocab_size)
 
-    expected = _reference_e_step(
-        initial, transition, emission, sequences, n_states, vocab_size
-    )
+        expected = _reference_e_step(
+            initial, transition, emission, sequences, n_states, vocab_size
+        )
 
-    actual = [np.zeros(n_states), np.zeros((n_states, n_states)),
-              np.zeros((n_states, vocab_size)), 0.0]
-    for padded, lengths in _pad_sequences(sequences):
-        parts = _expectation_batch(initial, transition, emission, padded, lengths)
-        for index in range(3):
-            actual[index] = actual[index] + parts[index]
-        actual[3] += parts[3]
+        actual = [
+            np.zeros(n_states),
+            np.zeros((n_states, n_states)),
+            np.zeros((n_states, vocab_size)),
+            0.0,
+        ]
+        for padded, lengths in _pad_sequences(sequences):
+            parts = _expectation_batch(initial, transition, emission, padded, lengths)
+            for index in range(3):
+                actual[index] = actual[index] + parts[index]
+            actual[3] += parts[3]
 
-    for name, want, got in zip(
-        ("initial", "transition", "emission", "log_likelihood"), expected, actual
-    ):
-        want, got = np.asarray(want, dtype=float), np.asarray(got, dtype=float)
-        scale = max(float(np.max(np.abs(want))), 1.0)
-        assert np.max(np.abs(want - got)) / scale < 1e-8, f"{name} drifted"
+        for name, want, got in zip(
+            ("initial", "transition", "emission", "log_likelihood"), expected, actual
+        ):
+            want, got = np.asarray(want, dtype=float), np.asarray(got, dtype=float)
+            scale = max(float(np.max(np.abs(want))), 1.0)
+            self.assertLess(
+                np.max(np.abs(want - got)) / scale,
+                1e-8,
+                f"{name} drifted",
+            )
+
+    def test_batched_ffbs_log_likelihood_matches_forward(self) -> None:
+        n_states, vocab_size = 40, 13
+        initial, transition, emission = _parameters(n_states, vocab_size)
+        sequences = _sequences(vocab_size)
+
+        expected = np.array(
+            [
+                forward_log_likelihood(initial, transition, emission, item)[0]
+                for item in sequences
+            ]
+        )
+        states, actual = ffbs_sample_batch(
+            initial, transition, emission, sequences, np.random.default_rng(7)
+        )
+
+        self.assertTrue(np.allclose(expected, actual, atol=1e-6))
+        self.assertEqual(
+            [item.size for item in states],
+            [item.size for item in sequences],
+        )
+        self.assertTrue(
+            all(item.min() >= 0 and item.max() < n_states for item in states)
+        )
+
+    def test_scaled_forward_matches_log_domain(self) -> None:
+        n_states, vocab_size = 40, 13
+        initial, transition, emission = _parameters(n_states, vocab_size)
+        for observations in _sequences(vocab_size):
+            expected, _ = forward_log_likelihood(
+                initial, transition, emission, observations
+            )
+            actual = scaled_forward_log_likelihood(
+                initial, transition, emission, observations
+            )
+            self.assertLess(abs(expected - actual), 1e-6)
+
+    def test_batched_ffbs_sampler_follows_the_emissions(self) -> None:
+        """A near-deterministic emission matrix pins each state to its own token."""
+
+        n_states = 3
+        initial = np.full(n_states, 1 / n_states)
+        transition = np.full((n_states, n_states), 1 / n_states)
+        emission = np.full((n_states, n_states), 1e-9)
+        np.fill_diagonal(emission, 1.0)
+        emission /= emission.sum(axis=1, keepdims=True)
+
+        observations = [np.array([0, 1, 2, 1, 0, 2, 2, 0])]
+        states, _ = ffbs_sample_batch(
+            initial, transition, emission, observations, np.random.default_rng(3)
+        )
+        self.assertTrue(np.array_equal(states[0], observations[0]))
+
+    def test_counting_helpers_match_the_naive_loops(self) -> None:
+        for n_states, vocab_size in ((4, 5), (12, 13)):
+            with self.subTest(n_states=n_states, vocab_size=vocab_size):
+                rng = np.random.default_rng(2)
+                states = rng.integers(0, n_states, size=500)
+                observations = rng.integers(0, vocab_size, size=500)
+
+                expected_transitions = np.zeros((n_states, n_states), dtype=int)
+                for left, right in zip(states[:-1], states[1:]):
+                    expected_transitions[left, right] += 1
+                self.assertTrue(
+                    np.array_equal(
+                        count_transitions(states, n_states), expected_transitions
+                    )
+                )
+
+                expected_emissions = np.zeros((n_states, vocab_size), dtype=int)
+                for state, observation in zip(states, observations):
+                    expected_emissions[state, observation] += 1
+                self.assertTrue(
+                    np.array_equal(
+                        count_emissions(
+                            states, observations, n_states, vocab_size
+                        ),
+                        expected_emissions,
+                    )
+                )
+
+    def test_corpus_cache_respects_the_current_selection(self) -> None:
+        """A cache holding more scores than `max_files` must not drag the extras in."""
+
+        from dataclasses import replace
+
+        from next_token_experiment.data.preprocess import prepare_corpus
+        from next_token_experiment.protocol import build_default_experiment_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            corpus = tmp_path / "scores"
+            corpus.mkdir()
+            for index in range(6):
+                (corpus / f"{index}.musicxml").write_text(
+                    _MINIMAL_SCORE, encoding="utf-8"
+                )
+
+            config = build_default_experiment_config()
+            config = replace(
+                config,
+                corpus=replace(
+                    config.corpus,
+                    root_dir=str(corpus),
+                    min_events_per_piece=1,
+                ),
+            )
+            cache = tmp_path / "cache.jsonl"
+
+            everything = prepare_corpus(
+                config, n_workers=1, cache_path=cache, progress_every=0
+            )
+            self.assertEqual(
+                len(everything.pieces) + len(everything.exclusions), 6
+            )
+
+            # Same cache, smaller selection: the cached extras must stay out.
+            subset = prepare_corpus(
+                config,
+                max_files=2,
+                n_workers=1,
+                cache_path=cache,
+                progress_every=0,
+            )
+            self.assertEqual(len(subset.pieces) + len(subset.exclusions), 2)
+
+    def test_count_transitions_handles_short_input(self) -> None:
+        self.assertTrue(
+            np.array_equal(
+                count_transitions(np.array([2]), 4),
+                np.zeros((4, 4), dtype=int),
+            )
+        )
 
 
-def test_batched_ffbs_log_likelihood_matches_forward():
-    n_states, vocab_size = 40, 13
-    initial, transition, emission = _parameters(n_states, vocab_size)
-    sequences = _sequences(vocab_size)
-
-    expected = np.array([
-        forward_log_likelihood(initial, transition, emission, item)[0]
-        for item in sequences
-    ])
-    states, actual = ffbs_sample_batch(
-        initial, transition, emission, sequences, np.random.default_rng(7)
-    )
-
-    assert np.allclose(expected, actual, atol=1e-6)
-    assert [item.size for item in states] == [item.size for item in sequences]
-    assert all(item.min() >= 0 and item.max() < n_states for item in states)
-
-
-def test_scaled_forward_matches_log_domain():
-    n_states, vocab_size = 40, 13
-    initial, transition, emission = _parameters(n_states, vocab_size)
-    for observations in _sequences(vocab_size):
-        expected, _ = forward_log_likelihood(initial, transition, emission, observations)
-        actual = scaled_forward_log_likelihood(initial, transition, emission, observations)
-        assert abs(expected - actual) < 1e-6
-
-
-def test_batched_ffbs_sampler_follows_the_emissions():
-    """A near-deterministic emission matrix pins each state to its own token."""
-
-    n_states = 3
-    initial = np.full(n_states, 1 / n_states)
-    transition = np.full((n_states, n_states), 1 / n_states)
-    emission = np.full((n_states, n_states), 1e-9)
-    np.fill_diagonal(emission, 1.0)
-    emission /= emission.sum(axis=1, keepdims=True)
-
-    observations = [np.array([0, 1, 2, 1, 0, 2, 2, 0])]
-    states, _ = ffbs_sample_batch(
-        initial, transition, emission, observations, np.random.default_rng(3)
-    )
-    assert np.array_equal(states[0], observations[0])
-
-
-@pytest.mark.parametrize("n_states,vocab_size", [(4, 5), (12, 13)])
-def test_counting_helpers_match_the_naive_loops(n_states, vocab_size):
-    rng = np.random.default_rng(2)
-    states = rng.integers(0, n_states, size=500)
-    observations = rng.integers(0, vocab_size, size=500)
-
-    expected_transitions = np.zeros((n_states, n_states), dtype=int)
-    for left, right in zip(states[:-1], states[1:]):
-        expected_transitions[left, right] += 1
-    assert np.array_equal(count_transitions(states, n_states), expected_transitions)
-
-    expected_emissions = np.zeros((n_states, vocab_size), dtype=int)
-    for state, observation in zip(states, observations):
-        expected_emissions[state, observation] += 1
-    assert np.array_equal(
-        count_emissions(states, observations, n_states, vocab_size), expected_emissions
-    )
-
-
-def test_corpus_cache_respects_the_current_selection(tmp_path):
-    """A cache holding more scores than `max_files` must not drag the extras in."""
-
-    from dataclasses import replace
-
-    from next_token_experiment.data.preprocess import prepare_corpus
-    from next_token_experiment.protocol import build_default_experiment_config
-
-    corpus = tmp_path / "scores"
-    corpus.mkdir()
-    for index in range(6):
-        (corpus / f"{index}.musicxml").write_text(_MINIMAL_SCORE, encoding="utf-8")
-
-    config = build_default_experiment_config()
-    config = replace(config, corpus=replace(config.corpus, root_dir=str(corpus),
-                                            min_events_per_piece=1))
-    cache = tmp_path / "cache.jsonl"
-
-    everything = prepare_corpus(config, n_workers=1, cache_path=cache, progress_every=0)
-    assert len(everything.pieces) + len(everything.exclusions) == 6
-
-    # Same cache, smaller selection: the cached extras must stay out.
-    subset = prepare_corpus(config, max_files=2, n_workers=1, cache_path=cache,
-                            progress_every=0)
-    assert len(subset.pieces) + len(subset.exclusions) == 2
-
-
-def test_count_transitions_handles_short_input():
-    assert np.array_equal(count_transitions(np.array([2]), 4), np.zeros((4, 4), dtype=int))
+if __name__ == "__main__":
+    unittest.main()
