@@ -150,6 +150,14 @@ def _piece_metrics_from_log_likelihood(
     }
 
 
+def _chain_trace_rows(result: object) -> list[dict[str, object]]:
+    """Traza de la cadena seleccionada, o vacía si el resultado no la trae."""
+
+    diagnostics = getattr(result, "diagnostics", None)
+    trace_rows = getattr(diagnostics, "trace_rows", None)
+    return list(trace_rows()) if callable(trace_rows) else []
+
+
 @dataclass(frozen=True)
 class FiniteHMMFitResult:
     selected_states: int
@@ -447,6 +455,7 @@ class GlobalHDPHMM:
         self.selection_wall_clock_s: float | None = None
         self.selected_fit_wall_clock_s: float | None = None
         self.selected_validation_wall_clock_s: float | None = None
+        self.selected_candidate_index: int | None = None
 
     def _score_piece(
         self,
@@ -553,6 +562,7 @@ class GlobalHDPHMM:
                 self.best_result = result
                 self.selected_fit_wall_clock_s = candidate_fit_wall_clock_s
                 self.selected_validation_wall_clock_s = candidate_validation_wall_clock_s
+                self.selected_candidate_index = index
 
         if self.best_result is None or self.best_hyperparameters is None or self.validation_nll_per_token is None:
             raise ValueError("HDP-HMM fitting did not yield a valid result.")
@@ -571,6 +581,10 @@ class GlobalHDPHMM:
             "validation_nll_per_token": self.validation_nll_per_token,
             "train_time_sec": self.train_time_sec,
             "train_log": train_log,
+            # Traza por iteración de la cadena seleccionada: se conserva para
+            # diagnosticar estabilidad sin volver a muestrear.
+            "selected_chain_trace": _chain_trace_rows(self.best_result),
+            "selected_candidate_index": self.selected_candidate_index,
         }
 
     def evaluate(

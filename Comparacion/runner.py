@@ -41,6 +41,7 @@ from .config import LearningCurveConfig
 from .canonicalization_audit import AUDIT_FILENAME as CANONICALIZATION_AUDIT_FILENAME
 from .canonicalization_audit import build_canonicalization_audit
 from .decision import pareto_front
+from .hdp_diagnostics import build_chain_diagnostics, write_chain_traces
 from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
 from .denominator_audit import build_denominator_audit
 from .splits import FixedSplits, build_fixed_splits, build_nested_training_subsets
@@ -1217,6 +1218,7 @@ def run_learning_curve_experiment(
     structural_predictions: list[dict[str, object]] = list(restored["structural_predictions"]) if restored else []
     protocol_path = output_root / "protocol_audit.json"
 
+    hdp_traces_by_seed: dict[int, list[dict[str, object]]] = {}
     total_cells = sum(len(subsets) for subsets in nested_by_seed.values())
     if completed_cells:
         print(
@@ -1399,6 +1401,16 @@ def run_learning_curve_experiment(
                     bos_token_id=bos_token_id,
                     max_context_length=max_context_length,
                 )
+                for trace_row in hdp_fit.get("selected_chain_trace", []) or []:
+                    hdp_traces_by_seed.setdefault(model_seed, []).append(
+                        {
+                            "split_seed": config.split_seed,
+                            "data_seed": data_seed,
+                            "model_seed": model_seed,
+                            "frac": fraction,
+                            **trace_row,
+                        }
+                    )
                 hdp_eval_start = time.perf_counter()
                 hdp_eval = hdp_hmm.evaluate(
                     fixed_splits.test_pieces,
@@ -1565,6 +1577,18 @@ def run_learning_curve_experiment(
     write_csv(output_root / "results_summary.csv", summary_rows)
     write_csv(output_root / "piece_metrics_raw.csv", piece_metric_rows)
     write_csv(output_root / "engineering_costs.csv", _engineering_cost_rows(raw_rows))
+    # Las trazas del HDP-HMM se conservan por semilla; el diagnóstico las lee sin
+    # volver a muestrear y nunca declara convergencia.
+    trace_paths = write_chain_traces(hdp_traces_by_seed, output_root)
+    _write_json(
+        output_root / "hdp_chain_diagnostics.json",
+        {
+            **build_chain_diagnostics(
+                hdp_traces_by_seed, min_iterations=max(1, config.hdp_n_iters // 2)
+            ),
+            "trace_files": [Path(path).name for path in trace_paths],
+        },
+    )
     _write_json(
         output_root / "finite_hmm_grid_audit.json",
         build_finite_hmm_grid_audit(raw_rows, grid=config.finite_hmm_states),
