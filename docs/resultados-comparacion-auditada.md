@@ -99,8 +99,17 @@ Diferencia `hdp_hmm − vomm` en la corrida original, por cuartil de longitud de
 | 3 | 109–158 | 124 | +0.0646 | 68 / 103 |
 | 4 | 160–3378 | 406 | **−0.0167** | 45 / 105 |
 
-`vomm` gana en las obras cortas y pierde en las largas. De ahí que los dos estimandos
-discrepen de forma sistemática y no aleatoria:
+`vomm` gana en las obras cortas y pierde en las largas. Al preparar la Fig. 6 se le puso un
+IC 95 % por bootstrap a cada cuartil, y conviene declarar lo que salió: los dos cuartiles
+extremos cruzan el cero. Con los cortes del script de figuras —que reparte las 414 obras en
+103/104/103/104 y difiere en una obra de la tabla de arriba— los intervalos son
+[−0.018, +0.061], [+0.029, +0.096], [+0.038, +0.098] y [−0.050, +0.016]. Es decir: solo los
+dos cuartiles centrales separan a los modelos, y el **−0.0167** del cuarto cuartil marca una
+tendencia, no un signo resuelto.
+
+Eso no toca el hallazgo de esta sección, que es aritmético y no inferencial: la misma
+diferencia cambia de signo según la unidad con que se promedie. De ahí que los dos
+estimandos discrepen de forma sistemática y no aleatoria:
 
 | estimando | valor | ordena |
 | --- | --- | --- |
@@ -286,7 +295,60 @@ esta ronda las provee.
 
 ---
 
-## 12. Procedencia
+## 12. Figuras
+
+Generadas por `scripts/figuras_tesis.py` desde los mismos artefactos que este reporte, así
+que ninguna puede discrepar de las tablas. Salen en PDF vectorial y PNG a 600 ppp en
+`artifacts/figuras/`, con paleta Okabe-Ito y codificación redundante por marcador y trazo,
+de modo que siguen siendo legibles en escala de grises y con daltonismo.
+
+Cada figura lleva por título su hallazgo, no su tema, y bajo el título una línea con n, la
+definición del error y las unidades. Se leen sin el reporte.
+
+| Figura | Hallazgo que sostiene | Sección |
+| --- | --- | --- |
+| `fig1_curva_aprendizaje` | solo el transformer aprovecha el corpus completo (−23.8 % contra −3.1 a −8.4 %) | §2 |
+| `fig2_capacidad_hmm` | la meseta era el techo de la rejilla | §6 |
+| `fig3_sensibilidades` | cada parámetro mueve a un modelo; la partición los mueve a todos | §5, §6, §7 |
+| `fig4_comparaciones_pareadas` | ninguna de las 30 comparaciones cruza el cero | §3 |
+| `fig5_pareto_prediccion_costo` | el transformer domina a los dos HMM | §8 |
+| `fig6_unidad_de_analisis` | `vomm` gana por obra y pierde por evento | §4 |
+
+Cada título es una sola afirmación de nueve palabras o menos, y la línea de método lleva
+únicamente n, la definición del error y las unidades. Lo demás —por qué la meseta era el
+techo, qué compra `vomm` con su velocidad, qué significa cambiar de unidad— es trabajo de la
+prosa de la tesis: una figura que se explica entera a sí misma compite con el texto que la
+acompaña, y el lector termina leyendo dos veces lo mismo.
+
+Seis decisiones de diseño que afectan lo que las figuras afirman:
+
+- **El color marca solo lo que cambia.** En la Fig. 3, los modelos que no se mueven van en
+  gris con la palabra «sin cambio», para que no parezca que la sensibilidad los tocó.
+- **Un color por modelo, en las seis figuras.** La Fig. 4 colorea cada comparación con el
+  color del modelo favorecido y la Fig. 5 baja la opacidad de los dominados en vez de
+  pasarlos a gris: quitarle el color a un modelo lo saca del contrato que el resto del
+  capítulo sostiene.
+- **Nada de barras desde cero en escalas de perplejidad.** Los tres paneles de la Fig. 3 son
+  gráficos de mancuerna, porque una barra desde cero haría parecer despreciable un cambio de
+  0.62 sobre un valor de 5.8. Los tres comparten eje y escala, de modo que la magnitud de
+  las tres perturbaciones se compara sin convertir nada, y llevan una vara de ±0.047 —el
+  ruido entre semillas— para que el lector sepa contra qué mide.
+- **La semilla no es un eje.** El panel C de la Fig. 3 dibujaba las tres semillas unidas por
+  una línea, que trazaba una tendencia sobre una etiqueta nominal. Ahora es el recorrido
+  entre las tres réplicas, en la misma forma que los otros dos paneles.
+- **La frontera de Pareto de la Fig. 5 se calcula, no se declara.** `vomm` ajusta en 41 s
+  contra 169 s del transformer, así que el transformer **no** es el más barato: domina a los
+  dos HMM, que es la afirmación verdadera y más estrecha. La figura deriva la frontera de
+  los datos para no poder exagerarla, y la dibuja escalonada: un segmento recto entre `vomm`
+  y el transformer prometería configuraciones intermedias que no existen.
+- **Toda afirmación que descansa en un signo lleva su incertidumbre.** Al ponerle IC 95 % por
+  bootstrap a los cuartiles de la Fig. 6 apareció que los cuartiles extremos cruzan el cero:
+  la inversión por cuartil no está resuelta, y solo los dos cuartiles centrales separan a los
+  modelos. El panel lo dice. Lo que sí se sostiene es el hallazgo de la figura, que es
+  aritmético y no inferencial: la misma diferencia cambia de signo según se promedie por obra
+  o por evento.
+
+## 13. Procedencia
 
 | Corrida | Auditoría |
 | --- | --- |
