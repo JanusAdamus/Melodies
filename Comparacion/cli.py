@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--structural-annotations", default=None, help="Optional CSV with piece_id,event_index,segment_label,boundary columns.")
     parser.add_argument("--split-seed", type=int, default=None, help="Seed of the fixed train/validation/test partition. Repeat the run with different values to measure sensitivity to the partition.")
     parser.add_argument("--finite-hmm-states", default=None, help="Comma-separated candidate state counts for the finite HMM, for example 48,72,96. Must be increasing, unique and at least 2.")
+    parser.add_argument("--finite-hmm-max-iterations", type=int, default=None, help="Iteration budget of the finite HMM. Fitting stops early when the validation NLL stops improving, so reaching this cap means the budget was binding and not that the model converged.")
     parser.add_argument("--train-stride", type=int, default=None, help="Training window stride. Equal to --max-context-length means non-overlapping training windows; the default 64 exposes each event more than once per epoch.")
     parser.add_argument("--audit-run", default=None, help="Audit an existing run directory read-only and exit; writes the manifest and the audit outside it.")
     parser.add_argument("--audit-output", default=None, help="Directory for --audit-run reports. Defaults to <run>/../audits/<run name>.")
@@ -143,6 +144,8 @@ def main() -> None:
     parsed_states = _parse_int_tuple(args.finite_hmm_states)
     if parsed_states is not None:
         updates["finite_hmm_states"] = parsed_states
+    if args.finite_hmm_max_iterations is not None:
+        updates["finite_hmm_max_iterations"] = args.finite_hmm_max_iterations
 
     config = replace(config, **updates)
     result = run_learning_curve_experiment(

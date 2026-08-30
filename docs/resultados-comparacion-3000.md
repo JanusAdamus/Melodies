@@ -137,9 +137,45 @@ contra las cuales medir fronteras ni particiones. Por lo mismo,
 
 Consecuencia directa: **el protocolo se diseñó con tres ejes y esta corrida solo instrumenta
 dos** (predicción y costo). La pregunta estructural, que el propio
-`multidimensional-evaluation.md` declara primaria, sigue sin respuesta empírica. El código
-de métricas existe y está probado (`boundary_f1`, `normalized_mutual_information`,
-`adjusted_rand_index` en `Comparacion/structural_metrics.py`), pero le falta la entrada.
+`multidimensional-evaluation.md` declara primaria, sigue sin respuesta empírica.
+
+Faltan dos piezas, no una.
+
+**A. No hay anotaciones de referencia.** El CLI ya acepta `--structural-annotations` con
+formato definido (`piece_id,event_index,segment_label,boundary`), pero PDMX no trae
+anotaciones estructurales y `external/` no contiene otro corpus. Dos vías: derivarlas de la
+notación del propio MusicXML con music21 (marcas de ensayo, barras dobles, repeticiones),
+barato pero es notación y no forma percibida, y hay que declararlo así; o incorporar un
+corpus con fronteras de frase anotadas, al estilo del que usa la línea de IDyOM (Pearce,
+2005), con ground truth real pero sobre un corpus distinto al del eje predictivo.
+
+**B. Ningún modelo emite segmentaciones.** El runner recoge
+`evaluation["structural_predictions"]` de cada modelo (`Comparacion/runner.py:703`), y por
+eso `structural_evaluation.json` reporta también
+`"missing_artifact": "per-model inferred segment labels and boundaries"`. Ningún evaluador
+escribe esa clave: el lado consumidor está construido y probado, el productor no existe.
+
+El trabajo no se reparte parejo entre modelos. `finite_hmm` y `hdp_hmm` lo tienen casi
+resuelto, porque `viterbi_decode` ya existe (`src/models/inference.py:161`) y basta con
+tomar el camino de Viterbi como etiqueta de segmento y sus cambios como fronteras.
+`transformer` y `vomm` no tienen estados latentes y requieren un sustituto, típicamente
+picos de sorpresa, que es una decisión de diseño discutible y no un cálculo mecánico.
+
+**Consecuencia de diseño que hay que resolver antes de programar nada**: sin estados
+latentes el transformer puede producir fronteras pero no etiquetas de segmento, y tanto
+`adjusted_rand_index` como `normalized_mutual_information` necesitan etiquetas. Es decir,
+`boundary_f1` es comparable entre los cuatro modelos, mientras que ARI y NMI solo lo son
+entre los dos HMM. La frontera de Pareto de tres ejes completa nunca incluirá al
+transformer en las métricas de partición. No es un defecto de implementación, es lo que
+significa comparar modelos con estados latentes contra uno que no los tiene, pero cambia lo
+que el marco multidimensional puede prometer.
+
+**Decisión tomada (2026-08-24): se conservan los tres ejes.** El marco sigue prometiendo
+predicción, estructura y costo. Eso fija el trabajo pendiente: conseguir las anotaciones
+del hueco A, e implementar los productores del hueco B para los cuatro modelos, con
+Viterbi en los dos HMM y fronteras por picos de sorpresa en `vomm` y `transformer`. Al
+reportar el eje estructural hay que declarar explícitamente que `boundary_f1` cubre los
+cuatro modelos y que ARI y NMI cubren solo los dos HMM.
 
 ### 6.2 El HMM finito está topado por la rejilla
 
@@ -154,6 +190,19 @@ K ≤ 48 satura».
 
 Ni el HDP-HMM (14–17 estados efectivos de 24 disponibles) ni el VOMM (orden 4 de un máximo
 de 8) tienen este problema: ambos eligen valores interiores.
+
+**Diagnóstico**: `scripts/diagnostico_finite_hmm_k.py` responde esto sin rehacer la curva
+entera. Reconstruye la misma partición, ajusta el HMM finito para cada K por separado sobre
+frac=1.0 y compara la NLL de validación, que es el criterio real de selección. Si la
+validación sigue prefiriendo el K más grande, el techo era vinculante.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\diagnostico_finite_hmm_k.py --states 24,48,96
+```
+
+Costo estimado ~35 min contra las ~14 h que costaría rehacer la curva con la rejilla
+`(24, 48, 96)`, o las ~58 h con `(24, 48, 96, 192)`. El reporte queda en
+`artifacts/diagnostico_finite_hmm_k.json`.
 
 ### 6.3 En frac=1.0 la varianza de datos es cero por construcción
 

@@ -23,6 +23,8 @@ recomendada para orientarte es corta:
   medidas de escalado y tamano de corpus viable.
 - [`resultados-comparacion-3000.md`](resultados-comparacion-3000.md): reporte de la
   corrida sobre 3000 obras, con limites de lo que se puede afirmar.
+- [`correcciones-2026-08-24.md`](correcciones-2026-08-24.md): que se afirmo, que resulto
+  falso o incompleto, y con que evidencia se corrigio.
 - [`sources-and-methods.md`](sources-and-methods.md): trazabilidad de cada cambio
   algoritmico a su fuente, metodos descartados con su medicion, y la bibliografia
   unica del proyecto en su seccion 4.
@@ -38,6 +40,12 @@ recomendada para orientarte es corta:
   revisión grupo por grupo del agrupamiento por obra canónica.
 - [`hmm-grid-sensitivity.md`](hmm-grid-sensitivity.md):
   regla de decisión y escalones de la rejilla de capacidad del HMM finito.
+- [`resultados-comparacion-auditada.md`](resultados-comparacion-auditada.md):
+  reporte de la corrida original y las cuatro sensibilidades auditadas, con lo
+  que se puede y no se puede afirmar de cada eje.
+- [`parada-curva-rehecha-2026-08-29.md`](parada-curva-rehecha-2026-08-29.md):
+  por qué se detuvo la curva rehecha en la celda 9 de 15, qué quedó establecido
+  por las sensibilidades y qué secciones de la tesis hay que reescribir.
 - [`superpowers/plans/2026-08-24-auditoria-comparacion-final.md`](superpowers/plans/2026-08-24-auditoria-comparacion-final.md):
   plan ejecutable para recuperar artefactos, auditar denominadores y ejecutar
   las sensibilidades pendientes en la computadora principal.
