@@ -71,6 +71,12 @@ class LearningCurveConfig:
         if list(self.finite_hmm_states) != sorted(self.finite_hmm_states):
             raise ValueError("finite_hmm_states must be sorted in increasing order.")
         if (
+            isinstance(self.finite_hmm_max_iterations, bool)
+            or not isinstance(self.finite_hmm_max_iterations, Integral)
+            or int(self.finite_hmm_max_iterations) <= 0
+        ):
+            raise ValueError("finite_hmm_max_iterations must be a positive integer.")
+        if (
             isinstance(self.bootstrap_samples, bool)
             or not isinstance(self.bootstrap_samples, Integral)
             or int(self.bootstrap_samples) <= 0
