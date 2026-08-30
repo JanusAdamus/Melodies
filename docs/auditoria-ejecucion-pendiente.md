@@ -1,9 +1,16 @@
 # Ejecución pendiente de la auditoría de la comparación
 
-Las tareas 1 a 8 del plan
-`docs/superpowers/plans/2026-08-24-auditoria-comparacion-final.md` están
-implementadas y con pruebas. Falta lo que sólo puede hacerse en la computadora
-principal: las corridas nuevas y el traspaso a la tesis.
+Las once tareas del plan
+`docs/superpowers/plans/2026-08-24-auditoria-comparacion-final.md` están cerradas.
+Las 1 a 8 se implementaron con pruebas; las 9 y 10 se ejecutaron el 2026-08-29 y la 11
+produjo [`resultados-comparacion-auditada.md`](resultados-comparacion-auditada.md).
+
+Queda un punto abierto por decisión y no por ejecución: el óptimo de capacidad del HMM
+finito, cerrado sin resolver por costo. Ver
+[`parada-curva-rehecha-2026-08-29.md`](parada-curva-rehecha-2026-08-29.md).
+
+El documento se conserva porque registra los argumentos de corpus obligatorios y la
+advertencia de `--n-workers`, que siguen aplicando a cualquier corrida nueva.
 
 Ninguna corrida nueva sobrescribe `tesis_3000_gpu_20260823_1941`.
 
@@ -30,92 +37,62 @@ Son los mismos de `tesis_3000_gpu_20260823_1941`, así que cada sensibilidad ve
 el mismo corpus (2933 piezas, 67 exclusiones) y el cache evita volver a parsear
 PDMX. Un cache no se comparte entre distintos `--max-files`.
 
-## Ensayo general (tarea 9)
+## Ejecución (tareas 9 y 10): completada el 2026-08-29
 
-    & '.\.venv\Scripts\python.exe' -m unittest discover -s tests
-    & '.\.venv\Scripts\python.exe' -m unittest discover -s next_token_experiment/tests
-    git diff --check
+Las cuatro sensibilidades se ejecutaron y auditaron. Resultados en
+[`resultados-comparacion-auditada.md`](resultados-comparacion-auditada.md).
 
-Después, un `--plan-only` por cada sensibilidad, con nombre de corrida propio:
+| Corrida | Qué midió | Auditoría | Veredicto propio |
+| --- | --- | --- | --- |
+| `sens_stride128` | ventanas sin solape | `passed` | el transformer pierde 10.6%; los clásicos no cambian |
+| `sens_hmm_grid` | rejilla 48,96,144,192 | `passed` | `grid_too_small`: eligió 144 y 192 |
+| `sens_split17` | partición alterna | `passed` | orden pareado sin cambios |
+| `sens_split29` | partición alterna | `passed` | orden pareado sin cambios; costos no utilizables |
 
-    & '.\.venv\Scripts\python.exe' -m Comparacion.cli --plan-only --run-name plan_stride128 `
-      --corpus-root external\PDMX\mxl --max-files 3000 --corpus-sample-seed 7 `
-      --corpus-cache artifacts\corpus_cache_3000.jsonl `
-      --train-stride 128 --fractions 1.0
+Las pruebas previas pasaron (142 en `tests`, 24 en `next_token_experiment/tests`) y el
+`--plan-only` quedó en `artifacts/Comparacion/plan_stride128`.
 
-## Orden de ejecución (tarea 10)
+### El eje de la rejilla se cerró sin resolver el óptimo
 
-1. **Exposición de ventanas.**
+El escalón siguiente que preveía este documento (`--finite-hmm-states 144,192`) se ejecutó
+como diagnóstico y como corrida completa, y siguió dando `grid_too_small`. La curva
+rehecha con rejilla hasta 288 se detuvo en la celda 9 de 15 porque tampoco podía cerrarlo.
+El razonamiento completo, con los costos medidos que lo justifican, está en
+[`parada-curva-rehecha-2026-08-29.md`](parada-curva-rehecha-2026-08-29.md).
 
-        & '.\.venv\Scripts\python.exe' -m Comparacion.cli --run-name sens_stride128 `
-          --corpus-root external\PDMX\mxl --max-files 3000 --corpus-sample-seed 7 `
-          --corpus-cache artifacts\corpus_cache_3000.jsonl `
-          --train-stride 128 --fractions 1.0 `
-          --n-workers 6 --transformer-device cuda
+Tres diagnósticos quedaron ejecutados, todos citables:
 
-   Comparar contra `--train-stride 64`. El artefacto es
-   `training_exposure_audit.json`.
+| Archivo en `artifacts/` | Rejilla | Tope de iteraciones | Resultado |
+| --- | --- | --- | --- |
+| `diagnostico_finite_hmm_k.json` | 24, 48, 96 | 100 | eligió 96, techo vinculante |
+| `diagnostico_finite_hmm_k_escalon2.json` | 144, 192, 288, 384 | 100 | eligió 384, techo vinculante |
+| `diagnostico_finite_hmm_convergencia.json` | 96, 192 | 400 | convergió en ~140 iteraciones |
 
-2. **Rejilla ampliada del HMM.** Primero el piloto de memoria y tiempo:
+El tercero mostró que el tope de 100 iteraciones estaba mordiendo: el ajuste converge en
+~140 y el sesgo era de ~0.047 en perplejidad de validación, casi igual para ambos K.
+`--finite-hmm-max-iterations` (CLI) y `--max-iterations` (diagnóstico) se agregaron para
+que ese presupuesto sea un parámetro declarado.
 
-        & '.\.venv\Scripts\python.exe' -m Comparacion.cli --run-name piloto_hmm_grid `
-          --corpus-root external\PDMX\mxl --max-files 400 --corpus-sample-seed 7 `
-          --finite-hmm-states 48,72,96 --fractions 1.0 `
-          --data-seeds 1 --model-seeds 1 --transformer-max-epochs 1 --transformer-device cuda
+### Diagnósticos del HDP-HMM (tarea 10, punto 4)
 
-   Si pasa, la sensibilidad:
+Las cuatro corridas dan `drift_detected` y cadenas que discrepan en estados activos. No se
+ampliaron iteraciones: la perplejidad del HDP-HMM es utilizable y su lectura estructural no,
+que es lo que el reporte declara. Ampliar iteraciones queda como trabajo futuro sin fecha.
 
-        & '.\.venv\Scripts\python.exe' -m Comparacion.cli --run-name sens_hmm_grid `
-          --corpus-root external\PDMX\mxl --max-files 3000 --corpus-sample-seed 7 `
-          --corpus-cache artifacts\corpus_cache_3000.jsonl `
-          --finite-hmm-states 48,72,96 --fractions 1.0 `
-          --n-workers 6 --transformer-device cuda
+### Advertencia de método, para no repetirla
 
-   Leer `finite_hmm_grid_audit.json`. Si el veredicto vuelve a ser
-   `grid_too_small`, siguiente escalón: `--finite-hmm-states 144,192`, otra vez
-   con piloto de memoria antes.
-
-3. **Particiones adicionales.** Una corrida por semilla de partición:
-
-        & '.\.venv\Scripts\python.exe' -m Comparacion.cli --run-name sens_split17 `
-          --corpus-root external\PDMX\mxl --max-files 3000 --corpus-sample-seed 7 `
-          --corpus-cache artifacts\corpus_cache_3000.jsonl `
-          --split-seed 17 --fractions 1.0 --n-workers 6 --transformer-device cuda
-
-        & '.\.venv\Scripts\python.exe' -m Comparacion.cli --run-name sens_split29 `
-          --corpus-root external\PDMX\mxl --max-files 3000 --corpus-sample-seed 7 `
-          --corpus-cache artifacts\corpus_cache_3000.jsonl `
-          --split-seed 29 --fractions 1.0 --n-workers 6 --transformer-device cuda
-
-   La comparación se hace dentro de cada partición; la variación entre
-   particiones se reporta aparte en `split_variation`.
-
-4. **Diagnósticos del HDP-HMM.** Ya salen de cualquier corrida:
-   `hdp_trace_SEED.csv` y `hdp_chain_diagnostics.json`. Ampliar iteraciones sólo
-   si el veredicto es `drift_detected` o `chains_disagree`.
-
-`--n-workers 12` junto con `--transformer-device cuda` satura los 12 núcleos
-mientras la GPU entrena y provocó el sobrecalentamiento del primer intento de
-agosto. Con 6 la corrida sigue siendo reanudable desde `checkpoint.jsonl`.
-
-Si una corrida se interrumpe, se retoma con el mismo `--run-name` más
-`--resume`: las celdas ya terminadas se saltan.
-
-Para cada corrida:
-
-- guardar salida estándar y de error;
-- ejecutar el auditor al terminar:
-
-        & '.\.venv\Scripts\python.exe' -m Comparacion.cli --audit-run artifacts\Comparacion\<corrida>
-
-- copiar la corrida y su manifiesto a almacenamiento persistente;
-- no tocar el reporte anterior.
+`sens_split29` corrió en paralelo con un diagnóstico, y sus tiempos de reloj quedaron
+inflados por contención de CPU (`finite_hmm` 1072 s contra 595 s en `sens_split17`, misma
+configuración). Sus cifras de predicción no se ven afectadas porque el ajuste es
+determinista dadas las semillas, pero **sus cifras de costo no son utilizables**. Las
+corridas que midan costo deben ejecutarse solas.
 
 ## Traspaso a la tesis (tarea 11)
 
-- Generar `docs/resultados-comparacion-auditada.md` desde CSV y JSON, nunca a
-  mano.
-- Distinguir resultado original, auditoría y sensibilidades.
+- ~~Generar `docs/resultados-comparacion-auditada.md` desde CSV y JSON, nunca a
+  mano.~~ Hecho el 2026-08-29, extraído de los artefactos.
+- ~~Distinguir resultado original, auditoría y sensibilidades.~~ Hecho: §1 del
+  reporte separa las tres categorías.
 - Actualizar la tesis sólo con artefactos cuya auditoría diga `passed`.
 - Citar 414 obras con la salvedad del grupo `after mr`, o rehacer la corrida con
   el identificador corregido y citar 415.
