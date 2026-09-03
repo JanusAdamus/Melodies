@@ -1,0 +1,34 @@
+{
+  "runs": [
+    {
+      "name": "primary",
+      "path": "REPLACE_WITH_PRIMARY_RUN_DIRECTORY",
+      "role": "primary",
+      "cost_usable": true
+    },
+    {
+      "name": "stride128",
+      "path": "REPLACE_WITH_STRIDE128_RUN_DIRECTORY",
+      "role": "sensitivity_training_exposure",
+      "cost_usable": true
+    },
+    {
+      "name": "hmm_grid",
+      "path": "REPLACE_WITH_HMM_GRID_RUN_DIRECTORY",
+      "role": "sensitivity_finite_hmm_capacity",
+      "cost_usable": true
+    },
+    {
+      "name": "split17",
+      "path": "REPLACE_WITH_SPLIT17_RUN_DIRECTORY",
+      "role": "sensitivity_partition",
+      "cost_usable": true
+    },
+    {
+      "name": "split29",
+      "path": "REPLACE_WITH_SPLIT29_RUN_DIRECTORY",
+      "role": "sensitivity_partition",
+      "cost_usable": false
+    }
+  ]
+}

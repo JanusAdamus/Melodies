@@ -1,0 +1,9 @@
+{
+  "evidence_package": "../artifacts/releases/thesis-evidence",
+  "resource_costs": "../artifacts/Comparacion/resource_benchmark/engineering_costs.csv",
+  "cost_scenarios": "../artifacts/Comparacion/resource_benchmark/cost_scenarios.json",
+  "test_report": "../artifacts/validation/test_report.json",
+  "design_spec": "superpowers/specs/2026-09-01-cierre-criterios-tesis-design.md",
+  "engineering_practices": "engineering-practices.md",
+  "social_protocol": "social-viability-protocol.md"
+}

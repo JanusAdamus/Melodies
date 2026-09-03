@@ -5,15 +5,10 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from next_token_experiment.config import HardwareConfig, TransformerConfig
-
 from .artifact_audit import write_audit_reports
-from .canonicalization_audit import AUDIT_FILENAME as CANONICALIZATION_AUDIT_FILENAME
-from .canonicalization_audit import write_canonicalization_audit
-from .config import build_default_learning_curve_config
-from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
-from .denominator_audit import audit_run_directory, read_piece_metric_rows
-from .runner import run_learning_curve_experiment
+from .cost_scenarios import write_cost_scenarios
+from .evidence_package import export_evidence_package, verify_evidence_package
+from .requirements_validation import write_requirement_validation
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,6 +35,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-stride", type=int, default=None, help="Training window stride. Equal to --max-context-length means non-overlapping training windows; the default 64 exposes each event more than once per epoch.")
     parser.add_argument("--audit-run", default=None, help="Audit an existing run directory read-only and exit; writes the manifest and the audit outside it.")
     parser.add_argument("--audit-output", default=None, help="Directory for --audit-run reports. Defaults to <run>/../audits/<run name>.")
+    parser.add_argument(
+        "--resource-measurement-condition",
+        choices=("isolated", "contended", "unknown"),
+        default="unknown",
+        help="Declare whether timing and memory were measured without competing workloads. Only isolated rows are eligible for monetary scenarios.",
+    )
+    parser.add_argument("--export-evidence", default=None, metavar="REGISTRY.json", help="Build a sanitized, self-verifying evidence package from an explicit run registry.")
+    parser.add_argument("--evidence-output", default=None, help="Output directory for --export-evidence.")
+    parser.add_argument("--evidence-archive", default=None, help="Optional ZIP path for --export-evidence.")
+    parser.add_argument("--verify-evidence", default=None, metavar="DIR", help="Verify hashes, audits and path sanitization in an evidence package, then exit.")
+    parser.add_argument("--cost-input", default=None, metavar="engineering_costs.csv", help="Compute monetary scenarios from isolated resource measurements.")
+    parser.add_argument("--tariffs", default=None, metavar="tariffs.json", help="Documented CPU/GPU tariffs used with --cost-input.")
+    parser.add_argument("--cost-output", default=None, metavar="cost_scenarios.json", help="Output report used with --cost-input.")
+    parser.add_argument("--validate-requirements", default=None, metavar="requirements.json", help="Generate a formal validation matrix from requirements and evidence context.")
+    parser.add_argument("--validation-context", default=None, metavar="context.json", help="Evidence paths used by --validate-requirements.")
+    parser.add_argument("--validation-output", default=None, metavar="DIR", help="Output directory used by --validate-requirements.")
     return parser
 
 
@@ -61,7 +72,66 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    operations = [
+        args.audit_run,
+        args.verify_evidence,
+        args.export_evidence,
+        args.cost_input,
+        args.validate_requirements,
+    ]
+    if sum(value is not None for value in operations) > 1:
+        parser.error(
+            "choose only one operation: audit, export, verify, cost or requirement validation"
+        )
+
+    if args.verify_evidence is not None:
+        report = verify_evidence_package(args.verify_evidence)
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        if report["status"] != "passed":
+            raise SystemExit(1)
+        return
+
+    if args.export_evidence is not None:
+        if not args.evidence_output:
+            parser.error("--export-evidence requires --evidence-output")
+        report = export_evidence_package(
+            args.export_evidence,
+            args.evidence_output,
+            archive_path=args.evidence_archive,
+        )
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return
+
+    if args.cost_input is not None:
+        if not args.tariffs or not args.cost_output:
+            parser.error("--cost-input requires --tariffs and --cost-output")
+        report = write_cost_scenarios(args.cost_input, args.tariffs, args.cost_output)
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return
+
+    if args.validate_requirements is not None:
+        if not args.validation_context or not args.validation_output:
+            parser.error(
+                "--validate-requirements requires --validation-context and --validation-output"
+            )
+        report = write_requirement_validation(
+            args.validate_requirements,
+            args.validation_context,
+            args.validation_output,
+        )
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        if report["status"] == "failed":
+            raise SystemExit(1)
+        return
+
     if args.audit_run is not None:
+        from .canonicalization_audit import (
+            AUDIT_FILENAME as CANONICALIZATION_AUDIT_FILENAME,
+        )
+        from .canonicalization_audit import write_canonicalization_audit
+        from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
+        from .denominator_audit import audit_run_directory, read_piece_metric_rows
+
         run_dir = Path(args.audit_run)
         output_dir = Path(args.audit_output) if args.audit_output else run_dir.parent / "audits" / run_dir.name
         report = write_audit_reports(run_dir, output_dir)
@@ -95,6 +165,11 @@ def main() -> None:
         }
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return
+
+    # El runner y el stack numérico se cargan sólo para una corrida. Las
+    # utilidades de auditoría y empaquetado funcionan en una instalación mínima.
+    from .config import build_default_learning_curve_config
+    from .runner import run_learning_curve_experiment
 
     config = build_default_learning_curve_config(
         corpus_root=args.corpus_root,
@@ -157,6 +232,7 @@ def main() -> None:
         corpus_cache_path=args.corpus_cache,
         corpus_sample_seed=args.corpus_sample_seed,
         resume=args.resume,
+        resource_measurement_condition=args.resource_measurement_condition,
     )
     print(json.dumps(result, indent=2, allow_nan=False))
 

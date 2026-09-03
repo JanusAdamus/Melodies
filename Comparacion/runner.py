@@ -44,6 +44,11 @@ from .decision import pareto_front
 from .hdp_diagnostics import build_chain_diagnostics, write_chain_traces
 from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
 from .denominator_audit import build_denominator_audit
+from .resource_monitor import (
+    RESOURCE_FIELD_NAMES,
+    ResourceMonitor,
+    protocol_resource_fields,
+)
 from .splits import FixedSplits, build_fixed_splits, build_nested_training_subsets
 from .statistics import pairwise_model_comparisons
 from .structural_metrics import adjusted_rand_index, boundary_f1, normalized_mutual_information
@@ -911,6 +916,7 @@ def _engineering_cost_rows(raw_rows: list[dict[str, object]]) -> list[dict[str, 
         "effective_states",
         "count_table_size",
         "device",
+        *RESOURCE_FIELD_NAMES,
     )
     rows = []
     for raw in raw_rows:
@@ -918,7 +924,7 @@ def _engineering_cost_rows(raw_rows: list[dict[str, object]]) -> list[dict[str, 
         row.update(
             {
                 "peak_memory_bytes": None,
-                "peak_memory_status": "not_measured_reliably",
+                "peak_memory_status": "superseded_by_scoped_resource_fields",
                 "energy_joules": None,
                 "energy_status": "not_measured_reliably",
                 "cost_scope": "separate_units_not_collapsed",
@@ -1141,7 +1147,12 @@ def run_learning_curve_experiment(
     corpus_cache_path: str | Path | None = None,
     corpus_sample_seed: int | None = None,
     resume: bool = False,
+    resource_measurement_condition: str = "unknown",
 ) -> dict[str, object]:
+    if resource_measurement_condition not in {"isolated", "contended", "unknown"}:
+        raise ValueError(
+            "resource_measurement_condition must be isolated, contended or unknown"
+        )
     run_directory = Path(config.results_root) / run_name
     if not resume:
         _guard_fresh_run_directory(run_directory)
@@ -1242,15 +1253,19 @@ def run_learning_curve_experiment(
             n_train_pieces = len(train_pieces)
 
             if config.include_vomm_control:
-                vomm = select_vomm_by_validation(
-                    train_sequences=[list(piece.tokens) for piece in train_pieces],
-                    validation_pieces=fixed_splits.validation_pieces,
-                    candidate_orders=config.vomm_candidate_orders,
-                    vocabulary_size=comparison_vocabulary_size,
-                    bos_token_id=bos_token_id,
-                    max_context_length=max_context_length,
-                )
-                vomm_eval = vomm.evaluate(fixed_splits.test_pieces, max_context_length)
+                with ResourceMonitor() as vomm_selection_resources:
+                    vomm = select_vomm_by_validation(
+                        train_sequences=[list(piece.tokens) for piece in train_pieces],
+                        validation_pieces=fixed_splits.validation_pieces,
+                        candidate_orders=config.vomm_candidate_orders,
+                        vocabulary_size=comparison_vocabulary_size,
+                        bos_token_id=bos_token_id,
+                        max_context_length=max_context_length,
+                    )
+                with ResourceMonitor() as vomm_evaluation_resources:
+                    vomm_eval = vomm.evaluate(fixed_splits.test_pieces, max_context_length)
+                assert vomm_selection_resources.result is not None
+                assert vomm_evaluation_resources.result is not None
                 vomm_summary = vomm_eval["summary"]
                 _append_protocol_evidence(
                     output_path=protocol_path,
@@ -1295,6 +1310,11 @@ def run_learning_curve_experiment(
                             vomm_summary,
                             evaluation_wall_clock_s=vomm_summary["evaluation_wall_clock_s"],
                         ),
+                        **protocol_resource_fields(
+                            vomm_selection_resources.result,
+                            vomm_evaluation_resources.result,
+                            measurement_condition=resource_measurement_condition,
+                        ),
                         "hyperparams_json": json.dumps({"selected_order": vomm.selected_order}),
                     }
                 )
@@ -1318,19 +1338,23 @@ def run_learning_curve_experiment(
                     seed=model_seed,
                     vocab_size=comparison_vocabulary_size,
                 )
-                finite_hmm.fit(
-                    train_pieces,
-                    fixed_splits.validation_pieces,
-                    bos_token_id=bos_token_id,
-                    max_context_length=max_context_length,
-                )
-                finite_eval_start = time.perf_counter()
-                finite_eval = finite_hmm.evaluate(
-                    fixed_splits.test_pieces,
-                    bos_token_id=bos_token_id,
-                    max_context_length=max_context_length,
-                )
+                with ResourceMonitor() as finite_selection_resources:
+                    finite_hmm.fit(
+                        train_pieces,
+                        fixed_splits.validation_pieces,
+                        bos_token_id=bos_token_id,
+                        max_context_length=max_context_length,
+                    )
+                with ResourceMonitor() as finite_evaluation_resources:
+                    finite_eval_start = time.perf_counter()
+                    finite_eval = finite_hmm.evaluate(
+                        fixed_splits.test_pieces,
+                        bos_token_id=bos_token_id,
+                        max_context_length=max_context_length,
+                    )
                 finite_eval_elapsed = time.perf_counter() - finite_eval_start
+                assert finite_selection_resources.result is not None
+                assert finite_evaluation_resources.result is not None
                 finite_summary = finite_eval["summary"]
                 _append_protocol_evidence(
                     output_path=protocol_path,
@@ -1372,6 +1396,11 @@ def run_learning_curve_experiment(
                         **_protocol_cost_fields(
                             finite_summary, evaluation_wall_clock_s=finite_eval_elapsed
                         ),
+                        **protocol_resource_fields(
+                            finite_selection_resources.result,
+                            finite_evaluation_resources.result,
+                            measurement_condition=resource_measurement_condition,
+                        ),
                         "hyperparams_json": json.dumps({"selected_states": finite_summary["selected_states"]}),
                     }
                 )
@@ -1395,12 +1424,13 @@ def run_learning_curve_experiment(
                     seed=model_seed,
                     vocab_size=comparison_vocabulary_size,
                 )
-                hdp_fit = hdp_hmm.fit(
-                    train_pieces,
-                    fixed_splits.validation_pieces,
-                    bos_token_id=bos_token_id,
-                    max_context_length=max_context_length,
-                )
+                with ResourceMonitor() as hdp_selection_resources:
+                    hdp_fit = hdp_hmm.fit(
+                        train_pieces,
+                        fixed_splits.validation_pieces,
+                        bos_token_id=bos_token_id,
+                        max_context_length=max_context_length,
+                    )
                 for trace_row in hdp_fit.get("selected_chain_trace", []) or []:
                     hdp_traces_by_seed.setdefault(model_seed, []).append(
                         {
@@ -1411,13 +1441,16 @@ def run_learning_curve_experiment(
                             **trace_row,
                         }
                     )
-                hdp_eval_start = time.perf_counter()
-                hdp_eval = hdp_hmm.evaluate(
-                    fixed_splits.test_pieces,
-                    bos_token_id=bos_token_id,
-                    max_context_length=max_context_length,
-                )
+                with ResourceMonitor() as hdp_evaluation_resources:
+                    hdp_eval_start = time.perf_counter()
+                    hdp_eval = hdp_hmm.evaluate(
+                        fixed_splits.test_pieces,
+                        bos_token_id=bos_token_id,
+                        max_context_length=max_context_length,
+                    )
                 hdp_eval_elapsed = time.perf_counter() - hdp_eval_start
+                assert hdp_selection_resources.result is not None
+                assert hdp_evaluation_resources.result is not None
                 hdp_summary = hdp_eval["summary"]
                 _append_protocol_evidence(
                     output_path=protocol_path,
@@ -1459,6 +1492,11 @@ def run_learning_curve_experiment(
                         **_protocol_cost_fields(
                             hdp_summary, evaluation_wall_clock_s=hdp_eval_elapsed
                         ),
+                        **protocol_resource_fields(
+                            hdp_selection_resources.result,
+                            hdp_evaluation_resources.result,
+                            measurement_condition=resource_measurement_condition,
+                        ),
                         "hyperparams_json": json.dumps(hdp_fit["selected_hyperparameters"]),
                     }
                 )
@@ -1485,13 +1523,17 @@ def run_learning_curve_experiment(
                     validation_pieces=fixed_splits.validation_pieces,
                     test_pieces=fixed_splits.test_pieces,
                 )
-                transformer_fit_start = time.perf_counter()
-                transformer_fit = transformer_model.fit(
-                    dataloaders["train"],
-                    dataloaders["validation"],
-                )
+                with ResourceMonitor(measure_cuda=True) as transformer_selection_resources:
+                    transformer_fit_start = time.perf_counter()
+                    transformer_fit = transformer_model.fit(
+                        dataloaders["train"],
+                        dataloaders["validation"],
+                    )
                 transformer_fit_wall_clock_s = time.perf_counter() - transformer_fit_start
-                transformer_eval = transformer_model.evaluate(dataloaders["test"])
+                with ResourceMonitor(measure_cuda=True) as transformer_evaluation_resources:
+                    transformer_eval = transformer_model.evaluate(dataloaders["test"])
+                assert transformer_selection_resources.result is not None
+                assert transformer_evaluation_resources.result is not None
                 transformer_summary = _transformer_summary_row(transformer_fit, transformer_eval)
                 _append_protocol_evidence(
                     output_path=protocol_path,
@@ -1535,6 +1577,11 @@ def run_learning_curve_experiment(
                         **_protocol_cost_fields(
                             transformer_summary,
                             evaluation_wall_clock_s=transformer_summary["evaluation_wall_clock_s"],
+                        ),
+                        **protocol_resource_fields(
+                            transformer_selection_resources.result,
+                            transformer_evaluation_resources.result,
+                            measurement_condition=resource_measurement_condition,
                         ),
                         "hyperparams_json": json.dumps(
                             {"architecture": config.experiment.transformer.architecture}

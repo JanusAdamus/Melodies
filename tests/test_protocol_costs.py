@@ -185,5 +185,12 @@ class TrainStrideCliTests(unittest.TestCase):
 
         self.assertIsNone(args.train_stride)
 
+    def test_resource_measurement_condition_is_explicit(self) -> None:
+        args = build_parser().parse_args(
+            ["--resource-measurement-condition", "isolated"]
+        )
+
+        self.assertEqual(args.resource_measurement_condition, "isolated")
+
 if __name__ == "__main__":
     unittest.main()

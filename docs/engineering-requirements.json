@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "requirements": [
+    {
+      "id": "R1",
+      "type": "funcional",
+      "statement": "Comparar las cuatro familias sobre la misma representación y las mismas divisiones por obra.",
+      "decision": "Conservar configuración y archivos de splits por corrida.",
+      "checks": [
+        {"type": "package_verified"},
+        {"type": "files_in_each_run", "relative_path": "config.json"},
+        {"type": "files_in_each_run", "relative_path": "splits/test_pieces.json"},
+        {"type": "files_in_each_run", "relative_path": "splits/val_pieces.json"}
+      ]
+    },
+    {
+      "id": "R2",
+      "type": "funcional",
+      "statement": "Evaluar los mismos eventos y conservar denominadores auditables.",
+      "decision": "Auditar cobertura, colas y agrupamiento por obra.",
+      "checks": [
+        {"type": "json_field_in_each_run", "relative_path": "protocol_audit.json", "field": "status", "expected": "passed"},
+        {"type": "files_in_each_run", "relative_path": "denominator_audit.json"}
+      ]
+    },
+    {
+      "id": "R3",
+      "type": "restricción",
+      "statement": "Impedir que el conjunto de prueba participe en la selección de configuraciones.",
+      "decision": "Seleccionar con validación y verificar el contrato mediante pruebas.",
+      "checks": [
+        {
+          "type": "test_report_passed",
+          "required_test_fragments": [
+            "validation_selection_retains_the_lowest_nll_order",
+            "runner_propagates_protocol_and_writes_multidimensional_artifacts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R4",
+      "type": "calidad",
+      "statement": "Reconstruir la procedencia y verificar las cifras desde un paquete público saneado.",
+      "decision": "Publicar artefactos derivados, hashes, configuración y auditorías sin datos de terceros.",
+      "checks": [{"type": "package_verified"}]
+    },
+    {
+      "id": "R5",
+      "type": "calidad",
+      "statement": "Conservar por separado tiempo, memoria, hardware y escenarios monetarios.",
+      "decision": "Medir una corrida aislada y calcular costos sólo desde tarifas documentadas.",
+      "checks": [
+        {
+          "type": "resource_costs_complete",
+          "required_models": ["vomm", "finite_hmm", "hdp_hmm", "transformer"]
+        },
+        {"type": "cost_scenarios_computed"}
+      ]
+    },
+    {
+      "id": "R6",
+      "type": "restricción",
+      "statement": "No atribuir estructura musical cuando falten anotaciones y salidas comparables.",
+      "decision": "Emitir un artefacto explícito de no evaluación estructural.",
+      "checks": [
+        {
+          "type": "json_field_in_each_run",
+          "relative_path": "structural_evaluation.json",
+          "field": "status",
+          "allowed": ["not_evaluated", "ok"]
+        }
+      ]
+    },
+    {
+      "id": "R7",
+      "type": "calidad",
+      "statement": "Aceptar resultados sólo después de que pasen pruebas y auditorías.",
+      "decision": "Registrar el resultado completo de ambas suites y empaquetar sólo corridas auditadas.",
+      "checks": [
+        {"type": "test_report_passed"},
+        {"type": "package_verified"}
+      ]
+    },
+    {
+      "id": "R8",
+      "type": "calidad",
+      "statement": "Documentar el diseño final y las prácticas de ingeniería antes de aceptar la versión de entrega.",
+      "decision": "Versionar especificación, contratos y correspondencia entre atributos de calidad y evidencia.",
+      "checks": [
+        {"type": "context_file_exists", "context_key": "design_spec"},
+        {"type": "context_file_exists", "context_key": "engineering_practices"}
+      ]
+    },
+    {
+      "id": "R9",
+      "type": "fuera_de_alcance",
+      "statement": "Evaluar si el prototipo es utilizable y comprensible para una población destinataria declarada.",
+      "decision": "Preparar un protocolo previo; la fase con participantes depende de autorización y reclutamiento.",
+      "status_ceiling": "partial",
+      "checks": [
+        {"type": "context_file_exists", "context_key": "social_protocol"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "currency": "REPLACE_WITH_CURRENCY",
+  "tariffs": [
+    {
+      "device_class": "cpu",
+      "hourly_rate": "REPLACE_WITH_NUMERIC_RATE",
+      "source": "REPLACE_WITH_DOCUMENTED_SOURCE",
+      "observed_on": "YYYY-MM-DD",
+      "region": "REPLACE_WITH_REGION",
+      "scope": "complete CPU configuration",
+      "billing_unit": "device_hour",
+      "ownership_model": "REPLACE_WITH_owned_equipment_OR_remote_service"
+    },
+    {
+      "device_class": "gpu",
+      "hourly_rate": "REPLACE_WITH_NUMERIC_RATE",
+      "source": "REPLACE_WITH_DOCUMENTED_SOURCE",
+      "observed_on": "YYYY-MM-DD",
+      "region": "REPLACE_WITH_REGION",
+      "scope": "complete GPU configuration",
+      "billing_unit": "device_hour",
+      "ownership_model": "REPLACE_WITH_owned_equipment_OR_remote_service"
+    }
+  ],
+  "scenarios": [
+    {"name": "selection_and_fit", "evaluation_repetitions": 0},
+    {"name": "one_hundred_evaluations", "evaluation_repetitions": 100}
+  ]
+}

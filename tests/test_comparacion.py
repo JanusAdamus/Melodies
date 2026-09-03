@@ -21,6 +21,7 @@ from Comparacion.runner import (
     _collect_structural_predictions,
     run_learning_curve_experiment,
 )
+from Comparacion.resource_monitor import RESOURCE_FIELD_NAMES
 from Comparacion.splits import build_fixed_splits, build_nested_training_subsets
 from next_token_experiment.schemas import CorpusPreparationResult, PreparedPiece
 from src.models.inference import forward_log_likelihood
@@ -731,7 +732,7 @@ class ComparisonRunnerTests(unittest.TestCase):
     def test_resume_skips_completed_cells_and_reproduces_the_full_run(self) -> None:
         """An interrupted run must finish to the same numbers, refitting only what is missing."""
 
-        timing_columns = {
+        nondeterministic_columns = {
             "train_time_sec",
             "fit_wall_clock_s",
             "evaluation_wall_clock_s",
@@ -739,12 +740,17 @@ class ComparisonRunnerTests(unittest.TestCase):
             "selected_fit_wall_clock_s",
             "selected_validation_wall_clock_s",
             "total_protocol_wall_clock_s",
+            *RESOURCE_FIELD_NAMES,
         }
 
         def stable_rows(path: Path) -> list[dict[str, str]]:
             with path.open(newline="", encoding="utf-8") as handle:
                 return [
-                    {key: value for key, value in row.items() if key not in timing_columns}
+                    {
+                        key: value
+                        for key, value in row.items()
+                        if key not in nondeterministic_columns
+                    }
                     for row in csv.DictReader(handle)
                 ]
 
