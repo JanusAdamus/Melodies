@@ -133,7 +133,34 @@ protocolo terminaron en `passed`; la evaluación estructural permaneció en
 `not_evaluated`. Estas cifras describen únicamente la cobertura del ensayo y no
 deben compararse con los resultados del capítulo 4.
 
-La computadora todavía no contiene `external/PDMX/mxl`,
-`artifacts/corpus_cache_3000.jsonl` ni los artefactos originales de
-`tesis_3000_gpu_20260823_1941`. Por ello, no se inició ninguna de las corridas de
-sensibilidad de 3000 archivos.
+## Transferencia del corpus y reconstrucción del caché
+
+El 25 de agosto de 2026 se descargó de Zenodo el archivo `mxl.tar.gz` del
+registro 14889671. El archivo tiene 1,894,335,797 bytes y su MD5,
+`49ffd75ecf5489c0be6d41182eb11ff7`, coincide con el publicado. La extracción
+contiene 254,035 archivos `.mxl` y 1,982,103,220 bytes.
+
+En esta computadora, `D:` es una memoria USB FAT32 y no admite enlaces de
+directorio. Por ello, el corpus se conserva en el SSD, bajo
+`C:\Users\AdrianGonzalez\Datasets\PDMX\mxl`; los comandos de esta sección deben
+usar esa ruta como `--corpus-root`. El archivo comprimido validado permanece en
+`D:\Melodies\external\PDMX\mxl.tar.gz` como respaldo local.
+
+Una primera reconstrucción con `music21 10.5.0` produjo 2,935 piezas y 65
+exclusiones, en vez de los 2,933 y 67 de la corrida principal. La comparación
+con `music21 9.9.1` aisló la diferencia en dos archivos: la versión 9.9.1 los
+excluye por el mismo `MeterException`, mientras que 10.5.0 los acepta con 46
+eventos cada uno. Así se explican también los 92 eventos adicionales. Se fijó
+`music21==9.9.1` como dependencia y el manifiesto de hardware registra desde
+ahora su versión.
+
+El caché principal reconstruido quedó en
+`artifacts/corpus_cache_3000.jsonl`, con 3,000 entradas, 2,933 piezas, 67
+exclusiones y 693,754 eventos. Su SHA-256 es
+`F42F9D7AB8550A4C366CFCF410C3CF67C85FAD46F5C4F54818403DEEC328E144`.
+`plan_pdmx_canonical_20260825` lo reutilizó con `3000 done, 0 pending` y estado
+`planned_no_evidence`. Esta preparación no entrenó modelos ni aporta evidencia
+para la tesis.
+
+Los artefactos originales de `tesis_3000_gpu_20260823_1941` aún no están en
+esta computadora. Tampoco se ha iniciado una sensibilidad de 3,000 archivos.

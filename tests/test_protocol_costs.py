@@ -79,6 +79,7 @@ class HardwareManifestTests(unittest.TestCase):
         self.assertEqual(manifest["target_device"], "cpu")
         self.assertEqual(manifest["precision"], "fp32")
         self.assertIn("python_version", manifest)
+        self.assertEqual(manifest["music21_version"], "9.9.1")
         self.assertIn("numpy_version", manifest)
         self.assertIn("torch_version", manifest)
         self.assertIn("cpu_count", manifest)

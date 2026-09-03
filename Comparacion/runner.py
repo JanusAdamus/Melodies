@@ -18,6 +18,7 @@ import matplotlib
 matplotlib.use("Agg")  # El runner solo escribe PNG; sin esto Tk falla en headless.
 
 import matplotlib.pyplot as plt
+import music21
 import numpy as np
 import pandas as pd
 import torch
@@ -865,6 +866,7 @@ def _build_hardware_manifest(*, target_device: str, precision: str) -> dict[str,
         "platform": platform.platform(),
         "processor": platform.processor() or None,
         "python_version": platform.python_version(),
+        "music21_version": music21.__version__,
         "numpy_version": np.__version__,
         "torch_version": getattr(torch, "__version__", None),
         "cpu_count": os.cpu_count(),

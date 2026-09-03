@@ -5,7 +5,7 @@ psutil>=5.9
 matplotlib>=3.8
 seaborn>=0.13
 networkx>=3.2
-music21>=9.1
+music21==9.9.1
 openpyxl>=3.1
 jupyter>=1.0
 torch>=2.3
