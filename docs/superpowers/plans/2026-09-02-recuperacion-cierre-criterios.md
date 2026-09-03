@@ -6,6 +6,16 @@ La especificación `docs/superpowers/specs/2026-09-01-cierre-criterios-tesis-des
 
 Este documento conserva el inventario conocido y establece cómo recuperarlo sin presentar como terminado código que todavía no se ha revisado ni ejecutado desde una copia limpia.
 
+## Estado de recuperación al 3 de septiembre de 2026
+
+La unidad Kingston volvió a estar disponible y se siguió la Ruta A. Los archivos locales se compararon con `origin/master`, se integraron los dos commits que permanecían en `codex/prepare-experimental-runs` y se revisaron los cuatro componentes de cierre.
+
+La revisión corrigió tres problemas antes de publicar: la suite agregada no podía descubrir directorios de pruebas que no fueran paquetes; la prueba de reanudación comparaba mediciones de memoria no deterministas; y el script de PowerShell contenía una interpolación inválida de `$LASTEXITCODE`. También se reforzó la validación de nombres, rutas y manifiestos del paquete público, así como la comprobación de tarifas y requisitos vacíos o duplicados.
+
+Las dos suites se ejecutaron juntas con Python 3.12.13 y `music21` 9.9.1. El informe local registró 200 pruebas aprobadas, sin fallos ni errores. Este resultado verifica el código y los ejemplos sintéticos; no sustituye la corrida pendiente de tiempo y memoria sobre las 3000 partituras.
+
+El trabajo local descrito en el inventario quedó recuperado. Permanecen dependientes de la computadora de ejecución la recuperación de los cinco directorios auditados, el benchmark aislado de recursos, el cálculo con tarifas verificadas y la regeneración de la matriz final.
+
 ## Inventario del trabajo local iniciado
 
 Los cambios que deben buscarse al reconectar la unidad son:
