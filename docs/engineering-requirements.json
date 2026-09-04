@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "requirements": [
+    {
+      "id": "R1",
+      "description": "Comparar sobre los mismos datos observables",
+      "evidence": ["artifacts/Comparacion/audits/tesis_3000_gpu_20260823_1941/denominator_audit.json", "artifacts/Comparacion/tesis_3000_gpu_20260823_1941/splits"]
+    },
+    {
+      "id": "R2",
+      "description": "Evaluar los mismos eventos",
+      "evidence": ["artifacts/Comparacion/tesis_3000_gpu_20260823_1941/protocol_audit.json"]
+    },
+    {
+      "id": "R3",
+      "description": "Evitar información de prueba durante la selección",
+      "evidence": ["artifacts/Comparacion/tesis_3000_gpu_20260823_1941/config.json", "artifacts/Comparacion/tesis_3000_gpu_20260823_1941/results_raw.csv"]
+    },
+    {
+      "id": "R4",
+      "description": "Poder reconstruir la procedencia de una corrida",
+      "evidence": ["artifacts/reproducibility/r4-r5-evidence/package_manifest.json", "artifacts/reproducibility/r4-r5-evidence/clean_clone_verification.json"]
+    },
+    {
+      "id": "R5",
+      "description": "Registrar costo sin mezclar unidades incompatibles",
+      "evidence": ["artifacts/resource_benchmark/final_fit_split7/resource_benchmark_audit.json", "artifacts/resource_benchmark/final_fit_split7/resource_benchmark_raw.csv", "artifacts/economic_cost_scenario.json"]
+    },
+    {
+      "id": "R6",
+      "description": "No atribuir estructura musical sin referencia",
+      "evidence": ["artifacts/Comparacion/tesis_3000_gpu_20260823_1941/structural_evaluation.json"]
+    },
+    {
+      "id": "R7",
+      "description": "Verificar el protocolo antes de usar resultados",
+      "evidence": ["artifacts/test_verification.json"]
+    }
+  ]
+}
