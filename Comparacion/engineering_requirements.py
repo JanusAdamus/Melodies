@@ -116,10 +116,11 @@ def validate_engineering_requirements(
     ]
     r4_status = "passed" if all(check["passed"] for check in r4_checks) else "partial"
     r5_status, r5_checks = _check_r5(root)
+    denominator_ok = _json_status(audits / "denominator_audit.json", expected="ok")
     defaults: dict[str, tuple[str, list[dict[str, object]]]] = {
         "R1": (
-            "passed" if _json_status(audits / "denominator_audit.json") and (source / "splits").is_dir() else "partial",
-            [{"name": "denominators_and_splits", "passed": _json_status(audits / "denominator_audit.json") and (source / "splits").is_dir()}],
+            "passed" if denominator_ok and (source / "splits").is_dir() else "partial",
+            [{"name": "denominators_and_splits", "passed": denominator_ok and (source / "splits").is_dir()}],
         ),
         "R2": (
             "passed" if _json_status(source / "protocol_audit.json") else "partial",

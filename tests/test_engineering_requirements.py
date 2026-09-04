@@ -18,6 +18,34 @@ def _json(path: Path, payload: object) -> None:
 
 
 class EngineeringRequirementTests(unittest.TestCase):
+    def test_denominator_audit_ok_status_satisfies_r1(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            _json(
+                root / "docs" / "engineering-requirements.json",
+                {"requirements": [{"id": "R1", "description": "Denominators"}]},
+            )
+            source = (
+                root
+                / "artifacts"
+                / "Comparacion"
+                / "tesis_3000_gpu_20260823_1941"
+            )
+            (source / "splits").mkdir(parents=True)
+            _json(
+                root
+                / "artifacts"
+                / "Comparacion"
+                / "audits"
+                / source.name
+                / "denominator_audit.json",
+                {"status": "ok"},
+            )
+
+            result = validate_engineering_requirements(root)
+
+            self.assertEqual(result["requirements"][0]["status"], "passed")
+
     def test_package_without_complete_benchmark_is_partial(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
