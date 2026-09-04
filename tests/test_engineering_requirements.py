@@ -18,6 +18,21 @@ def _json(path: Path, payload: object) -> None:
 
 
 class EngineeringRequirementTests(unittest.TestCase):
+    def test_package_without_complete_benchmark_is_partial(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "results_raw.csv").write_text("model\nfinite_hmm\n", encoding="utf-8")
+
+            manifest = build_reproducibility_package(
+                source_run=source,
+                benchmark_dir=root / "missing-benchmark",
+                output_dir=root / "package",
+            )
+
+            self.assertEqual(manifest["status"], "partial")
+
     def test_missing_package_and_benchmark_keep_r4_r5_partial(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -100,6 +115,15 @@ class EngineeringRequirementTests(unittest.TestCase):
             (benchmark / "resource_benchmark_raw.csv").write_text(
                 "model,fit_seconds\nfinite_hmm,1.0\n", encoding="utf-8"
             )
+            (benchmark / "resource_benchmark_summary.csv").write_text(
+                "model,fit_seconds_median\nfinite_hmm,1.0\n", encoding="utf-8"
+            )
+            for name in (
+                "resource_benchmark_environment.json",
+                "resource_benchmark_config.json",
+                "resource_benchmark_audit.json",
+            ):
+                _json(benchmark / name, {"status": "passed"})
 
             manifest = build_reproducibility_package(
                 source_run=source,

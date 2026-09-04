@@ -34,6 +34,13 @@ SENSITIVITY_PACKAGE_FILES = (
     "finite_hmm_grid_audit.json",
     "hdp_chain_diagnostics.json",
 )
+BENCHMARK_PACKAGE_FILES = (
+    "resource_benchmark_raw.csv",
+    "resource_benchmark_summary.csv",
+    "resource_benchmark_environment.json",
+    "resource_benchmark_config.json",
+    "resource_benchmark_audit.json",
+)
 _WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
@@ -233,7 +240,8 @@ def build_reproducibility_package(
         for path in sorted(split_root.glob("*.json")):
             _copy_safe(path, output / "source_run" / "splits" / path.name)
     if benchmark.is_dir():
-        for path in sorted(benchmark.glob("resource_benchmark_*")):
+        for name in BENCHMARK_PACKAGE_FILES:
+            path = benchmark / name
             if path.is_file():
                 _copy_safe(path, output / "resource_benchmark" / path.name)
     audit_root = source.parent / "audits" / source.name
@@ -271,7 +279,17 @@ def build_reproducibility_package(
         }
         for path in sorted(item for item in output.rglob("*") if item.is_file())
     ]
-    manifest = {"status": "passed", "contains_corpus": False, "files": files}
+    missing_benchmark = [
+        name
+        for name in BENCHMARK_PACKAGE_FILES
+        if not (output / "resource_benchmark" / name).is_file()
+    ]
+    manifest = {
+        "status": "partial" if missing_benchmark else "passed",
+        "contains_corpus": False,
+        "missing_benchmark_artifacts": missing_benchmark,
+        "files": files,
+    }
     (output / "package_manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
     )
