@@ -41,12 +41,46 @@ BENCHMARK_PACKAGE_FILES = (
     "resource_benchmark_config.json",
     "resource_benchmark_audit.json",
 )
+EXPECTED_BENCHMARK_MODELS = ("finite_hmm", "hdp_hmm", "transformer", "vomm")
 EVIDENCE_PACKAGE_FILES = (
     "cache_reconstruction_verification.json",
     "economic_cost_scenario.json",
+    "requirements_validation.json",
+    "requirements_validation.md",
     "test_verification.json",
 )
-_WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[\\/]")
+REQUIRED_PACKAGE_PATHS = (
+    "source_run/config.json",
+    "source_run/preprocessing_report.json",
+    "source_run/results_raw.csv",
+    "source_run/results_summary.csv",
+    "source_run/piece_metrics_raw.csv",
+    "source_run/pairwise_comparisons.json",
+    "source_run/engineering_costs.csv",
+    "source_run/protocol_audit.json",
+    "source_audit/artifact_audit.json",
+    "source_audit/denominator_audit.json",
+    "resource_benchmark/resource_benchmark_raw.csv",
+    "resource_benchmark/resource_benchmark_summary.csv",
+    "resource_benchmark/resource_benchmark_environment.json",
+    "resource_benchmark/resource_benchmark_config.json",
+    "resource_benchmark/resource_benchmark_audit.json",
+    "evidence/economic_cost_scenario.json",
+    "evidence/requirements_validation.json",
+    "evidence/requirements_validation.md",
+    "evidence/test_verification.json",
+    "REGENERATION.md",
+)
+_ABSOLUTE_PATH = re.compile(
+    r"(?i)(?:^|[\s\"'=({\[,;])(?:[A-Z]:[\\/]|\\\\|/(?:home|users|mnt|media|volumes|tmp)(?:/|$))"
+)
+_CORPUS_PATH = re.compile(
+    r"(?i)(?:^|[\s\"'=({\[,;])(?=[^\r\n,;\"']*[\\/])[^\r\n,;\"']*(?:pdmx|mxl)[^\r\n,;\"']*"
+)
+
+
+def _contains_forbidden_path(value: str) -> bool:
+    return bool(_ABSOLUTE_PATH.search(value) or _CORPUS_PATH.search(value))
 
 
 def _read_json(path: Path) -> object | None:
@@ -63,23 +97,272 @@ def _json_status(path: Path, expected: str = "passed") -> bool:
     return isinstance(payload, Mapping) and payload.get("status") == expected
 
 
+def _listed_files_are_valid(root: Path, payload: Mapping[str, object]) -> bool:
+    files = payload.get("files")
+    if not isinstance(files, list) or not files:
+        return False
+    resolved_root = root.resolve()
+    seen: set[str] = set()
+    for item in files:
+        if not isinstance(item, Mapping):
+            return False
+        relative = item.get("relative_path")
+        if not isinstance(relative, str) or relative in seen:
+            return False
+        relative_path = Path(relative)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            return False
+        target = root / relative_path
+        try:
+            resolved_target = target.resolve(strict=True)
+        except OSError:
+            return False
+        if resolved_root not in resolved_target.parents or not resolved_target.is_file():
+            return False
+        if item.get("size_bytes") != resolved_target.stat().st_size:
+            return False
+        if item.get("sha256") != _hash_file(resolved_target):
+            return False
+        seen.add(relative)
+    return True
+
+
+def _package_manifest_is_valid(package: Path) -> bool:
+    payload = _read_json(package / "package_manifest.json")
+    listed_paths = {
+        item.get("relative_path")
+        for item in payload.get("files", [])
+        if isinstance(item, Mapping)
+    } if isinstance(payload, Mapping) else set()
+    required_paths = set(REQUIRED_PACKAGE_PATHS) | {
+        "source_run/splits/test_pieces.json",
+        "source_run/splits/val_pieces.json",
+    }
+    train_splits = list((package / "source_run" / "splits").glob("train_fractions_seed*.json"))
+    actual_paths = {
+        path.relative_to(package).as_posix()
+        for path in package.rglob("*")
+        if path.is_file()
+        and path.name not in {"package_manifest.json", "clean_clone_verification.json"}
+    }
+    forbidden_content = any(
+        "corpus_cache" in path.name.lower()
+        or path.suffix.lower() in {".mxl", ".musicxml"}
+        or (
+            path.suffix.lower() in {".json", ".csv", ".md", ".txt"}
+            and _contains_forbidden_path(path.read_text(encoding="utf-8"))
+        )
+        for path in package.rglob("*")
+        if path.is_file()
+    )
+    return bool(
+        isinstance(payload, Mapping)
+        and payload.get("status") == "passed"
+        and payload.get("contains_corpus") is False
+        and payload.get("missing_required_artifacts") == []
+        and listed_paths == actual_paths
+        and required_paths.issubset(listed_paths)
+        and train_splits
+        and all(path.relative_to(package).as_posix() in listed_paths for path in train_splits)
+        and _listed_files_are_valid(package, payload)
+        and _json_status(package / "source_audit" / "artifact_audit.json")
+        and _json_status(package / "source_audit" / "denominator_audit.json", expected="ok")
+        and _benchmark_audit_is_valid(package / "resource_benchmark")
+        and _json_status(package / "evidence" / "test_verification.json")
+        and _json_status(
+            package / "evidence" / "economic_cost_scenario.json",
+            expected="documented",
+        )
+        and not forbidden_content
+    )
+
+
+def _benchmark_audit_is_valid(benchmark: Path) -> bool:
+    payload = _read_json(benchmark / "resource_benchmark_audit.json")
+    if not isinstance(payload, Mapping):
+        return False
+    coverage = payload.get("coverage")
+    files = payload.get("files")
+    listed_paths = {
+        item.get("relative_path")
+        for item in files
+        if isinstance(item, Mapping)
+    } if isinstance(files, list) else set()
+    expected_files = set(BENCHMARK_PACKAGE_FILES) - {"resource_benchmark_audit.json"}
+    models = coverage.get("models") if isinstance(coverage, Mapping) else None
+    repetitions = coverage.get("repetitions") if isinstance(coverage, Mapping) else None
+    expected_rows = repetitions * len(EXPECTED_BENCHMARK_MODELS) if isinstance(repetitions, int) else None
+    try:
+        with (benchmark / "resource_benchmark_raw.csv").open(
+            newline="", encoding="utf-8"
+        ) as handle:
+            rows = list(csv.DictReader(handle))
+        observed_keys = [(row["model"], int(row["repetition"])) for row in rows]
+        expected_keys = {
+            (model, repetition)
+            for model in EXPECTED_BENCHMARK_MODELS
+            for repetition in range(1, int(repetitions) + 1)
+        }
+        rows_ok = (
+            len(observed_keys) == len(set(observed_keys))
+            and set(observed_keys) == expected_keys
+            and all(
+                row.get("peak_process_memory_status") == "measured"
+                and int(row.get("peak_process_memory_bytes") or 0) > 0
+                and row.get("peak_gpu_memory_status")
+                == (
+                    "measured"
+                    if row.get("device", "").startswith("cuda")
+                    else "not_applicable"
+                )
+                and (
+                    not row.get("device", "").startswith("cuda")
+                    or int(row.get("peak_gpu_memory_bytes") or 0) > 0
+                )
+                for row in rows
+            )
+        )
+    except (OSError, KeyError, TypeError, ValueError):
+        rows_ok = False
+    return bool(
+        payload.get("status") == "passed"
+        and payload.get("coverage_status") == "passed"
+        and payload.get("process_memory_status") == "passed"
+        and payload.get("gpu_memory_status") == "passed"
+        and isinstance(coverage, Mapping)
+        and isinstance(repetitions, int)
+        and repetitions > 0
+        and models == {model: repetitions for model in EXPECTED_BENCHMARK_MODELS}
+        and coverage.get("expected_rows") == expected_rows
+        and coverage.get("expected_rows") == coverage.get("observed_rows")
+        and expected_files.issubset(listed_paths)
+        and _listed_files_are_valid(benchmark, payload)
+        and rows_ok
+    )
+
+
+def _declared_evidence_exists(root: Path, requirement: Mapping[str, object]) -> bool:
+    evidence = requirement.get("evidence")
+    if evidence is None:
+        return True
+    if not isinstance(evidence, list) or not evidence:
+        return False
+    resolved_root = root.resolve()
+    for item in evidence:
+        if not isinstance(item, str):
+            return False
+        path = Path(item)
+        if path.is_absolute() or ".." in path.parts:
+            return False
+        target = (root / path).resolve()
+        if resolved_root != target and resolved_root not in target.parents:
+            return False
+        if not target.exists():
+            return False
+    return True
+
+
+def _denominator_audit_is_valid(path: Path) -> bool:
+    payload = _read_json(path)
+    per_model = payload.get("per_model") if isinstance(payload, Mapping) else None
+    return bool(
+        isinstance(payload, Mapping)
+        and payload.get("status") == "ok"
+        and isinstance(payload.get("n_scored_files"), int)
+        and payload["n_scored_files"] > 0
+        and isinstance(payload.get("n_canonical_works"), int)
+        and payload["n_canonical_works"] > 0
+        and payload.get("unscored_test_files") == []
+        and isinstance(per_model, Mapping)
+        and set(EXPECTED_BENCHMARK_MODELS).issubset(per_model)
+        and isinstance(payload.get("pairs"), list)
+        and bool(payload.get("pairs"))
+    )
+
+
+def _protocol_audit_is_valid(path: Path) -> bool:
+    payload = _read_json(path)
+    evidence = payload.get("evidence") if isinstance(payload, Mapping) else None
+    return bool(
+        isinstance(payload, Mapping)
+        and payload.get("status") == "passed"
+        and payload.get("unexpected_piece_ids") == []
+        and isinstance(evidence, list)
+        and evidence
+        and all(
+            isinstance(item, Mapping)
+            and item.get("status") == "passed"
+            and item.get("count_mismatch") is False
+            and item.get("order_mismatch") is False
+            and item.get("expected_count") == item.get("scored_count")
+            for item in evidence
+        )
+    )
+
+
+def _selection_evidence_is_valid(source: Path) -> bool:
+    config = _read_json(source / "config.json")
+    try:
+        with (source / "results_raw.csv").open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+    except OSError:
+        return False
+    required_columns = {"model", "frac", "data_seed", "model_seed", "hyperparams_json"}
+    return bool(
+        isinstance(config, Mapping)
+        and isinstance(config.get("train_fractions"), list)
+        and config.get("train_fractions")
+        and isinstance(config.get("data_seeds"), list)
+        and config.get("data_seeds")
+        and isinstance(config.get("model_seeds"), list)
+        and config.get("model_seeds")
+        and rows
+        and required_columns.issubset(rows[0])
+    )
+
+
+def _test_verification_is_valid(path: Path) -> bool:
+    payload = _read_json(path)
+    suites = payload.get("suites") if isinstance(payload, Mapping) else None
+    return bool(
+        isinstance(payload, Mapping)
+        and payload.get("status") == "passed"
+        and payload.get("diff_check") == "passed"
+        and isinstance(payload.get("commit"), str)
+        and re.fullmatch(r"[0-9a-fA-F]{40}", payload["commit"])
+        and isinstance(suites, list)
+        and len(suites) >= 2
+        and all(
+            isinstance(suite, Mapping)
+            and isinstance(suite.get("tests"), int)
+            and suite["tests"] > 0
+            and suite.get("failures") == 0
+            and suite.get("errors") == 0
+            for suite in suites
+        )
+    )
+
+
 def _check_r5(root: Path) -> tuple[str, list[dict[str, object]]]:
     benchmark = root / "artifacts" / "resource_benchmark" / "final_fit_split7"
-    audit_ok = _json_status(benchmark / "resource_benchmark_audit.json")
+    audit_ok = _benchmark_audit_is_valid(benchmark)
     memory_ok = False
     raw_path = benchmark / "resource_benchmark_raw.csv"
     if raw_path.is_file():
-        with raw_path.open(newline="", encoding="utf-8") as handle:
-            rows = list(csv.DictReader(handle))
-        required = {
-            "peak_process_memory_bytes",
-            "peak_process_memory_status",
-        }
-        memory_ok = bool(rows) and required.issubset(rows[0]) and all(
-            row["peak_process_memory_status"] == "measured"
-            and int(row["peak_process_memory_bytes"]) > 0
-            for row in rows
-        )
+        try:
+            with raw_path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            required = {
+                "peak_process_memory_bytes",
+                "peak_process_memory_status",
+            }
+            memory_ok = bool(rows) and required.issubset(rows[0]) and all(
+                row["peak_process_memory_status"] == "measured"
+                and int(row["peak_process_memory_bytes"]) > 0
+                for row in rows
+            )
+        except (OSError, KeyError, TypeError, ValueError):
+            memory_ok = False
     scenario = _read_json(root / "artifacts" / "economic_cost_scenario.json")
     scenario_ok = (
         isinstance(scenario, Mapping)
@@ -112,7 +395,7 @@ def validate_engineering_requirements(
     r4_checks = [
         {
             "name": "reproducibility_package_manifest",
-            "passed": _json_status(package / "package_manifest.json"),
+            "passed": _package_manifest_is_valid(package),
         },
         {
             "name": "clean_clone_regeneration",
@@ -121,19 +404,22 @@ def validate_engineering_requirements(
     ]
     r4_status = "passed" if all(check["passed"] for check in r4_checks) else "partial"
     r5_status, r5_checks = _check_r5(root)
-    denominator_ok = _json_status(audits / "denominator_audit.json", expected="ok")
+    denominator_ok = _denominator_audit_is_valid(audits / "denominator_audit.json")
+    protocol_ok = _protocol_audit_is_valid(source / "protocol_audit.json")
+    selection_ok = _selection_evidence_is_valid(source)
+    tests_ok = _test_verification_is_valid(root / "artifacts" / "test_verification.json")
     defaults: dict[str, tuple[str, list[dict[str, object]]]] = {
         "R1": (
             "passed" if denominator_ok and (source / "splits").is_dir() else "partial",
             [{"name": "denominators_and_splits", "passed": denominator_ok and (source / "splits").is_dir()}],
         ),
         "R2": (
-            "passed" if _json_status(source / "protocol_audit.json") else "partial",
-            [{"name": "protocol_coverage", "passed": _json_status(source / "protocol_audit.json")}],
+            "passed" if protocol_ok else "partial",
+            [{"name": "protocol_coverage", "passed": protocol_ok}],
         ),
         "R3": (
-            "passed" if (source / "config.json").is_file() and (source / "results_raw.csv").is_file() else "partial",
-            [{"name": "selection_config_and_rows", "passed": (source / "config.json").is_file() and (source / "results_raw.csv").is_file()}],
+            "passed" if selection_ok else "partial",
+            [{"name": "selection_config_and_rows", "passed": selection_ok}],
         ),
         "R4": (r4_status, r4_checks),
         "R5": (r5_status, r5_checks),
@@ -145,14 +431,18 @@ def validate_engineering_requirements(
             [{"name": "structural_status_declared", "passed": (source / "structural_evaluation.json").is_file()}],
         ),
         "R7": (
-            "passed" if _json_status(root / "artifacts" / "test_verification.json") else "partial",
-            [{"name": "test_verification", "passed": _json_status(root / "artifacts" / "test_verification.json")}],
+            "passed" if tests_ok else "partial",
+            [{"name": "test_verification", "passed": tests_ok}],
         ),
     }
     requirements = []
     for requirement in payload["requirements"]:
         identifier = str(requirement["id"])
         status, checks = defaults.get(identifier, ("partial", []))
+        evidence_ok = _declared_evidence_exists(root, requirement)
+        checks = [*checks, {"name": "declared_evidence_exists", "passed": evidence_ok}]
+        if not evidence_ok:
+            status = "partial"
         requirements.append({**dict(requirement), "status": status, "checks": checks})
     return {
         "status": "passed" if all(item["status"] in {"passed", "not_evaluated"} for item in requirements) else "partial",
@@ -192,7 +482,7 @@ def _sanitize_json(value: object) -> object:
         return {key: _sanitize_json(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_sanitize_json(item) for item in value]
-    if isinstance(value, str) and _WINDOWS_ABSOLUTE.match(value):
+    if isinstance(value, str) and _contains_forbidden_path(value):
         return "<redacted-absolute-path>"
     return value
 
@@ -208,9 +498,20 @@ def _copy_safe(source: Path, target: Path) -> None:
             encoding="utf-8",
         )
         return
-    if source.suffix.lower() in {".csv", ".md", ".txt"}:
+    if source.suffix.lower() == ".csv":
+        with source.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.reader(handle))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerows(
+                ["<redacted-path>" if _contains_forbidden_path(cell) else cell for cell in row]
+                for row in rows
+            )
+        return
+    if source.suffix.lower() in {".md", ".txt"}:
         text = source.read_text(encoding="utf-8")
-        if re.search(r"[A-Za-z]:\\(?:Users|Melodies)\\", text, flags=re.IGNORECASE):
+        if _contains_forbidden_path(text):
             raise ValueError(f"personal absolute path in artifact: {source}")
         target.write_text(text, encoding="utf-8")
         return
@@ -277,8 +578,21 @@ def build_reproducibility_package(
             _copy_safe(path, output / "evidence" / name)
     (output / "REGENERATION.md").write_text(
         "# Regeneration\n\n"
-        "Run both unittest suites, verify the documented corpus-cache SHA-256, "
-        "then regenerate tables and figures with `scripts/figuras_tesis.py`.\n",
+        "From a clean checkout, run:\n\n"
+        "```powershell\n"
+        "python -m pip install -r requirements.txt\n"
+        "python -m unittest discover -s tests -v\n"
+        "python -m unittest discover -s next_token_experiment/tests -v\n"
+        "$expected = 'F42F9D7AB8550A4C366CFCF410C3CF67C85FAD46F5C4F54818403DEEC328E144'\n"
+        "$actual = (Get-FileHash artifacts/corpus_cache_3000.jsonl -Algorithm SHA256).Hash\n"
+        "if ($actual -ne $expected) { throw \"Unexpected corpus cache SHA-256: $actual\" }\n"
+        "Copy-Item -Recurse package/source_run artifacts/Comparacion/tesis_3000_gpu_20260823_1941\n"
+        "Copy-Item -Recurse package/source_audit artifacts/Comparacion/audits/tesis_3000_gpu_20260823_1941\n"
+        "Copy-Item -Recurse package/sensitivities/* artifacts/Comparacion/\n"
+        "python scripts/figuras_tesis.py\n"
+        "```\n\n"
+        "Run `scripts/run_resource_benchmark.py --help` for the final-fit benchmark "
+        "arguments. The benchmark refuses to fit if the cache hash or corpus counts differ.\n",
         encoding="utf-8",
     )
     files = [
@@ -294,10 +608,37 @@ def build_reproducibility_package(
         for name in BENCHMARK_PACKAGE_FILES
         if not (output / "resource_benchmark" / name).is_file()
     ]
+    required_paths = list(REQUIRED_PACKAGE_PATHS)
+    split_dir = output / "source_run" / "splits"
+    if not (split_dir / "test_pieces.json").is_file():
+        required_paths.append("source_run/splits/test_pieces.json")
+    if not (split_dir / "val_pieces.json").is_file():
+        required_paths.append("source_run/splits/val_pieces.json")
+    if not list(split_dir.glob("train_fractions_seed*.json")):
+        required_paths.append("source_run/splits/train_fractions_seed*.json")
+    for sensitivity in sorted(source.parent.glob("sens_*")):
+        if sensitivity.is_dir():
+            for suffix in ("config.json", "results_summary.csv", "audit/artifact_audit.json"):
+                required_paths.append(f"sensitivities/{sensitivity.name}/{suffix}")
+    missing_required = sorted(
+        relative for relative in set(required_paths) if not (output / relative).is_file()
+    )
+    required_statuses_ok = (
+        _json_status(output / "source_audit" / "artifact_audit.json")
+        and _json_status(output / "source_audit" / "denominator_audit.json", expected="ok")
+        and _benchmark_audit_is_valid(output / "resource_benchmark")
+        and _json_status(output / "evidence" / "test_verification.json")
+        and _json_status(
+            output / "evidence" / "economic_cost_scenario.json",
+            expected="documented",
+        )
+    )
     manifest = {
-        "status": "partial" if missing_benchmark else "passed",
+        "status": "passed" if not missing_required and required_statuses_ok else "partial",
         "contains_corpus": False,
         "missing_benchmark_artifacts": missing_benchmark,
+        "missing_required_artifacts": missing_required,
+        "required_statuses_ok": required_statuses_ok,
         "files": files,
     }
     (output / "package_manifest.json").write_text(

@@ -18,7 +18,7 @@ import numpy as np
 import psutil
 import torch
 
-from next_token_experiment.data.preprocess import prepare_corpus
+from next_token_experiment.data.preprocess import build_preprocessing_report, prepare_corpus
 from next_token_experiment.data.tokenizer import build_tokenizer
 from next_token_experiment.experiment.storage import write_csv
 
@@ -37,6 +37,22 @@ from .vomm import VariableOrderMarkovModel
 
 EXPECTED_MODELS = ("finite_hmm", "hdp_hmm", "transformer", "vomm")
 EXPECTED_CACHE_SHA256 = "F42F9D7AB8550A4C366CFCF410C3CF67C85FAD46F5C4F54818403DEEC328E144"
+EXPECTED_CORPUS_REPORT = {
+    "n_prepared_pieces": 2933,
+    "n_exclusions": 67,
+    "n_total_tokens": 693754,
+    "n_total_events": 693754,
+}
+
+
+def _assert_corpus_invariants(report: Mapping[str, object]) -> None:
+    mismatches = {
+        name: {"expected": expected, "observed": report.get(name)}
+        for name, expected in EXPECTED_CORPUS_REPORT.items()
+        if report.get(name) != expected
+    }
+    if mismatches:
+        raise ValueError(f"unexpected prepared corpus invariants: {mismatches}")
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -146,6 +162,20 @@ def write_benchmark_artifacts(
 
     repetitions = int(config["repetitions"])
     counts = {model: sum(row["model"] == model for row in rows) for model in EXPECTED_MODELS}
+    expected_keys = {
+        (model, repetition)
+        for model in EXPECTED_MODELS
+        for repetition in range(1, repetitions + 1)
+    }
+    try:
+        observed_keys = [(str(row["model"]), int(row["repetition"])) for row in rows]
+    except (KeyError, TypeError, ValueError):
+        observed_keys = []
+    coverage_ok = (
+        len(rows) == len(expected_keys)
+        and len(observed_keys) == len(set(observed_keys))
+        and set(observed_keys) == expected_keys
+    )
     process_memory_ok = all(
         row.get("peak_process_memory_status") == "measured"
         and int(row.get("peak_process_memory_bytes") or 0) > 0
@@ -154,13 +184,17 @@ def write_benchmark_artifacts(
     gpu_status_ok = all(
         row.get("peak_gpu_memory_status")
         == ("measured" if str(row.get("device", "")).startswith("cuda") else "not_applicable")
+        and (
+            not str(row.get("device", "")).startswith("cuda")
+            or int(row.get("peak_gpu_memory_bytes") or 0) > 0
+        )
         for row in rows
     )
     paths = (raw_path, summary_path, environment_path, config_path)
     audit = {
         "status": (
             "passed"
-            if counts == {model: repetitions for model in EXPECTED_MODELS}
+            if coverage_ok
             and process_memory_ok
             and gpu_status_ok
             else "failed"
@@ -171,6 +205,7 @@ def write_benchmark_artifacts(
             "expected_rows": repetitions * len(EXPECTED_MODELS),
             "observed_rows": len(rows),
         },
+        "coverage_status": "passed" if coverage_ok else "failed",
         "process_memory_status": "passed" if process_memory_ok else "failed",
         "gpu_memory_status": "passed" if gpu_status_ok else "failed",
         "files": [
@@ -379,6 +414,8 @@ def run_resource_benchmark(
         cache_path=resolved_cache,
         sample_seed=7,
     )
+    corpus_report = build_preprocessing_report(preparation)
+    _assert_corpus_invariants(corpus_report)
     by_id = {piece.piece_id: piece for piece in preparation.pieces}
     split_root = source / "splits"
     selected = select_source_configurations(source, fraction=fraction)
@@ -439,8 +476,9 @@ def run_resource_benchmark(
         "max_files": 3000,
         "n_workers": n_workers,
         "corpus_cache_sha256": cache_hash,
-        "prepared_pieces": len(preparation.pieces),
-        "exclusions": len(preparation.exclusions),
+        "prepared_pieces": corpus_report["n_prepared_pieces"],
+        "exclusions": corpus_report["n_exclusions"],
+        "total_events": corpus_report["n_total_events"],
         "configurations": selected,
     }
     return write_benchmark_artifacts(
