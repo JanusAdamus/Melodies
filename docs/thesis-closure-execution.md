@@ -13,12 +13,19 @@ No copie partituras ni caches al paquete público.
 
 ## Preparación
 
+Mientras el PR #4 siga abierto, obtenga directamente su rama:
+
 ```powershell
-git pull origin master
+git fetch origin fix/r4-r5-evidence-integration
+git switch --track origin/fix/r4-r5-evidence-integration
 python -m venv .venv
 & '.\.venv\Scripts\python.exe' -m pip install --upgrade pip
 & '.\.venv\Scripts\python.exe' -m pip install -e .
 ```
+
+Si la rama local ya existe, sustituya la segunda línea por
+`git switch fix/r4-r5-evidence-integration` y ejecute `git pull --ff-only`.
+Después de integrar el PR, basta con actualizar `master`.
 
 Antes de medir, cierre entrenamientos, diagnósticos y cargas intensivas ajenas. La declaración `isolated` es parte de la evidencia y no debe utilizarse si otra tarea compite por CPU o GPU.
 
