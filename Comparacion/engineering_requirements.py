@@ -42,6 +42,7 @@ BENCHMARK_PACKAGE_FILES = (
     "resource_benchmark_audit.json",
 )
 EXPECTED_BENCHMARK_MODELS = ("finite_hmm", "hdp_hmm", "transformer", "vomm")
+EXPECTED_CACHE_SHA256 = "F42F9D7AB8550A4C366CFCF410C3CF67C85FAD46F5C4F54818403DEEC328E144"
 EVIDENCE_PACKAGE_FILES = (
     "cache_reconstruction_verification.json",
     "economic_cost_scenario.json",
@@ -72,7 +73,7 @@ REQUIRED_PACKAGE_PATHS = (
     "REGENERATION.md",
 )
 _ABSOLUTE_PATH = re.compile(
-    r"(?i)(?:^|[\s\"'=({\[,;])(?:[A-Z]:[\\/]|\\\\|/(?:home|users|mnt|media|volumes|tmp)(?:/|$))"
+    r"(?i)(?:^|[\s\"'=({\[,;])(?:[A-Z]:[\\/]|\\\\|/(?!/)[^\s\"'=({\[,;]+)"
 )
 _CORPUS_PATH = re.compile(
     r"(?i)(?:^|[\s\"'=({\[,;])(?=[^\r\n,;\"']*[\\/])[^\r\n,;\"']*(?:pdmx|mxl)[^\r\n,;\"']*"
@@ -95,6 +96,88 @@ def _read_json(path: Path) -> object | None:
 def _json_status(path: Path, expected: str = "passed") -> bool:
     payload = _read_json(path)
     return isinstance(payload, Mapping) and payload.get("status") == expected
+
+
+def _artifact_audit_is_valid(path: Path) -> bool:
+    payload = _read_json(path)
+    checks = payload.get("checks") if isinstance(payload, Mapping) else None
+    counts = payload.get("counts") if isinstance(payload, Mapping) else None
+    return bool(
+        isinstance(payload, Mapping)
+        and payload.get("status") == "passed"
+        and isinstance(checks, list)
+        and checks
+        and any(isinstance(check, Mapping) and check.get("status") == "passed" for check in checks)
+        and not any(isinstance(check, Mapping) and check.get("status") == "failed" for check in checks)
+        and isinstance(counts, Mapping)
+        and isinstance(counts.get("raw_rows"), int)
+        and counts["raw_rows"] > 0
+        and counts.get("models") == len(EXPECTED_BENCHMARK_MODELS)
+        and isinstance(counts.get("expected_cells"), int)
+        and counts.get("completed_cells") == counts.get("expected_cells")
+        and counts["expected_cells"] > 0
+    )
+
+
+def _economic_scenario_is_valid(path: Path) -> bool:
+    payload = _read_json(path)
+    rates = payload.get("rates") if isinstance(payload, Mapping) else None
+    return bool(
+        isinstance(payload, Mapping)
+        and payload.get("status") == "documented"
+        and isinstance(payload.get("as_of_date"), str)
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", payload["as_of_date"])
+        and isinstance(rates, list)
+        and rates
+        and all(
+            isinstance(rate, Mapping)
+            and isinstance(rate.get("usd_per_hour"), (int, float))
+            and rate["usd_per_hour"] > 0
+            and isinstance(rate.get("source"), str)
+            and rate["source"].startswith("https://")
+            for rate in rates
+        )
+    )
+
+
+def _clean_clone_verification_is_valid(path: Path) -> bool:
+    payload = _read_json(path)
+    counts = payload.get("corpus_counts") if isinstance(payload, Mapping) else None
+    commands = payload.get("commands") if isinstance(payload, Mapping) else None
+    products = payload.get("deterministic_products") if isinstance(payload, Mapping) else None
+    return bool(
+        isinstance(payload, Mapping)
+        and payload.get("status") == "passed"
+        and isinstance(payload.get("commit"), str)
+        and re.fullmatch(r"[0-9a-fA-F]{40}", payload["commit"])
+        and payload.get("corpus_cache_sha256") == EXPECTED_CACHE_SHA256
+        and counts
+        == {
+            "entries": 3000,
+            "prepared_pieces": 2933,
+            "exclusions": 67,
+            "events": 693754,
+        }
+        and isinstance(commands, list)
+        and commands
+        and all(
+            isinstance(command, Mapping)
+            and isinstance(command.get("command"), str)
+            and bool(command["command"])
+            and command.get("exit_code") == 0
+            for command in commands
+        )
+        and isinstance(products, list)
+        and products
+        and all(
+            isinstance(product, Mapping)
+            and isinstance(product.get("relative_path"), str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", str(product.get("expected_sha256", "")))
+            and product.get("actual_sha256") == product.get("expected_sha256")
+            for product in products
+        )
+        and isinstance(payload.get("nondeterministic_variations"), list)
+    )
 
 
 def _listed_files_are_valid(root: Path, payload: Mapping[str, object]) -> bool:
@@ -155,6 +238,11 @@ def _package_manifest_is_valid(package: Path) -> bool:
         for path in package.rglob("*")
         if path.is_file()
     )
+    sensitivity_audits_ok = all(
+        _artifact_audit_is_valid(sensitivity / "audit" / "artifact_audit.json")
+        for sensitivity in (package / "sensitivities").glob("*")
+        if sensitivity.is_dir()
+    )
     return bool(
         isinstance(payload, Mapping)
         and payload.get("status") == "passed"
@@ -165,14 +253,12 @@ def _package_manifest_is_valid(package: Path) -> bool:
         and train_splits
         and all(path.relative_to(package).as_posix() in listed_paths for path in train_splits)
         and _listed_files_are_valid(package, payload)
-        and _json_status(package / "source_audit" / "artifact_audit.json")
-        and _json_status(package / "source_audit" / "denominator_audit.json", expected="ok")
+        and _artifact_audit_is_valid(package / "source_audit" / "artifact_audit.json")
+        and _denominator_audit_is_valid(package / "source_audit" / "denominator_audit.json")
         and _benchmark_audit_is_valid(package / "resource_benchmark")
-        and _json_status(package / "evidence" / "test_verification.json")
-        and _json_status(
-            package / "evidence" / "economic_cost_scenario.json",
-            expected="documented",
-        )
+        and _test_verification_is_valid(package / "evidence" / "test_verification.json")
+        and _economic_scenario_is_valid(package / "evidence" / "economic_cost_scenario.json")
+        and sensitivity_audits_ok
         and not forbidden_content
     )
 
@@ -363,13 +449,7 @@ def _check_r5(root: Path) -> tuple[str, list[dict[str, object]]]:
             )
         except (OSError, KeyError, TypeError, ValueError):
             memory_ok = False
-    scenario = _read_json(root / "artifacts" / "economic_cost_scenario.json")
-    scenario_ok = (
-        isinstance(scenario, Mapping)
-        and scenario.get("status") == "documented"
-        and bool(scenario.get("as_of_date"))
-        and bool(scenario.get("rates"))
-    )
+    scenario_ok = _economic_scenario_is_valid(root / "artifacts" / "economic_cost_scenario.json")
     checks = [
         {"name": "final_fit_benchmark_audit", "passed": audit_ok},
         {"name": "peak_process_memory", "passed": memory_ok},
@@ -399,7 +479,9 @@ def validate_engineering_requirements(
         },
         {
             "name": "clean_clone_regeneration",
-            "passed": _json_status(package / "clean_clone_verification.json"),
+            "passed": _clean_clone_verification_is_valid(
+                package / "clean_clone_verification.json"
+            ),
         },
     ]
     r4_status = "passed" if all(check["passed"] for check in r4_checks) else "partial"
@@ -589,7 +671,13 @@ def build_reproducibility_package(
         "Copy-Item -Recurse package/source_run artifacts/Comparacion/tesis_3000_gpu_20260823_1941\n"
         "Copy-Item -Recurse package/source_audit artifacts/Comparacion/audits/tesis_3000_gpu_20260823_1941\n"
         "Copy-Item -Recurse package/sensitivities/* artifacts/Comparacion/\n"
+        "Copy-Item package/diagnostics/*.json artifacts/ -Force\n"
+        "New-Item -ItemType Directory artifacts/reproduced_tables -Force | Out-Null\n"
+        "Copy-Item package/source_run/results_summary.csv artifacts/reproduced_tables/\n"
+        "Copy-Item package/source_run/engineering_costs.csv artifacts/reproduced_tables/\n"
+        "Copy-Item package/resource_benchmark/resource_benchmark_summary.csv artifacts/reproduced_tables/\n"
         "python scripts/figuras_tesis.py\n"
+        "Get-FileHash artifacts/reproduced_tables/*, artifacts/figuras/* -Algorithm SHA256\n"
         "```\n\n"
         "Run `scripts/run_resource_benchmark.py --help` for the final-fit benchmark "
         "arguments. The benchmark refuses to fit if the cache hash or corpus counts differ.\n",
@@ -623,15 +711,18 @@ def build_reproducibility_package(
     missing_required = sorted(
         relative for relative in set(required_paths) if not (output / relative).is_file()
     )
+    sensitivity_statuses_ok = all(
+        _artifact_audit_is_valid(output / "sensitivities" / sensitivity.name / "audit" / "artifact_audit.json")
+        for sensitivity in source.parent.glob("sens_*")
+        if sensitivity.is_dir()
+    )
     required_statuses_ok = (
-        _json_status(output / "source_audit" / "artifact_audit.json")
-        and _json_status(output / "source_audit" / "denominator_audit.json", expected="ok")
+        _artifact_audit_is_valid(output / "source_audit" / "artifact_audit.json")
+        and _denominator_audit_is_valid(output / "source_audit" / "denominator_audit.json")
         and _benchmark_audit_is_valid(output / "resource_benchmark")
-        and _json_status(output / "evidence" / "test_verification.json")
-        and _json_status(
-            output / "evidence" / "economic_cost_scenario.json",
-            expected="documented",
-        )
+        and _test_verification_is_valid(output / "evidence" / "test_verification.json")
+        and _economic_scenario_is_valid(output / "evidence" / "economic_cost_scenario.json")
+        and sensitivity_statuses_ok
     )
     manifest = {
         "status": "passed" if not missing_required and required_statuses_ok else "partial",

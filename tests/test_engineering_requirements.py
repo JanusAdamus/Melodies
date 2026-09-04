@@ -8,6 +8,8 @@ import tempfile
 import unittest
 
 from Comparacion.engineering_requirements import (
+    _artifact_audit_is_valid,
+    _clean_clone_verification_is_valid,
     build_reproducibility_package,
     validate_engineering_requirements,
 )
@@ -31,6 +33,17 @@ def _manifest_items(root: Path) -> list[dict[str, object]]:
 
 
 class EngineeringRequirementTests(unittest.TestCase):
+    def test_status_only_audits_and_clean_clone_records_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            audit = root / "artifact_audit.json"
+            clean_clone = root / "clean_clone_verification.json"
+            _json(audit, {"status": "passed"})
+            _json(clean_clone, {"status": "passed"})
+
+            self.assertFalse(_artifact_audit_is_valid(audit))
+            self.assertFalse(_clean_clone_verification_is_valid(clean_clone))
+
     def test_manifest_hash_mismatch_keeps_r4_partial(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -285,10 +298,50 @@ class EngineeringRequirementTests(unittest.TestCase):
                 path = package / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("{}" if path.suffix == ".json" else "value\n", encoding="utf-8")
-            _json(package / "source_audit" / "artifact_audit.json", {"status": "passed"})
-            _json(package / "source_audit" / "denominator_audit.json", {"status": "ok"})
-            _json(package / "evidence" / "test_verification.json", {"status": "passed"})
-            _json(package / "evidence" / "economic_cost_scenario.json", {"status": "documented"})
+            _json(
+                package / "source_audit" / "artifact_audit.json",
+                {
+                    "status": "passed",
+                    "checks": [{"status": "passed"}],
+                    "counts": {
+                        "raw_rows": 1,
+                        "models": 4,
+                        "completed_cells": 1,
+                        "expected_cells": 1,
+                    },
+                },
+            )
+            _json(
+                package / "source_audit" / "denominator_audit.json",
+                {
+                    "status": "ok",
+                    "n_scored_files": 1,
+                    "n_canonical_works": 1,
+                    "unscored_test_files": [],
+                    "per_model": {model: {} for model in ("finite_hmm", "hdp_hmm", "transformer", "vomm")},
+                    "pairs": [{}],
+                },
+            )
+            _json(
+                package / "evidence" / "test_verification.json",
+                {
+                    "status": "passed",
+                    "commit": "a" * 40,
+                    "diff_check": "passed",
+                    "suites": [
+                        {"tests": 1, "failures": 0, "errors": 0},
+                        {"tests": 1, "failures": 0, "errors": 0},
+                    ],
+                },
+            )
+            _json(
+                package / "evidence" / "economic_cost_scenario.json",
+                {
+                    "status": "documented",
+                    "as_of_date": "2026-09-03",
+                    "rates": [{"usd_per_hour": 1.0, "source": "https://example.com"}],
+                },
+            )
             packaged_raw = package / "resource_benchmark" / "resource_benchmark_raw.csv"
             packaged_raw.write_text(
                 "model,repetition,peak_process_memory_bytes,peak_process_memory_status,"
@@ -332,7 +385,29 @@ class EngineeringRequirementTests(unittest.TestCase):
                     ],
                 },
             )
-            _json(package / "clean_clone_verification.json", {"status": "passed"})
+            _json(
+                package / "clean_clone_verification.json",
+                {
+                    "status": "passed",
+                    "commit": "a" * 40,
+                    "corpus_cache_sha256": "F42F9D7AB8550A4C366CFCF410C3CF67C85FAD46F5C4F54818403DEEC328E144",
+                    "corpus_counts": {
+                        "entries": 3000,
+                        "prepared_pieces": 2933,
+                        "exclusions": 67,
+                        "events": 693754,
+                    },
+                    "commands": [{"command": "python -m unittest", "exit_code": 0}],
+                    "deterministic_products": [
+                        {
+                            "relative_path": "figure.png",
+                            "expected_sha256": "b" * 64,
+                            "actual_sha256": "b" * 64,
+                        }
+                    ],
+                    "nondeterministic_variations": [],
+                },
+            )
             _json(
                 package / "package_manifest.json",
                 {
@@ -416,7 +491,13 @@ class EngineeringRequirementTests(unittest.TestCase):
             )
             _json(
                 root / "artifacts" / "economic_cost_scenario.json",
-                {"status": "documented", "as_of_date": "2026-09-03", "rates": [{"usd_per_hour": 1.0}]},
+                {
+                    "status": "documented",
+                    "as_of_date": "2026-09-03",
+                    "rates": [
+                        {"usd_per_hour": 1.0, "source": "https://example.com/pricing"}
+                    ],
+                },
             )
 
             result = validate_engineering_requirements(root)
@@ -475,7 +556,7 @@ class EngineeringRequirementTests(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             (source / "results_raw.csv").write_text(
-                "model,source_path\nfinite_hmm,/home/researcher/PDMX/file.mxl\n",
+                "model,source_path\nfinite_hmm,/srv/researcher/private/file.csv\n",
                 encoding="utf-8",
             )
 
@@ -489,7 +570,7 @@ class EngineeringRequirementTests(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertIn("<redacted-path>", packaged)
-            self.assertNotIn("PDMX", packaged)
+            self.assertNotIn("/srv/", packaged)
 
     def test_package_includes_source_audit_sensitivities_and_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -522,6 +603,9 @@ class EngineeringRequirementTests(unittest.TestCase):
             self.assertTrue(
                 (package / "diagnostics" / "diagnostico_finite_hmm_k.json").is_file()
             )
+            regeneration = (package / "REGENERATION.md").read_text(encoding="utf-8")
+            self.assertIn("package/diagnostics", regeneration)
+            self.assertIn("reproduced_tables", regeneration)
             self.assertTrue(
                 (package / "evidence" / "cache_reconstruction_verification.json").is_file()
             )
