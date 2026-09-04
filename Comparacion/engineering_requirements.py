@@ -43,6 +43,18 @@ BENCHMARK_PACKAGE_FILES = (
 )
 EXPECTED_BENCHMARK_MODELS = ("finite_hmm", "hdp_hmm", "transformer", "vomm")
 EXPECTED_CACHE_SHA256 = "F42F9D7AB8550A4C366CFCF410C3CF67C85FAD46F5C4F54818403DEEC328E144"
+EXPECTED_FIGURE_FILES = tuple(
+    f"fig{number}_{name}.{extension}"
+    for number, name in (
+        (1, "curva_aprendizaje"),
+        (2, "capacidad_hmm"),
+        (3, "sensibilidades"),
+        (4, "comparaciones_pareadas"),
+        (5, "pareto_prediccion_costo"),
+        (6, "unidad_de_analisis"),
+    )
+    for extension in ("pdf", "png")
+)
 EVIDENCE_PACKAGE_FILES = (
     "cache_reconstruction_verification.json",
     "economic_cost_scenario.json",
@@ -70,6 +82,10 @@ REQUIRED_PACKAGE_PATHS = (
     "evidence/requirements_validation.json",
     "evidence/requirements_validation.md",
     "evidence/test_verification.json",
+    "tables/results_summary.md",
+    "tables/engineering_costs.md",
+    "tables/resource_benchmark_summary.md",
+    *(f"figures/{name}" for name in EXPECTED_FIGURE_FILES),
     "REGENERATION.md",
 )
 _ABSOLUTE_PATH = re.compile(
@@ -81,7 +97,12 @@ _CORPUS_PATH = re.compile(
 
 
 def _contains_forbidden_path(value: str) -> bool:
-    return bool(_ABSOLUTE_PATH.search(value) or _CORPUS_PATH.search(value))
+    without_urls = re.sub(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+", "", value)
+    return bool(
+        _ABSOLUTE_PATH.search(without_urls)
+        or re.search(r"(?<![A-Za-z0-9./])/(?!/)[^\s\"'<>]+", without_urls)
+        or _CORPUS_PATH.search(without_urls)
+    )
 
 
 def _read_json(path: Path) -> object | None:
@@ -140,11 +161,38 @@ def _economic_scenario_is_valid(path: Path) -> bool:
     )
 
 
-def _clean_clone_verification_is_valid(path: Path) -> bool:
+def _clean_clone_verification_is_valid(
+    path: Path,
+    *,
+    repo_root: Path | None = None,
+) -> bool:
     payload = _read_json(path)
     counts = payload.get("corpus_counts") if isinstance(payload, Mapping) else None
     commands = payload.get("commands") if isinstance(payload, Mapping) else None
     products = payload.get("deterministic_products") if isinstance(payload, Mapping) else None
+    product_root = repo_root.resolve() if repo_root is not None else path.parent.resolve()
+    products_ok = isinstance(products, list) and bool(products)
+    if products_ok:
+        for product in products:
+            if not isinstance(product, Mapping) or not isinstance(product.get("relative_path"), str):
+                products_ok = False
+                break
+            relative = Path(product["relative_path"])
+            if relative.is_absolute() or ".." in relative.parts:
+                products_ok = False
+                break
+            target = (product_root / relative).resolve()
+            if product_root not in target.parents or not target.is_file():
+                products_ok = False
+                break
+            actual = _hash_file(target)
+            if (
+                not re.fullmatch(r"[0-9a-fA-F]{64}", str(product.get("expected_sha256", "")))
+                or product.get("actual_sha256") != actual
+                or product.get("expected_sha256") != actual
+            ):
+                products_ok = False
+                break
     return bool(
         isinstance(payload, Mapping)
         and payload.get("status") == "passed"
@@ -167,15 +215,7 @@ def _clean_clone_verification_is_valid(path: Path) -> bool:
             and command.get("exit_code") == 0
             for command in commands
         )
-        and isinstance(products, list)
-        and products
-        and all(
-            isinstance(product, Mapping)
-            and isinstance(product.get("relative_path"), str)
-            and re.fullmatch(r"[0-9a-fA-F]{64}", str(product.get("expected_sha256", "")))
-            and product.get("actual_sha256") == product.get("expected_sha256")
-            for product in products
-        )
+        and products_ok
         and isinstance(payload.get("nondeterministic_variations"), list)
     )
 
@@ -480,7 +520,8 @@ def validate_engineering_requirements(
         {
             "name": "clean_clone_regeneration",
             "passed": _clean_clone_verification_is_valid(
-                package / "clean_clone_verification.json"
+                package / "clean_clone_verification.json",
+                repo_root=root,
             ),
         },
     ]
@@ -600,6 +641,45 @@ def _copy_safe(source: Path, target: Path) -> None:
     shutil.copy2(source, target)
 
 
+def render_evidence_tables(
+    *,
+    source_run: str | Path,
+    benchmark_dir: str | Path,
+    output_dir: str | Path,
+) -> list[Path]:
+    output = Path(output_dir)
+    sources = (
+        (Path(source_run) / "results_summary.csv", "results_summary.md"),
+        (Path(source_run) / "engineering_costs.csv", "engineering_costs.md"),
+        (Path(benchmark_dir) / "resource_benchmark_summary.csv", "resource_benchmark_summary.md"),
+    )
+    written = []
+    for source, name in sources:
+        if not source.is_file():
+            continue
+        with source.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.reader(handle))
+        if not rows:
+            raise ValueError(f"empty table source: {source}")
+
+        def cell(value: str) -> str:
+            return value.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+        width = len(rows[0])
+        if any(len(row) != width for row in rows):
+            raise ValueError(f"inconsistent CSV width: {source}")
+        lines = [
+            "| " + " | ".join(cell(value) for value in rows[0]) + " |",
+            "| " + " | ".join("---" for _ in rows[0]) + " |",
+            *("| " + " | ".join(cell(value) for value in row) + " |" for row in rows[1:]),
+        ]
+        target = output / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        written.append(target)
+    return written
+
+
 def _hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -658,6 +738,15 @@ def build_reproducibility_package(
         path = artifact_root / name
         if path.is_file():
             _copy_safe(path, output / "evidence" / name)
+    render_evidence_tables(
+        source_run=output / "source_run",
+        benchmark_dir=output / "resource_benchmark",
+        output_dir=output / "tables",
+    )
+    for name in EXPECTED_FIGURE_FILES:
+        path = artifact_root / "figuras" / name
+        if path.is_file():
+            _copy_safe(path, output / "figures" / name)
     (output / "REGENERATION.md").write_text(
         "# Regeneration\n\n"
         "From a clean checkout, run:\n\n"
@@ -672,12 +761,10 @@ def build_reproducibility_package(
         "Copy-Item -Recurse package/source_audit artifacts/Comparacion/audits/tesis_3000_gpu_20260823_1941\n"
         "Copy-Item -Recurse package/sensitivities/* artifacts/Comparacion/\n"
         "Copy-Item package/diagnostics/*.json artifacts/ -Force\n"
-        "New-Item -ItemType Directory artifacts/reproduced_tables -Force | Out-Null\n"
-        "Copy-Item package/source_run/results_summary.csv artifacts/reproduced_tables/\n"
-        "Copy-Item package/source_run/engineering_costs.csv artifacts/reproduced_tables/\n"
-        "Copy-Item package/resource_benchmark/resource_benchmark_summary.csv artifacts/reproduced_tables/\n"
+        "python scripts/render_evidence_tables.py --source-run artifacts/Comparacion/tesis_3000_gpu_20260823_1941 --benchmark-dir artifacts/resource_benchmark/final_fit_split7 --output-dir artifacts/reproduced_tables\n"
         "python scripts/figuras_tesis.py\n"
-        "Get-FileHash artifacts/reproduced_tables/*, artifacts/figuras/* -Algorithm SHA256\n"
+        "$pairs = @(@{Expected='package/tables'; Actual='artifacts/reproduced_tables'}, @{Expected='package/figures'; Actual='artifacts/figuras'})\n"
+        "foreach ($pair in $pairs) { Get-ChildItem $pair.Expected -File | ForEach-Object { $actual = Join-Path $pair.Actual $_.Name; if (!(Test-Path $actual)) { throw \"Missing product: $actual\" }; if ((Get-FileHash $_.FullName -Algorithm SHA256).Hash -ne (Get-FileHash $actual -Algorithm SHA256).Hash) { throw \"Hash mismatch: $actual\" } } }\n"
         "```\n\n"
         "Run `scripts/run_resource_benchmark.py --help` for the final-fit benchmark "
         "arguments. The benchmark refuses to fit if the cache hash or corpus counts differ.\n",

@@ -4,6 +4,8 @@ import csv
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -11,6 +13,7 @@ from Comparacion.engineering_requirements import (
     _artifact_audit_is_valid,
     _clean_clone_verification_is_valid,
     build_reproducibility_package,
+    render_evidence_tables,
     validate_engineering_requirements,
 )
 
@@ -33,6 +36,48 @@ def _manifest_items(root: Path) -> list[dict[str, object]]:
 
 
 class EngineeringRequirementTests(unittest.TestCase):
+    def test_render_tables_cli_runs_outside_repository_cwd(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "scripts" / "render_evidence_tables.py"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result = subprocess.run(
+                [sys.executable, str(script), "--help"],
+                cwd=temporary_directory,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_renders_deterministic_markdown_tables_from_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source"
+            benchmark = root / "benchmark"
+            source.mkdir()
+            benchmark.mkdir()
+            (source / "results_summary.csv").write_text(
+                "model,nll\nfinite_hmm,1.25\n", encoding="utf-8"
+            )
+            (source / "engineering_costs.csv").write_text(
+                "model,seconds\nfinite_hmm,2.0\n", encoding="utf-8"
+            )
+            (benchmark / "resource_benchmark_summary.csv").write_text(
+                "model,memory\nfinite_hmm,1000\n", encoding="utf-8"
+            )
+
+            written = render_evidence_tables(
+                source_run=source,
+                benchmark_dir=benchmark,
+                output_dir=root / "tables",
+            )
+
+            self.assertEqual(len(written), 3)
+            self.assertEqual(
+                (root / "tables" / "results_summary.md").read_text(encoding="utf-8"),
+                "| model | nll |\n| --- | --- |\n| finite_hmm | 1.25 |\n",
+            )
+
     def test_status_only_audits_and_clean_clone_records_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -293,11 +338,26 @@ class EngineeringRequirementTests(unittest.TestCase):
                 "resource_benchmark/resource_benchmark_config.json",
                 "evidence/requirements_validation.json",
                 "evidence/requirements_validation.md",
+                "tables/results_summary.md",
+                "tables/engineering_costs.md",
+                "tables/resource_benchmark_summary.md",
                 "REGENERATION.md",
             ):
                 path = package / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("{}" if path.suffix == ".json" else "value\n", encoding="utf-8")
+            for number, name in (
+                (1, "curva_aprendizaje"),
+                (2, "capacidad_hmm"),
+                (3, "sensibilidades"),
+                (4, "comparaciones_pareadas"),
+                (5, "pareto_prediccion_costo"),
+                (6, "unidad_de_analisis"),
+            ):
+                for extension in ("pdf", "png"):
+                    figure = package / "figures" / f"fig{number}_{name}.{extension}"
+                    figure.parent.mkdir(parents=True, exist_ok=True)
+                    figure.write_bytes(b"figure")
             _json(
                 package / "source_audit" / "artifact_audit.json",
                 {
@@ -385,6 +445,10 @@ class EngineeringRequirementTests(unittest.TestCase):
                     ],
                 },
             )
+            reproduced_product = root / "reproduced" / "figure.png"
+            reproduced_product.parent.mkdir(parents=True)
+            reproduced_product.write_bytes(b"figure")
+            reproduced_hash = hashlib.sha256(reproduced_product.read_bytes()).hexdigest().upper()
             _json(
                 package / "clean_clone_verification.json",
                 {
@@ -400,9 +464,9 @@ class EngineeringRequirementTests(unittest.TestCase):
                     "commands": [{"command": "python -m unittest", "exit_code": 0}],
                     "deterministic_products": [
                         {
-                            "relative_path": "figure.png",
-                            "expected_sha256": "b" * 64,
-                            "actual_sha256": "b" * 64,
+                            "relative_path": "reproduced/figure.png",
+                            "expected_sha256": reproduced_hash,
+                            "actual_sha256": reproduced_hash,
                         }
                     ],
                     "nondeterministic_variations": [],
@@ -556,7 +620,9 @@ class EngineeringRequirementTests(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             (source / "results_raw.csv").write_text(
-                "model,source_path\nfinite_hmm,/srv/researcher/private/file.csv\n",
+                "model,source_path\n"
+                "finite_hmm,`/srv/researcher/private/file.csv`\n"
+                "vomm,path:/data/private/file.csv\n",
                 encoding="utf-8",
             )
 
@@ -571,6 +637,7 @@ class EngineeringRequirementTests(unittest.TestCase):
             )
             self.assertIn("<redacted-path>", packaged)
             self.assertNotIn("/srv/", packaged)
+            self.assertNotIn("/data/", packaged)
 
     def test_package_includes_source_audit_sensitivities_and_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
