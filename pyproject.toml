@@ -14,11 +14,12 @@ authors = [
 dependencies = [
   "jupyter>=1.0",
   "matplotlib>=3.8",
-  "music21>=9.1",
+  "music21==9.9.1",
   "networkx>=3.2",
   "numpy>=1.26",
   "openpyxl>=3.1",
   "pandas>=2.2",
+  "psutil>=7.2",
   "scipy>=1.13",
   "seaborn>=0.13",
   "torch>=2.3",
