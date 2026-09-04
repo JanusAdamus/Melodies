@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
 from typing import Mapping
@@ -11,6 +12,14 @@ from .evidence_package import verify_evidence_package
 
 
 _STATUS_RANK = {"passed": 0, "partial": 1, "failed": 2}
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest().upper()
 
 
 def _resolve(context_file: Path, value: object) -> Path:
@@ -181,6 +190,86 @@ def _check_rule(
             "eligible_models": sorted(models),
             "missing_models": sorted(required_models - models),
             "incomplete_models": sorted(set(incomplete)),
+        }
+
+    if kind == "resource_benchmark_passed":
+        value = context.get("resource_benchmark_audit")
+        if not value:
+            return {"status": missing_status, "reason": "resource benchmark audit not declared"}
+        path = _resolve(context_file, value)
+        if not path.is_file():
+            return {"status": missing_status, "reason": "resource benchmark audit not found"}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            return {"status": "failed", "evidence": str(path), "reason": str(error)}
+        if not isinstance(payload, Mapping):
+            return {"status": "failed", "evidence": str(path), "reason": "audit must be an object"}
+        coverage = payload.get("coverage", {})
+        if not isinstance(coverage, Mapping):
+            coverage = {}
+        model_counts = coverage.get("models", {})
+        if not isinstance(model_counts, Mapping):
+            model_counts = {}
+        observed_models = {
+            str(model)
+            for model, count in model_counts.items()
+            if isinstance(count, int) and count > 0
+        }
+        required_models = set(rule.get("required_models", []))
+        repetitions = coverage.get("repetitions")
+        minimum_repetitions = int(rule.get("minimum_repetitions", 1))
+        files_ok = True
+        invalid_files: list[str] = []
+        file_entries = payload.get("files", [])
+        if not isinstance(file_entries, list):
+            file_entries = []
+            files_ok = False
+        for entry in file_entries:
+            if not isinstance(entry, Mapping) or "relative_path" not in entry:
+                files_ok = False
+                invalid_files.append("<invalid-entry>")
+                continue
+            relative = Path(str(entry["relative_path"]))
+            if relative.is_absolute() or ".." in relative.parts:
+                files_ok = False
+                invalid_files.append(str(entry["relative_path"]))
+                continue
+            artifact = path.parent / relative
+            if not artifact.is_file() or _sha256(artifact) != str(entry.get("sha256", "")).upper():
+                files_ok = False
+                invalid_files.append(str(entry["relative_path"]))
+        expected_rows = coverage.get("expected_rows")
+        observed_rows = coverage.get("observed_rows")
+        audit_passed = (
+            payload.get("status") == "passed"
+            and payload.get("coverage_status") == "passed"
+            and payload.get("resource_status") == "passed"
+            and payload.get("corpus_fingerprint_status") == "passed"
+            and payload.get("corpus_counts_status") == "passed"
+            and expected_rows == observed_rows
+            and bool(file_entries)
+            and files_ok
+        )
+        requirement_scope_met = (
+            required_models.issubset(observed_models)
+            and isinstance(repetitions, int)
+            and repetitions >= minimum_repetitions
+        )
+        if not audit_passed:
+            status = "failed"
+        elif requirement_scope_met:
+            status = "passed"
+        else:
+            status = missing_status
+        return {
+            "status": status,
+            "evidence": str(path),
+            "observed_models": sorted(observed_models),
+            "missing_models": sorted(required_models - observed_models),
+            "repetitions": repetitions,
+            "minimum_repetitions": minimum_repetitions,
+            "invalid_files": invalid_files,
         }
 
     if kind == "cost_scenarios_computed":

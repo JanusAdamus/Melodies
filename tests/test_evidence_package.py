@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -147,6 +149,103 @@ class EvidencePackageTests(unittest.TestCase):
 
             self.assertEqual(report["status"], "failed")
             self.assertTrue(any("unsafe" in issue for issue in report["issues"]))
+
+    def test_supplemental_benchmark_is_packaged_and_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = _build_run(root)
+            benchmark = root / "benchmark"
+            benchmark.mkdir()
+            with (benchmark / "resource_benchmark_raw.csv").open(
+                "w", newline="", encoding="utf-8"
+            ) as handle:
+                writer = csv.DictWriter(handle, fieldnames=("model", "repetition"))
+                writer.writeheader()
+                writer.writerow({"model": "finite_hmm", "repetition": 1})
+            raw_hash = hashlib.sha256(
+                (benchmark / "resource_benchmark_raw.csv").read_bytes()
+            ).hexdigest().upper()
+            (benchmark / "resource_benchmark_audit.json").write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "files": [
+                            {
+                                "relative_path": "resource_benchmark_raw.csv",
+                                "sha256": raw_hash,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            registry = root / "registry.json"
+            registry.write_text(
+                json.dumps(
+                    {
+                        "runs": [{"name": "main", "path": str(run_dir)}],
+                        "supplemental_artifacts": [
+                            {
+                                "name": "resource-benchmark",
+                                "path": str(benchmark),
+                                "audit": "resource_benchmark_audit.json",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = root / "public"
+
+            export_evidence_package(registry, output)
+
+            self.assertTrue(
+                (
+                    output
+                    / "supplemental"
+                    / "resource-benchmark"
+                    / "resource_benchmark_raw.csv"
+                ).is_file()
+            )
+            self.assertEqual(verify_evidence_package(output)["status"], "passed")
+
+    def test_stale_supplemental_audit_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = _build_run(root)
+            benchmark = root / "benchmark"
+            benchmark.mkdir()
+            (benchmark / "raw.csv").write_text("changed\n", encoding="utf-8")
+            (benchmark / "audit.json").write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "files": [
+                            {"relative_path": "raw.csv", "sha256": "0" * 64}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            registry = root / "registry.json"
+            registry.write_text(
+                json.dumps(
+                    {
+                        "runs": [{"name": "main", "path": str(run_dir)}],
+                        "supplemental_artifacts": [
+                            {
+                                "name": "resource-benchmark",
+                                "path": str(benchmark),
+                                "audit": "audit.json",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "inconsistent"):
+                export_evidence_package(registry, root / "public")
 
 
 if __name__ == "__main__":

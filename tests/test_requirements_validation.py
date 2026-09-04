@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -12,6 +13,10 @@ from tests.test_artifact_audit import _build_run
 
 
 class RequirementValidationTests(unittest.TestCase):
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest().upper()
+
     def test_verified_package_and_existing_file_pass(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -232,6 +237,123 @@ class RequirementValidationTests(unittest.TestCase):
                 report["requirements"][0]["checks"][0]["incomplete_models"],
                 ["finite_hmm"],
             )
+
+    def test_resource_benchmark_audit_and_hashes_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "resource_benchmark_raw.csv"
+            raw.write_text("model,repetition\nfinite_hmm,1\n", encoding="utf-8")
+            audit = root / "resource_benchmark_audit.json"
+            audit.write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "coverage_status": "passed",
+                        "resource_status": "passed",
+                        "corpus_fingerprint_status": "passed",
+                        "corpus_counts_status": "passed",
+                        "coverage": {
+                            "models": {"finite_hmm": 3},
+                            "repetitions": 3,
+                            "expected_rows": 3,
+                            "observed_rows": 3,
+                        },
+                        "files": [
+                            {
+                                "relative_path": raw.name,
+                                "sha256": self._sha256(raw),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            context = root / "context.json"
+            context.write_text(
+                json.dumps({"resource_benchmark_audit": str(audit)}), encoding="utf-8"
+            )
+            requirements = root / "requirements.json"
+            requirements.write_text(
+                json.dumps(
+                    {
+                        "requirements": [
+                            {
+                                "id": "R5",
+                                "statement": "resources",
+                                "checks": [
+                                    {
+                                        "type": "resource_benchmark_passed",
+                                        "required_models": ["finite_hmm"],
+                                        "minimum_repetitions": 3,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = validate_requirements(requirements, context)
+
+            self.assertEqual(report["status"], "passed")
+
+    def test_resource_benchmark_with_too_few_repetitions_is_partial(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw.csv"
+            raw.write_text("ok\n1\n", encoding="utf-8")
+            audit = root / "audit.json"
+            audit.write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "coverage_status": "passed",
+                        "resource_status": "passed",
+                        "corpus_fingerprint_status": "passed",
+                        "corpus_counts_status": "passed",
+                        "coverage": {
+                            "models": {"finite_hmm": 1},
+                            "repetitions": 1,
+                            "expected_rows": 1,
+                            "observed_rows": 1,
+                        },
+                        "files": [
+                            {"relative_path": raw.name, "sha256": self._sha256(raw)}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            context = root / "context.json"
+            context.write_text(
+                json.dumps({"resource_benchmark_audit": str(audit)}), encoding="utf-8"
+            )
+            requirements = root / "requirements.json"
+            requirements.write_text(
+                json.dumps(
+                    {
+                        "requirements": [
+                            {
+                                "id": "R5",
+                                "statement": "resources",
+                                "checks": [
+                                    {
+                                        "type": "resource_benchmark_passed",
+                                        "required_models": ["finite_hmm"],
+                                        "minimum_repetitions": 3,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = validate_requirements(requirements, context)
+
+            self.assertEqual(report["status"], "partial")
 
 
 if __name__ == "__main__":

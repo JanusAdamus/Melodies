@@ -180,6 +180,40 @@ def _write_deterministic_zip(root: Path, archive: Path) -> None:
             handle.writestr(info, path.read_bytes())
 
 
+def _copy_supplemental_directory(source: Path, target: Path) -> None:
+    if not source.is_dir():
+        raise ValueError(f"supplemental evidence directory not found: {source}")
+    for candidate in source.rglob("*"):
+        if candidate.is_symlink():
+            raise ValueError(f"symbolic links are not allowed in evidence: {candidate}")
+        if candidate.is_file():
+            if candidate.suffix.lower() not in _TEXT_EXTENSIONS:
+                raise ValueError(f"unsupported supplemental evidence file: {candidate}")
+            _write_sanitized(candidate, target / candidate.relative_to(source))
+
+
+def _supplemental_audit_issues(source: Path, audit: Mapping[str, object]) -> list[str]:
+    issues: list[str] = []
+    files = audit.get("files", [])
+    if not isinstance(files, list) or not files:
+        return ["audit has no declared files"]
+    for entry in files:
+        if not isinstance(entry, Mapping) or "relative_path" not in entry:
+            issues.append("invalid file entry")
+            continue
+        try:
+            relative = _safe_relative_path(entry["relative_path"])
+        except ValueError:
+            issues.append(f"unsafe file path: {entry.get('relative_path')}")
+            continue
+        path = source / relative
+        if not path.is_file():
+            issues.append(f"missing file: {relative}")
+        elif _sha256(path).upper() != str(entry.get("sha256", "")).upper():
+            issues.append(f"hash mismatch: {relative}")
+    return issues
+
+
 def export_evidence_package(
     registry_path: str | Path,
     output_dir: str | Path,
@@ -191,6 +225,9 @@ def export_evidence_package(
     runs = registry.get("runs") if isinstance(registry, Mapping) else None
     if not isinstance(runs, list) or not runs:
         raise ValueError("registry must contain a non-empty runs list")
+    supplemental = registry.get("supplemental_artifacts", [])
+    if not isinstance(supplemental, list):
+        raise ValueError("supplemental_artifacts must be a list")
 
     output = Path(output_dir).resolve()
     archive = Path(archive_path).resolve() if archive_path else output.with_suffix(".zip")
@@ -235,6 +272,34 @@ def export_evidence_package(
             }
         )
 
+    public_supplemental: list[dict[str, object]] = []
+    supplemental_names: set[str] = set()
+    for item in supplemental:
+        if not isinstance(item, Mapping):
+            raise ValueError("each supplemental artifact entry must be an object")
+        name = _safe_run_name(item.get("name"))
+        if name in supplemental_names:
+            raise ValueError(f"duplicate supplemental artifact name: {name}")
+        supplemental_names.add(name)
+        source = Path(str(item.get("path", "")))
+        if not source.is_absolute():
+            source = (registry_file.parent / source).resolve()
+        audit_relative = _safe_relative_path(item.get("audit", ""))
+        audit_path = source / audit_relative
+        if not audit_path.is_file():
+            raise ValueError(f"supplemental audit not found: {name}/{audit_relative}")
+        try:
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid supplemental audit: {name}") from error
+        if not isinstance(audit, Mapping) or audit.get("status") != "passed":
+            raise ValueError(f"supplemental audit did not pass: {name}")
+        audit_issues = _supplemental_audit_issues(source, audit)
+        if audit_issues:
+            raise ValueError(f"supplemental audit is inconsistent for {name}: {audit_issues}")
+        _copy_supplemental_directory(source, output / "supplemental" / name)
+        public_supplemental.append({"name": name, "audit": audit_relative})
+
     dictionary = {
         "purpose": "Evidence needed to verify the predictive comparison reported in the thesis.",
         "units": {
@@ -258,6 +323,7 @@ def export_evidence_package(
     manifest = {
         "schema_version": 1,
         "runs": public_runs,
+        "supplemental_artifacts": public_supplemental,
         "files": _manifest_entries(output),
     }
     (output / PACKAGE_MANIFEST).write_text(
@@ -359,6 +425,35 @@ def verify_evidence_package(package_dir: str | Path) -> dict[str, object]:
             continue
         if audit.get("status") != "passed":
             issues.append(f"packaged audit did not pass: {name}")
+
+    supplemental = manifest.get("supplemental_artifacts", [])
+    if not isinstance(supplemental, list):
+        issues.append("manifest supplemental_artifacts must be a list")
+        supplemental = []
+    for item in supplemental:
+        if not isinstance(item, Mapping):
+            issues.append("invalid supplemental artifact entry in manifest")
+            continue
+        try:
+            name = _safe_run_name(item.get("name"))
+            audit_relative = _safe_relative_path(item.get("audit", ""))
+        except ValueError:
+            issues.append("unsafe supplemental artifact entry in manifest")
+            continue
+        audit_path = root / "supplemental" / name / audit_relative
+        if not audit_path.is_file():
+            issues.append(f"missing supplemental audit: {name}/{audit_relative}")
+            continue
+        try:
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            issues.append(f"invalid supplemental audit: {name}")
+            continue
+        if not isinstance(audit, Mapping) or audit.get("status") != "passed":
+            issues.append(f"supplemental audit did not pass: {name}")
+            continue
+        for issue in _supplemental_audit_issues(audit_path.parent, audit):
+            issues.append(f"supplemental {name}: {issue}")
 
     return {
         "status": "passed" if not issues else "failed",

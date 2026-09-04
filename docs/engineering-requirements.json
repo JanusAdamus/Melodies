@@ -55,6 +55,11 @@
           "type": "resource_costs_complete",
           "required_models": ["vomm", "finite_hmm", "hdp_hmm", "transformer"]
         },
+        {
+          "type": "resource_benchmark_passed",
+          "required_models": ["vomm", "finite_hmm", "hdp_hmm", "transformer"],
+          "minimum_repetitions": 3
+        },
         {"type": "cost_scenarios_computed"}
       ]
     },
