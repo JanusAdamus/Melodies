@@ -41,6 +41,11 @@ BENCHMARK_PACKAGE_FILES = (
     "resource_benchmark_config.json",
     "resource_benchmark_audit.json",
 )
+EVIDENCE_PACKAGE_FILES = (
+    "cache_reconstruction_verification.json",
+    "economic_cost_scenario.json",
+    "test_verification.json",
+)
 _WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
@@ -266,6 +271,10 @@ def build_reproducibility_package(
     artifact_root = source.parent.parent
     for path in sorted(artifact_root.glob("diagnostico_*.json")):
         _copy_safe(path, output / "diagnostics" / path.name)
+    for name in EVIDENCE_PACKAGE_FILES:
+        path = artifact_root / name
+        if path.is_file():
+            _copy_safe(path, output / "evidence" / name)
     (output / "REGENERATION.md").write_text(
         "# Regeneration\n\n"
         "Run both unittest suites, verify the documented corpus-cache SHA-256, "

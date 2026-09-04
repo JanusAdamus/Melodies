@@ -178,6 +178,8 @@ class EngineeringRequirementTests(unittest.TestCase):
             (sensitivity / "results_summary.csv").write_text("model\nfinite_hmm\n", encoding="utf-8")
             _json(comparisons / "audits" / source.name / "artifact_audit.json", {"status": "passed"})
             _json(root / "artifacts" / "diagnostico_finite_hmm_k.json", {"status": "completed"})
+            _json(root / "artifacts" / "cache_reconstruction_verification.json", {"status": "hash_mismatch"})
+            _json(root / "artifacts" / "economic_cost_scenario.json", {"status": "documented"})
 
             build_reproducibility_package(
                 source_run=source,
@@ -192,6 +194,12 @@ class EngineeringRequirementTests(unittest.TestCase):
             )
             self.assertTrue(
                 (package / "diagnostics" / "diagnostico_finite_hmm_k.json").is_file()
+            )
+            self.assertTrue(
+                (package / "evidence" / "cache_reconstruction_verification.json").is_file()
+            )
+            self.assertTrue(
+                (package / "evidence" / "economic_cost_scenario.json").is_file()
             )
 
 
