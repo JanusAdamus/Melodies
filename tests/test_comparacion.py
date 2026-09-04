@@ -678,6 +678,37 @@ class ComparisonRunnerTests(unittest.TestCase):
                 piece_rows = list(csv.DictReader(stream))
             self.assertTrue(piece_rows)
             self.assertTrue(all(row["canonical_work_id"].strip() for row in piece_rows))
+            with (output_root / "engineering_costs.csv").open(
+                encoding="utf-8", newline=""
+            ) as stream:
+                cost_rows = list(csv.DictReader(stream))
+            required_cost_fields = {
+                "model",
+                "data_fraction",
+                "data_seed",
+                "model_seed",
+                "fit_seconds",
+                "evaluation_seconds",
+                "peak_process_memory_bytes",
+                "peak_process_memory_status",
+                "peak_gpu_memory_bytes",
+                "peak_gpu_memory_status",
+                "device",
+                "cpu_model",
+                "gpu_model",
+                "logical_cpu_count",
+                "python_version",
+                "music21_version",
+                "numpy_version",
+                "torch_version",
+            }
+            self.assertTrue(required_cost_fields.issubset(cost_rows[0]))
+            self.assertTrue(
+                all(int(row["peak_process_memory_bytes"]) > 0 for row in cost_rows)
+            )
+            self.assertTrue(
+                all(row["peak_gpu_memory_status"] == "not_applicable" for row in cost_rows)
+            )
 
             protocol_audit = json.loads((output_root / "protocol_audit.json").read_text(encoding="utf-8"))
             self.assertEqual(protocol_audit["status"], "passed")
@@ -739,6 +770,9 @@ class ComparisonRunnerTests(unittest.TestCase):
             "selected_fit_wall_clock_s",
             "selected_validation_wall_clock_s",
             "total_protocol_wall_clock_s",
+            "peak_process_memory_bytes",
+            "peak_child_process_memory_bytes",
+            "peak_gpu_memory_bytes",
         }
 
         def stable_rows(path: Path) -> list[dict[str, str]]:

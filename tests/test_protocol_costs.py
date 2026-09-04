@@ -82,6 +82,9 @@ class HardwareManifestTests(unittest.TestCase):
         self.assertIn("numpy_version", manifest)
         self.assertIn("torch_version", manifest)
         self.assertIn("cpu_count", manifest)
+        self.assertIn("music21_version", manifest)
+        self.assertIn("cpu_model", manifest)
+        self.assertIn("logical_cpu_count", manifest)
         self.assertIn("peak_gpu_memory_bytes", manifest)
 
     def test_unavailable_measurements_are_null_with_a_reason(self) -> None:

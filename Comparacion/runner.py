@@ -18,6 +18,7 @@ import matplotlib
 matplotlib.use("Agg")  # El runner solo escribe PNG; sin esto Tk falla en headless.
 
 import matplotlib.pyplot as plt
+import music21
 import numpy as np
 import pandas as pd
 import torch
@@ -42,6 +43,7 @@ from .canonicalization_audit import AUDIT_FILENAME as CANONICALIZATION_AUDIT_FIL
 from .canonicalization_audit import build_canonicalization_audit
 from .decision import pareto_front
 from .hdp_diagnostics import build_chain_diagnostics, write_chain_traces
+from .resource_monitor import ResourceMonitor
 from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
 from .denominator_audit import build_denominator_audit
 from .splits import FixedSplits, build_fixed_splits, build_nested_training_subsets
@@ -859,10 +861,13 @@ def _build_hardware_manifest(*, target_device: str, precision: str) -> dict[str,
         "precision": precision,
         "platform": platform.platform(),
         "processor": platform.processor() or None,
+        "cpu_model": platform.processor() or None,
         "python_version": platform.python_version(),
+        "music21_version": getattr(music21, "__version__", None),
         "numpy_version": np.__version__,
         "torch_version": getattr(torch, "__version__", None),
         "cpu_count": os.cpu_count(),
+        "logical_cpu_count": os.cpu_count(),
         "process_count_status": "not_measured_reliably",
         "process_count": None,
     }
@@ -881,15 +886,18 @@ def _build_hardware_manifest(*, target_device: str, precision: str) -> dict[str,
 
     gpu_name: str | None = None
     peak_gpu_memory_bytes: int | None = None
-    gpu_status = "cuda_not_available"
+    gpu_status = "not_applicable"
     try:
-        if torch.cuda.is_available():
+        if str(target_device).startswith("cuda") and torch.cuda.is_available():
             gpu_name = torch.cuda.get_device_name(0)
             peak_gpu_memory_bytes = int(torch.cuda.max_memory_allocated())
             gpu_status = "measured"
+        elif str(target_device).startswith("cuda"):
+            gpu_status = "cuda_not_available"
     except Exception as error:  # noqa: BLE001
         gpu_status = f"unavailable: {error.__class__.__name__}"
     manifest["gpu_name"] = gpu_name
+    manifest["gpu_model"] = gpu_name
     manifest["peak_gpu_memory_bytes"] = peak_gpu_memory_bytes
     manifest["peak_gpu_memory_status"] = gpu_status
     return manifest
@@ -898,14 +906,24 @@ def _build_hardware_manifest(*, target_device: str, precision: str) -> dict[str,
 def _engineering_cost_rows(raw_rows: list[dict[str, object]]) -> list[dict[str, object]]:
     fields = (
         "model",
+        "data_fraction",
         "data_seed",
         "model_seed",
         "frac",
         "n_train_pieces",
         "n_train_tokens",
         "fit_wall_clock_s",
+        "fit_seconds",
+        "evaluation_seconds",
         *PROTOCOL_COST_FIELDS,
         "cost_status",
+        "peak_process_memory_bytes",
+        "peak_process_memory_status",
+        "peak_child_process_memory_bytes",
+        "peak_gpu_memory_bytes",
+        "peak_gpu_memory_status",
+        "memory_sample_interval_s",
+        "memory_scope",
         "n_params",
         "selected_states",
         "effective_states",
@@ -915,13 +933,27 @@ def _engineering_cost_rows(raw_rows: list[dict[str, object]]) -> list[dict[str, 
     rows = []
     for raw in raw_rows:
         row = {field: raw.get(field) for field in fields}
+        environment = _build_hardware_manifest(
+            target_device=str(raw.get("device") or "cpu"),
+            precision="fp32",
+        )
         row.update(
             {
-                "peak_memory_bytes": None,
-                "peak_memory_status": "not_measured_reliably",
+                "data_fraction": raw.get("frac"),
+                "fit_seconds": raw.get("fit_wall_clock_s"),
+                "evaluation_seconds": raw.get("evaluation_wall_clock_s"),
+                "peak_memory_bytes": raw.get("peak_process_memory_bytes"),
+                "peak_memory_status": raw.get("peak_process_memory_status"),
                 "energy_joules": None,
                 "energy_status": "not_measured_reliably",
                 "cost_scope": "separate_units_not_collapsed",
+                "cpu_model": environment["cpu_model"],
+                "gpu_model": environment["gpu_model"],
+                "logical_cpu_count": environment["logical_cpu_count"],
+                "python_version": environment["python_version"],
+                "music21_version": environment["music21_version"],
+                "numpy_version": environment["numpy_version"],
+                "torch_version": environment["torch_version"],
             }
         )
         rows.append(row)
@@ -1242,15 +1274,17 @@ def run_learning_curve_experiment(
             n_train_pieces = len(train_pieces)
 
             if config.include_vomm_control:
-                vomm = select_vomm_by_validation(
-                    train_sequences=[list(piece.tokens) for piece in train_pieces],
-                    validation_pieces=fixed_splits.validation_pieces,
-                    candidate_orders=config.vomm_candidate_orders,
-                    vocabulary_size=comparison_vocabulary_size,
-                    bos_token_id=bos_token_id,
-                    max_context_length=max_context_length,
-                )
-                vomm_eval = vomm.evaluate(fixed_splits.test_pieces, max_context_length)
+                with ResourceMonitor(use_cuda=False) as resource_monitor:
+                    vomm = select_vomm_by_validation(
+                        train_sequences=[list(piece.tokens) for piece in train_pieces],
+                        validation_pieces=fixed_splits.validation_pieces,
+                        candidate_orders=config.vomm_candidate_orders,
+                        vocabulary_size=comparison_vocabulary_size,
+                        bos_token_id=bos_token_id,
+                        max_context_length=max_context_length,
+                    )
+                    vomm_eval = vomm.evaluate(fixed_splits.test_pieces, max_context_length)
+                vomm_resources = resource_monitor.measurement()
                 vomm_summary = vomm_eval["summary"]
                 _append_protocol_evidence(
                     output_path=protocol_path,
@@ -1295,6 +1329,7 @@ def run_learning_curve_experiment(
                             vomm_summary,
                             evaluation_wall_clock_s=vomm_summary["evaluation_wall_clock_s"],
                         ),
+                        **vomm_resources,
                         "hyperparams_json": json.dumps({"selected_order": vomm.selected_order}),
                     }
                 )
@@ -1318,19 +1353,21 @@ def run_learning_curve_experiment(
                     seed=model_seed,
                     vocab_size=comparison_vocabulary_size,
                 )
-                finite_hmm.fit(
-                    train_pieces,
-                    fixed_splits.validation_pieces,
-                    bos_token_id=bos_token_id,
-                    max_context_length=max_context_length,
-                )
-                finite_eval_start = time.perf_counter()
-                finite_eval = finite_hmm.evaluate(
-                    fixed_splits.test_pieces,
-                    bos_token_id=bos_token_id,
-                    max_context_length=max_context_length,
-                )
-                finite_eval_elapsed = time.perf_counter() - finite_eval_start
+                with ResourceMonitor(use_cuda=False) as resource_monitor:
+                    finite_hmm.fit(
+                        train_pieces,
+                        fixed_splits.validation_pieces,
+                        bos_token_id=bos_token_id,
+                        max_context_length=max_context_length,
+                    )
+                    finite_eval_start = time.perf_counter()
+                    finite_eval = finite_hmm.evaluate(
+                        fixed_splits.test_pieces,
+                        bos_token_id=bos_token_id,
+                        max_context_length=max_context_length,
+                    )
+                    finite_eval_elapsed = time.perf_counter() - finite_eval_start
+                finite_resources = resource_monitor.measurement()
                 finite_summary = finite_eval["summary"]
                 _append_protocol_evidence(
                     output_path=protocol_path,
@@ -1372,6 +1409,7 @@ def run_learning_curve_experiment(
                         **_protocol_cost_fields(
                             finite_summary, evaluation_wall_clock_s=finite_eval_elapsed
                         ),
+                        **finite_resources,
                         "hyperparams_json": json.dumps({"selected_states": finite_summary["selected_states"]}),
                     }
                 )
@@ -1395,12 +1433,20 @@ def run_learning_curve_experiment(
                     seed=model_seed,
                     vocab_size=comparison_vocabulary_size,
                 )
-                hdp_fit = hdp_hmm.fit(
-                    train_pieces,
-                    fixed_splits.validation_pieces,
-                    bos_token_id=bos_token_id,
-                    max_context_length=max_context_length,
-                )
+                with ResourceMonitor(use_cuda=False) as resource_monitor:
+                    hdp_fit = hdp_hmm.fit(
+                        train_pieces,
+                        fixed_splits.validation_pieces,
+                        bos_token_id=bos_token_id,
+                        max_context_length=max_context_length,
+                    )
+                    hdp_eval_start = time.perf_counter()
+                    hdp_eval = hdp_hmm.evaluate(
+                        fixed_splits.test_pieces,
+                        bos_token_id=bos_token_id,
+                        max_context_length=max_context_length,
+                    )
+                    hdp_eval_elapsed = time.perf_counter() - hdp_eval_start
                 for trace_row in hdp_fit.get("selected_chain_trace", []) or []:
                     hdp_traces_by_seed.setdefault(model_seed, []).append(
                         {
@@ -1411,13 +1457,7 @@ def run_learning_curve_experiment(
                             **trace_row,
                         }
                     )
-                hdp_eval_start = time.perf_counter()
-                hdp_eval = hdp_hmm.evaluate(
-                    fixed_splits.test_pieces,
-                    bos_token_id=bos_token_id,
-                    max_context_length=max_context_length,
-                )
-                hdp_eval_elapsed = time.perf_counter() - hdp_eval_start
+                hdp_resources = resource_monitor.measurement()
                 hdp_summary = hdp_eval["summary"]
                 _append_protocol_evidence(
                     output_path=protocol_path,
@@ -1459,6 +1499,7 @@ def run_learning_curve_experiment(
                         **_protocol_cost_fields(
                             hdp_summary, evaluation_wall_clock_s=hdp_eval_elapsed
                         ),
+                        **hdp_resources,
                         "hyperparams_json": json.dumps(hdp_fit["selected_hyperparameters"]),
                     }
                 )
@@ -1485,13 +1526,19 @@ def run_learning_curve_experiment(
                     validation_pieces=fixed_splits.validation_pieces,
                     test_pieces=fixed_splits.test_pieces,
                 )
-                transformer_fit_start = time.perf_counter()
-                transformer_fit = transformer_model.fit(
-                    dataloaders["train"],
-                    dataloaders["validation"],
+                use_cuda = (
+                    config.experiment.hardware.target_device in {"cuda", "auto"}
+                    and torch.cuda.is_available()
                 )
-                transformer_fit_wall_clock_s = time.perf_counter() - transformer_fit_start
-                transformer_eval = transformer_model.evaluate(dataloaders["test"])
+                with ResourceMonitor(use_cuda=use_cuda) as resource_monitor:
+                    transformer_fit_start = time.perf_counter()
+                    transformer_fit = transformer_model.fit(
+                        dataloaders["train"],
+                        dataloaders["validation"],
+                    )
+                    transformer_fit_wall_clock_s = time.perf_counter() - transformer_fit_start
+                    transformer_eval = transformer_model.evaluate(dataloaders["test"])
+                transformer_resources = resource_monitor.measurement()
                 transformer_summary = _transformer_summary_row(transformer_fit, transformer_eval)
                 _append_protocol_evidence(
                     output_path=protocol_path,
@@ -1536,6 +1583,7 @@ def run_learning_curve_experiment(
                             transformer_summary,
                             evaluation_wall_clock_s=transformer_summary["evaluation_wall_clock_s"],
                         ),
+                        **transformer_resources,
                         "hyperparams_json": json.dumps(
                             {"architecture": config.experiment.transformer.architecture}
                         ),
