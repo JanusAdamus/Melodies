@@ -21,7 +21,7 @@ from next_token_experiment.config import (
     TransformerConfig,
     WindowConfig,
 )
-from next_token_experiment.data.dataset import WindowedSequenceDataset, build_dataloaders
+from next_token_experiment.data.dataset import WindowedSequenceDataset, build_dataloaders, dataloader_seed
 from next_token_experiment.data.tokenizer import build_tokenizer
 from next_token_experiment.models.small_transformer import SmallTransformerNextTokenModel, SmallTransformerStudySpec
 from next_token_experiment.schemas import PreparedPiece
@@ -360,6 +360,48 @@ class TransformerTests(unittest.TestCase):
         fit_result = model.fit(dataloaders["train"], dataloaders["validation"])
         self.assertGreaterEqual(fit_result["summary"]["epochs_completed"], 1)
         self.assertTrue(model.describe_runtime()["use_relative_position_bias"])
+
+
+class DataLoaderSeedTests(unittest.TestCase):
+    """Auditoría C4: el orden de lotes depende de model_seed y data_seed, no del split."""
+
+    def _first_epoch_order(self, model_seed: int, data_seed: int) -> list[tuple[str, int]]:
+        config = build_config()
+        tokenizer = build_tokenizer(config.representation)
+        pieces = [make_piece(f"train_{index}", [(index + step) % 12 for step in range(40)]) for index in range(6)]
+
+        def dataset(split: str) -> WindowedSequenceDataset:
+            return WindowedSequenceDataset(
+                pieces=pieces,
+                tokenizer=tokenizer,
+                split=split,
+                max_context_length=config.windows.max_context_length,
+                stride=config.windows.train_stride,
+                min_window_length=config.windows.min_window_length,
+            )
+
+        loaders = build_dataloaders(
+            tokenizer=tokenizer,
+            config=config,
+            train_dataset=dataset("train"),
+            validation_dataset=dataset("validation"),
+            test_dataset=dataset("test"),
+            shuffle_seed=dataloader_seed(model_seed=model_seed, data_seed=data_seed),
+        )
+        return [
+            (piece_id, start)
+            for batch in loaders["train"]
+            for piece_id, start in zip(batch["piece_ids"], batch["start_indices"])
+        ]
+
+    def test_model_seed_changes_batch_order(self) -> None:
+        self.assertNotEqual(self._first_epoch_order(1, 1), self._first_epoch_order(2, 1))
+
+    def test_data_seed_changes_batch_order(self) -> None:
+        self.assertNotEqual(self._first_epoch_order(1, 1), self._first_epoch_order(1, 2))
+
+    def test_same_seeds_reproduce_batch_order(self) -> None:
+        self.assertEqual(self._first_epoch_order(2, 3), self._first_epoch_order(2, 3))
 
 
 if __name__ == "__main__":
