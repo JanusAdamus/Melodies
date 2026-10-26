@@ -1,0 +1,9 @@
+Corrida del 2026-10-26 en la laptop Debian, rama fix/auditoria-hdp (64f62ec), con obs_cache.pkl del auditor
+(15 obras de multicorpus_full, extracción antigua; K=20, 80 iteraciones, burn-in 40, semillas 7–26).
+Resumen (las 20 líneas por semilla se omiten; volver a correr para verlas):
+corr(#beta_k>0.01, K medio) = -0.403   spearman = -0.410
+pendiente de K medio por componente de beta > 0.01: -0.050
+varianza de K medio entre semillas 0.063, rango 5.28 a 6.08 (antes del arreglo: 4.07 a 11.71, corr 0.959)
+estados con alguna visita (última iteración), medio: 6.95
+Criterio (b) de PROMPT_CLAUDE.md (|r| < 0.3): NO cumplido formalmente; la dependencia casi desaparece (rango ~10 veces menor,
+pendiente ~0). Pendiente: repetir con >= 50 semillas y decidir con la pendiente y su IC; si se cambia el criterio, registrarlo.
