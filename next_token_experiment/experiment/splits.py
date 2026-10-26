@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 import random
 import re
 import unicodedata
@@ -24,10 +23,18 @@ NOISE_TOKENS = {
 }
 
 
-def canonicalize_work_label(label: str) -> str:
-    """Normalize filenames or titles to reduce duplicate leakage across splits."""
+SCORE_FILE_EXTENSIONS = re.compile(r"\.(mxl|musicxml|xml|mid|midi|krn|abc|mscz|mscx)$", re.IGNORECASE)
 
-    text = Path(label).stem.lower()
+
+def canonicalize_work_label(label: str) -> str:
+    """Normalize filenames or titles to reduce duplicate leakage across splits.
+
+    Sólo se quita una extensión de partitura al final. Antes se usaba
+    ``Path(label).stem``, que sobre títulos cortaba todo tras el último punto
+    («anon. Scatter the Mud» → «anon»; auditoría 2026-10-26, C3).
+    """
+
+    text = SCORE_FILE_EXTENSIONS.sub("", label.strip()).lower()
     text = re.sub(r"[_.\-]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     tokens = [token for token in text.split() if token not in NOISE_TOKENS]
@@ -41,6 +48,7 @@ GENERIC_LABELS = {
     "sheet music",
     "no title",
     "sin titulo",
+    "composer title",
 }
 
 
@@ -54,10 +62,9 @@ def canonicalization_details(label: str) -> dict[str, object]:
     """
 
     canonical_work_id = canonicalize_work_label(label)
-    # canonicalize_work_label usa Path().stem, así que un sufijo final con punto
-    # ("Sonata No.2") desaparece del identificador. Se registra como riesgo en
-    # lugar de cambiar el agrupamiento de corridas ya publicadas.
-    dropped_suffix_text = Path(label).suffix
+    # Desde 2026-10-26 sólo se quita la extensión de partitura; se conserva la
+    # clave para el esquema de la auditoría de canonicalización.
+    dropped_suffix_text = ""
     folded = unicodedata.normalize("NFKD", canonical_work_id)
     folded = "".join(character for character in folded if not unicodedata.combining(character))
     aggressive_key = re.sub(r"[^a-z0-9]+", "", folded)
