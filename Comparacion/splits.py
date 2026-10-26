@@ -7,7 +7,11 @@ import math
 from pathlib import PurePosixPath
 import random
 
-from next_token_experiment.experiment.splits import GENERIC_LABELS, canonicalize_work_label
+from next_token_experiment.experiment.splits import (
+    GENERIC_LABELS,
+    canonicalization_details,
+    canonicalize_work_label,
+)
 from next_token_experiment.schemas import PreparedPiece
 
 # Agrupamiento por contenido (auditoría C3/T3, 2026-10-26). Dos piezas son la
@@ -158,6 +162,7 @@ class WorkGrouping:
 
     group_of: dict[str, str]
     content_merges: list[dict[str, object]]
+    title_merges: list[dict[str, object]]
 
 
 def _label_group(piece: PreparedPiece) -> str:
@@ -167,6 +172,15 @@ def _label_group(piece: PreparedPiece) -> str:
     if not label or label in GENERIC_LABELS or len(label.split()) < 2:
         return f"pieza:{_key(piece)}"
     return label
+
+
+def _title_key(piece: PreparedPiece) -> str | None:
+    """Título sin compositor, sin diacríticos ni puntuación; None si no identifica."""
+
+    details = canonicalization_details(piece.title)
+    if details["is_empty"] or details["is_generic"] or details["is_short"]:
+        return None
+    return str(details["aggressive_key"]) or None
 
 
 def _interval_ngrams(tokens: list[int]) -> set[tuple[int, ...]]:
@@ -191,7 +205,12 @@ def _shared_ngram_counts(ngrams: dict[str, set[tuple[int, ...]]]) -> dict[tuple[
 
 
 def assign_work_groups(pieces: list[PreparedPiece]) -> WorkGrouping:
-    """Agrupa piezas por obra con metadatos y contenido melódico (unión transitiva)."""
+    """Agrupa piezas por obra (unión transitiva) con tres reglas.
+
+    1. Misma etiqueta compositor + título (``canonicalize_work_label``).
+    2. Mismo título normalizado, si tiene al menos dos palabras y no es genérico.
+    3. Contenido: ver ``CONTENT_*`` arriba.
+    """
 
     by_key = {_key(piece): piece for piece in pieces}
     if len(by_key) != len(pieces):
@@ -205,6 +224,25 @@ def assign_work_groups(pieces: list[PreparedPiece]) -> WorkGrouping:
             label = parent[label]
         return label
 
+    def union(left: str, right: str) -> bool:
+        root_left, root_right = find(left), find(right)
+        if root_left == root_right:
+            return False
+        parent[max(root_left, root_right)] = min(root_left, root_right)
+        return True
+
+    # Mismo título con el compositor escrito de otra forma («Beethoven» frente a
+    # «arr. Verona»): arreglos simplificados que no comparten 16-gramas.
+    title_merges: list[dict[str, object]] = []
+    first_with_title: dict[str, str] = {}
+    for piece_key in sorted(by_key):
+        title_key = _title_key(by_key[piece_key])
+        if title_key is None:
+            continue
+        anchor = first_with_title.setdefault(title_key, piece_key)
+        if union(labels[anchor], labels[piece_key]):
+            title_merges.append({"pieces": [anchor, piece_key], "labels": [labels[anchor], labels[piece_key]]})
+
     ngrams = {piece_key: _interval_ngrams(list(piece.tokens)) for piece_key, piece in by_key.items()}
     merges: list[dict[str, object]] = []
     for (left, right), n_shared in sorted(_shared_ngram_counts(ngrams).items()):
@@ -212,10 +250,8 @@ def assign_work_groups(pieces: list[PreparedPiece]) -> WorkGrouping:
         containment = n_shared / smaller
         if n_shared < CONTENT_MIN_SHARED_NGRAMS or containment < CONTENT_CONTAINMENT_THRESHOLD:
             continue
-        root_left, root_right = find(labels[left]), find(labels[right])
-        if root_left == root_right:
+        if not union(labels[left], labels[right]):
             continue
-        parent[max(root_left, root_right)] = min(root_left, root_right)
         merges.append(
             {
                 "pieces": [left, right],
@@ -226,7 +262,7 @@ def assign_work_groups(pieces: list[PreparedPiece]) -> WorkGrouping:
             }
         )
     group_of = {by_key[piece_key].piece_id: find(label) for piece_key, label in labels.items()}
-    return WorkGrouping(group_of=group_of, content_merges=merges)
+    return WorkGrouping(group_of=group_of, content_merges=merges, title_merges=title_merges)
 
 
 def build_grouped_fixed_splits(

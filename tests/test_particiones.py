@@ -90,6 +90,20 @@ class ContentGroupingTests(unittest.TestCase):
         self.assertNotEqual(grouping.group_of["a.mxl"], grouping.group_of["c.mxl"])
         self.assertEqual(len(grouping.content_merges), 1)
 
+    def test_same_title_with_other_composer_metadata_shares_a_group(self) -> None:
+        # Caso «Fur_Elise_Easy_Piano» de la biblioteca: arreglo simplificado sin
+        # 16-gramas en común y con el compositor escrito de otra forma.
+        pieces = [
+            _piece("a.mxl", "Für Elise", _melody(1, 200), composer="arr. Verona"),
+            _piece("b.mxl", "Fur Elise", _melody(2, 80), composer="Beethoven"),
+            _piece("c.mxl", "Elise", _melody(3, 80), composer="Other"),
+        ]
+        grouping = assign_work_groups(pieces)
+
+        self.assertEqual(grouping.group_of["a.mxl"], grouping.group_of["b.mxl"])
+        self.assertNotEqual(grouping.group_of["a.mxl"], grouping.group_of["c.mxl"])
+        self.assertEqual(len(grouping.title_merges), 1)
+
     def test_generic_labels_do_not_merge_distinct_works(self) -> None:
         pieces = [
             _piece(f"{index}.mxl", "", _melody(10 + index, 120), composer="anon.")
