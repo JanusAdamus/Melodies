@@ -13,7 +13,7 @@ from src.analysis.diagnostics import build_finite_tables, build_hdp_tables, comp
 from src.analysis.interpretation import interpret_hdp_states
 from src.analysis.visualization import generate_finite_figures, generate_hdp_figures
 from src.data.observations import available_observation_types, build_observation_sequence
-from src.data.parsing import events_to_dataframe, extract_events, parse_score
+from src.data.parsing import EXTRACTION_MODES, events_to_dataframe, extract_events_for_mode, parse_score
 from src.models.harmony import build_harmonic_state_space, build_modal_contexts, chord_states_dataframe, modal_contexts_dataframe
 from src.models.finite_hmm import FiniteChordHMM
 from src.models.hdp_hmm import TruncatedHDPHMM
@@ -34,7 +34,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kappa", type=float, default=0.0, help="Sesgo sticky opcional hacia auto-transiciones.")
     parser.add_argument("--seed", type=int, default=7, help="Semilla reproducible.")
     parser.add_argument("--output-dir", default="artifacts/outputs/run", help="Directorio de salida.")
-    parser.add_argument("--prefer-treble", action="store_true", help="Prioriza partes en clave de sol al fusionar el score.")
+    parser.add_argument("--prefer-treble", action="store_true", help="Solo con --extraction legacy_all_parts: prioriza partes en clave de sol.")
+    parser.add_argument("--extraction", default="melody", choices=EXTRACTION_MODES, help="melody: voz superior de la parte en sol; legacy_all_parts: extraccion anterior (para citarla).")
     return parser
 
 
@@ -90,7 +91,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     score = parse_score(args.input)
-    events = extract_events(score, prefer_treble=args.prefer_treble)
+    events = extract_events_for_mode(score, args.extraction, prefer_treble=args.prefer_treble)
     if not events:
         raise RuntimeError("No se encontraron eventos musicales en la partitura.")
 
