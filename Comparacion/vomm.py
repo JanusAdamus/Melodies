@@ -1,4 +1,4 @@
-"""PPM-inspired VOMM control over musical symbols plus BOS, excluding PAD.
+"""PPM-inspired VOMM control: counts over musical symbols plus BOS, scored over musical symbols only.
 
 This lightweight diagnostic is not an IDyOM implementation.
 """
@@ -167,6 +167,12 @@ class VariableOrderMarkovModel:
             return np.full(self.vocabulary_size, 1.0 / self.vocabulary_size, dtype=float)
         return distribution / total
 
+    def predict_musical_distribution(self, context: list[int]) -> np.ndarray:
+        """Next-symbol predictive renormalized over musical symbols (BOS excluded, F3)."""
+
+        musical = self.predict_distribution(context)[: self.musical_vocabulary_size]
+        return musical / float(musical.sum())
+
     def _score_piece(self, piece: PreparedPiece, max_context_length: int) -> dict[str, object]:
         log_likelihood = 0.0
         correct = 0
@@ -177,10 +183,10 @@ class VariableOrderMarkovModel:
             context = [self.bos_token_id]
             for event_index, token in enumerate(piece.tokens[start:stop], start=start):
                 target = self._validated_musical_target(token)
-                distribution = self.predict_distribution(context)
+                distribution = self.predict_musical_distribution(context)
                 log_likelihood += math.log(max(float(distribution[target]), EPSILON))
                 correct += int(int(np.argmax(distribution)) == target)
-                one_hot = np.zeros(self.vocabulary_size, dtype=float)
+                one_hot = np.zeros(self.musical_vocabulary_size, dtype=float)
                 one_hot[target] = 1.0
                 brier_score_sum += float(np.square(distribution - one_hot).sum())
                 n_tokens += 1

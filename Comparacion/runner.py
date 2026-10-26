@@ -463,7 +463,9 @@ def _build_execution_plan(
             "bos_token_id": tokenizer.bos_token_id,
             "pad_token_id": tokenizer.pad_token_id,
             "pad_in_scoring_support": False,
-            "support_size": tokenizer.bos_token_id + 1,
+            # F3: BOS es contexto; cada predictiva se renormaliza sobre las alturas.
+            "bos_in_scoring_support": False,
+            "support_size": tokenizer.musical_vocab_size,
         },
         "exact_expected_coverage": {
             "validation": _coverage_plan(fixed_splits.validation_pieces),

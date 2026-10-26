@@ -150,7 +150,8 @@ class TransformerTests(unittest.TestCase):
         model, batch = self._pad_dominant_model_and_batch()
         metrics = model._run_epoch([batch], train=False)
 
-        denominator = math.e + 12.0
+        # Soporte = 12 alturas: el objetivo (logit 1) y 11 rivales; BOS y PAD fuera (F3).
+        denominator = math.e + 11.0
         expected_nll = math.log(denominator) - 1.0
         self.assertAlmostEqual(metrics["nll_per_token"], expected_nll, places=6)
         self.assertEqual(metrics["accuracy"], 1.0)
@@ -164,11 +165,12 @@ class TransformerTests(unittest.TestCase):
         model, batch = self._pad_dominant_model_and_batch()
         result = model.evaluate([batch])
 
-        denominator = math.e + 12.0
+        # Soporte = 12 alturas: el objetivo (logit 1) y 11 rivales; BOS y PAD fuera (F3).
+        denominator = math.e + 11.0
         target_probability = math.e / denominator
         other_probability = 1.0 / denominator
         expected_nll = -math.log(target_probability)
-        expected_brier = (1.0 - target_probability) ** 2 + 12.0 * other_probability**2
+        expected_brier = (1.0 - target_probability) ** 2 + 11.0 * other_probability**2
         self.assertAlmostEqual(result["summary"]["nll_per_token"], expected_nll, places=6)
         self.assertAlmostEqual(result["summary"]["brier_score"], expected_brier, places=6)
         self.assertEqual(result["summary"]["accuracy"], 1.0)

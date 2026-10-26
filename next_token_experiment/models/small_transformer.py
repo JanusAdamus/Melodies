@@ -502,25 +502,34 @@ class SmallTransformerNextTokenModel(NextTokenModel):
             "sequence_lengths": batch["sequence_lengths"],
         }
 
-    def _comparison_logits(self, logits: torch.Tensor) -> torch.Tensor:
-        """Remove PAD from predictive normalization while retaining it as input."""
-
-        if self.pad_token_id < 0 or self.pad_token_id >= logits.size(-1):
-            raise ValueError("pad_token_id must index the model vocabulary.")
-        return torch.cat(
-            (
-                logits[..., : self.pad_token_id],
-                logits[..., self.pad_token_id + 1 :],
-            ),
-            dim=-1,
+    def _musical_token_ids(self, vocab_size: int, device: torch.device) -> torch.Tensor:
+        for token_id in (self.pad_token_id, self.bos_token_id):
+            if token_id < 0 or token_id >= vocab_size:
+                raise ValueError("pad_token_id and bos_token_id must index the model vocabulary.")
+        return torch.tensor(
+            [index for index in range(vocab_size) if index not in self.special_token_ids],
+            dtype=torch.long,
+            device=device,
         )
+
+    def _comparison_logits(self, logits: torch.Tensor) -> torch.Tensor:
+        """Keep only musical symbols in the predictive support (BOS and PAD out, F3).
+
+        BOS and PAD remain valid inputs; they are never next-token targets, so the
+        softmax is normalized over the musical symbols alone.
+        """
+
+        return logits.index_select(-1, self._musical_token_ids(logits.size(-1), logits.device))
 
     def _comparison_targets(self, target_ids: torch.Tensor) -> torch.Tensor:
         valid_targets = target_ids != -100
         if torch.any(target_ids[valid_targets] == self.pad_token_id):
             raise ValueError("PAD cannot be a next-token target.")
+        if torch.any(target_ids[valid_targets] == self.bos_token_id):
+            raise ValueError("BOS cannot be a next-token target.")
         remapped = target_ids.clone()
-        remapped[valid_targets & (target_ids > self.pad_token_id)] -= 1
+        for special_id in sorted(self.special_token_ids, reverse=True):
+            remapped[valid_targets & (target_ids > special_id)] -= 1
         return remapped
 
     def _compute_loss(self, logits: torch.Tensor, target_ids: torch.Tensor) -> torch.Tensor:

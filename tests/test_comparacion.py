@@ -327,7 +327,9 @@ class ClassicalModelTests(unittest.TestCase):
         except TypeError as error:
             self.fail(str(error))
 
-        expected_score = 2 * math.log(float(model.emission_matrix[0, 0]) + 1e-12)
+        # F3: la predictiva se renormaliza sobre las 12 alturas; BOS no es objetivo.
+        musical_mass = float(model.emission_matrix[0, :12].sum())
+        expected_score = 2 * math.log(float(model.emission_matrix[0, 0]) / musical_mass)
         self.assertEqual(evaluation["summary"]["n_tokens"], 2)
         self.assertAlmostEqual(evaluation["piece_metrics"][0]["log_likelihood"], expected_score)
 
@@ -360,12 +362,22 @@ class ClassicalModelTests(unittest.TestCase):
             )
             return value
 
+        def musical_log_mass(prefix: list[int]) -> float:
+            # F3: masa de las 12 alturas como siguiente símbolo tras el prefijo.
+            base = joint_log_likelihood(prefix)
+            return math.log(
+                sum(math.exp(joint_log_likelihood([*prefix, token]) - base) for token in range(12))
+            )
+
         context_score = joint_log_likelihood([12])
         expected_score = (
             joint_log_likelihood([12, 0, 1])
             - context_score
+            - musical_log_mass([12])
+            - musical_log_mass([12, 0])
             + joint_log_likelihood([12, 1])
             - context_score
+            - musical_log_mass([12])
         )
         evaluation = model.evaluate([piece], bos_token_id=12, max_context_length=2)
 
@@ -516,6 +528,8 @@ class ComparisonRunnerTests(unittest.TestCase):
             self.assertEqual(plan["common_predictive_support"]["bos_token_id"], 12)
             self.assertEqual(plan["common_predictive_support"]["pad_token_id"], 13)
             self.assertFalse(plan["common_predictive_support"]["pad_in_scoring_support"])
+            self.assertFalse(plan["common_predictive_support"]["bos_in_scoring_support"])
+            self.assertEqual(plan["common_predictive_support"]["support_size"], 12)
             for split in plan["splits"].values():
                 self.assertEqual(split["n_pieces"], len(split["piece_ids"]))
                 self.assertEqual(split["n_canonical_groups"], len(split["canonical_work_ids"]))
