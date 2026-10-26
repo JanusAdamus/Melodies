@@ -142,6 +142,22 @@ class MicrotoneRuleTests(unittest.TestCase):
         self.assertEqual(_pcs(events), [10])
 
 
+    def test_symbtr_key_signature_in_commas_parses(self) -> None:
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1"><part-list><score-part id="P1"><part-name>M</part-name></score-part></part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions>
+<key><key-step>F</key-step><key-alter>+5</key-alter><key-accidental>slash-quarter-sharp</key-accidental></key>
+<time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
+<note><pitch><step>F</step><alter>1</alter><octave>5</octave></pitch><duration>2</duration><type>half</type><accidental>slash-quarter-sharp</accidental></note>
+<note><pitch><step>G</step><octave>5</octave></pitch><duration>2</duration><type>half</type></note>
+</measure></part></score-partwise>"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mahur--sarki--aksak--x--y.xml"
+            path.write_text(xml, encoding="utf-8")
+            events = extract_melody_events(parse_score(path))
+        self.assertEqual(_pcs(events), [6, 7])
+
+
 class ModeTests(unittest.TestCase):
     def test_modes_are_explicit_and_legacy_is_preserved(self) -> None:
         self.assertEqual(EXTRACTION_MODES, ("melody", "legacy_all_parts"))

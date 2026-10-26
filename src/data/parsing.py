@@ -67,16 +67,17 @@ ACCIDENTAL_SEMITONES = {
 def parse_score(path: str | Path) -> music21.stream.Score:
     """Carga una partitura MusicXML o MIDI con music21.
 
-    music21 no acepta armaduras con alteraciones turcas (``<key-accidental>slash-flat``)
-    y falla en ~28 % de SymbTr. Cada nota de SymbTr lleva su alteracion explicita, asi que
-    se reintenta sin el ``key-accidental`` (la armadura conserva ``key-alter``).
+    music21 no acepta las armaduras no tradicionales de SymbTr (``key-accidental`` turco,
+    ``key-alter`` en comas, p. ej. +5) y falla en ~28 % de los archivos. En SymbTr cada nota
+    alterada lleva su ``<accidental>`` explicito (verificado contra los .txt), asi que la
+    armadura no aporta altura y se reintenta sin los ``<key>`` que tienen ``<key-step>``.
     """
 
     try:
         return music21.converter.parse(str(path))
     except music21.pitch.AccidentalException:
         text = Path(path).read_text(encoding="utf-8")
-        cleaned = re.sub(r"<key-accidental>[^<]*</key-accidental>", "", text)
+        cleaned = re.sub(r"<key>(?:(?!</key>).)*<key-step>.*?</key>", "", text, flags=re.DOTALL)
         return music21.converter.parseData(cleaned, format="musicxml")
 
 
