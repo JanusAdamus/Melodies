@@ -31,6 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--structural-annotations", default=None, help="Optional CSV with piece_id,event_index,segment_label,boundary columns.")
     parser.add_argument("--split-seed", type=int, default=None, help="Seed of the fixed train/validation/test partition. Repeat the run with different values to measure sensitivity to the partition.")
     parser.add_argument("--finite-hmm-states", default=None, help="Comma-separated candidate state counts for the finite HMM, for example 48,72,96. Must be increasing, unique and at least 2.")
+    parser.add_argument("--finite-hmm-max-states", type=int, default=None, help="Upper limit for the automatic growth of the finite HMM state grid while validation keeps selecting its maximum. Reaching it still at the maximum stops the run.")
+    parser.add_argument("--vomm-max-order", type=int, default=None, help="Upper limit for the automatic growth of the VOMM order grid while validation keeps selecting its maximum.")
     parser.add_argument("--finite-hmm-max-iterations", type=int, default=None, help="Iteration budget of the finite HMM. Fitting stops early when the validation NLL stops improving, so reaching this cap means the budget was binding and not that the model converged.")
     parser.add_argument("--train-stride", type=int, default=None, help="Training window stride. Equal to --max-context-length means non-overlapping training windows; the default 64 exposes each event more than once per epoch.")
     parser.add_argument("--audit-run", default=None, help="Audit an existing run directory read-only and exit; writes the manifest and the audit outside it.")
@@ -221,6 +223,10 @@ def main() -> None:
         updates["finite_hmm_states"] = parsed_states
     if args.finite_hmm_max_iterations is not None:
         updates["finite_hmm_max_iterations"] = args.finite_hmm_max_iterations
+    if args.finite_hmm_max_states is not None:
+        updates["finite_hmm_max_states"] = args.finite_hmm_max_states
+    if args.vomm_max_order is not None:
+        updates["vomm_max_order"] = args.vomm_max_order
 
     config = replace(config, **updates)
     result = run_learning_curve_experiment(

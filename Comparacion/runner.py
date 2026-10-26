@@ -389,6 +389,9 @@ def _build_execution_plan(
         "finite_hmm": {
             "run_rows": run_rows,
             "candidate_fits": run_rows * len(config.finite_hmm_states),
+            # C2: es un mínimo; la rejilla crece mientras la selección toque el máximo.
+            "candidate_fits_is_minimum": True,
+            "grid_auto_extension_limit": config.finite_hmm_max_states,
             "workload_class": "lightweight_or_classical",
         },
         "hdp_hmm": {
@@ -406,6 +409,8 @@ def _build_execution_plan(
         fits_by_family["vomm"] = {
             "run_rows": run_rows,
             "candidate_fits": run_rows * len(config.vomm_candidate_orders),
+            "candidate_fits_is_minimum": True,
+            "grid_auto_extension_limit": config.vomm_max_order,
             "workload_class": "lightweight_or_classical",
         }
 
@@ -835,59 +840,107 @@ def _protocol_cost_fields(
     }
 
 
-def build_finite_hmm_grid_audit(
+def _row_grid(row: Mapping[str, object], default: Sequence[int]) -> list[int]:
+    raw = row.get("candidate_grid")
+    if isinstance(raw, str) and raw.strip():
+        raw = json.loads(raw)
+    if isinstance(raw, (list, tuple)) and raw:
+        return [int(value) for value in raw]
+    return [int(value) for value in default]
+
+
+def build_grid_audit(
     raw_rows: Iterable[Mapping[str, object]],
     *,
+    model: str,
+    selection_field: str,
     grid: Sequence[int],
     resource_limit_reason: str | None = None,
 ) -> dict[str, object]:
-    """Dice si la rejilla de capacidad fue informativa.
+    """Dice si la rejilla de ``model`` fue informativa (C2).
 
-    Que la selección siga tocando el máximo no es una meseta del modelo: es una
-    rejilla corta. Un límite de recursos documentado tampoco lo es; se registra
-    como tal.
+    Cada selección se juzga contra la rejilla que de verdad se evaluó en su fila
+    (``candidate_grid``, con las ampliaciones automáticas). Basta una selección
+    en el máximo para que la rejilla no sea informativa: el preregistro sólo
+    admite «aprovecha más datos» si ninguna fracción tocó el máximo. Un límite
+    de recursos documentado se registra como tal, nunca como meseta.
     """
 
     grid_values = [int(value) for value in grid]
-    grid_maximum = max(grid_values) if grid_values else None
     selections: list[int] = []
+    at_maximum: list[bool] = []
+    evaluated_maxima: list[int] = []
     for row in raw_rows:
-        if row.get("model") != "finite_hmm":
+        if row.get("model") != model:
             continue
-        selected = row.get("selected_states")
+        selected = row.get(selection_field)
         if isinstance(selected, bool) or not isinstance(selected, (int, float)):
             continue
         if not math.isfinite(float(selected)):
             continue
+        row_maximum = max(_row_grid(row, grid_values))
         selections.append(int(selected))
+        evaluated_maxima.append(row_maximum)
+        at_maximum.append(int(selected) == row_maximum)
 
-    n_at_maximum = sum(1 for value in selections if value == grid_maximum)
+    n_at_maximum = sum(at_maximum)
     if not selections:
         verdict = "no_selections"
-    elif resource_limit_reason:
-        verdict = (
-            "grid_limited_by_resources"
-            if n_at_maximum * 2 >= len(selections)
-            else "grid_informative"
-        )
-    elif n_at_maximum * 2 >= len(selections):
+    elif n_at_maximum and resource_limit_reason:
+        verdict = "grid_limited_by_resources"
+    elif n_at_maximum:
         verdict = "grid_too_small"
     else:
         verdict = "grid_informative"
 
     return {
+        "model": model,
+        "selection_field": selection_field,
         "grid": grid_values,
-        "grid_maximum": grid_maximum,
+        "grid_maximum": max(grid_values) if grid_values else None,
+        "evaluated_grid_maxima": evaluated_maxima,
         "n_selections": len(selections),
         "n_at_grid_maximum": n_at_maximum,
-        "selected_states": selections,
+        "selected_values": selections,
         "verdict": verdict,
+        "status": "passed" if verdict == "grid_informative" else "failed",
         "informative": verdict == "grid_informative",
         # Nunca se afirma una meseta desde esta evidencia sola.
         "plateau_claimed": False,
         "resource_limit_reason": resource_limit_reason,
         "policy": "selection_touching_the_maximum_means_a_short_grid_not_a_model_plateau",
     }
+
+
+def build_finite_hmm_grid_audit(
+    raw_rows: Iterable[Mapping[str, object]],
+    *,
+    grid: Sequence[int],
+    resource_limit_reason: str | None = None,
+) -> dict[str, object]:
+    audit = build_grid_audit(
+        raw_rows,
+        model="finite_hmm",
+        selection_field="selected_states",
+        grid=grid,
+        resource_limit_reason=resource_limit_reason,
+    )
+    return {**audit, "selected_states": audit["selected_values"]}
+
+
+def build_vomm_order_grid_audit(
+    raw_rows: Iterable[Mapping[str, object]],
+    *,
+    grid: Sequence[int],
+    resource_limit_reason: str | None = None,
+) -> dict[str, object]:
+    return build_grid_audit(
+        raw_rows,
+        model="vomm",
+        selection_field="selected_order",
+        grid=grid,
+        resource_limit_reason=resource_limit_reason,
+    )
 
 
 def _build_hardware_manifest(*, target_device: str, precision: str) -> dict[str, object]:
@@ -1331,6 +1384,7 @@ def run_learning_curve_experiment(
                         vocabulary_size=comparison_vocabulary_size,
                         bos_token_id=bos_token_id,
                         max_context_length=max_context_length,
+                        max_order=config.vomm_max_order,
                     )
                 with ResourceMonitor() as vomm_evaluation_resources:
                     vomm_eval = vomm.evaluate(fixed_splits.test_pieces, max_context_length)
@@ -1366,6 +1420,9 @@ def run_learning_curve_experiment(
                         "n_train_tokens": n_train_tokens,
                         "n_params": vomm_summary["n_params"],
                         "selected_states": None,
+                        "selected_order": vomm.selected_order,
+                        "candidate_grid": json.dumps(vomm_summary.get("candidate_grid")),
+                        "grid_extensions": vomm_summary.get("grid_extensions"),
                         "effective_states": None,
                         "count_table_size": vomm_summary["count_table_size"],
                         "device": "cpu",
@@ -1407,6 +1464,7 @@ def run_learning_curve_experiment(
                     tolerance=config.finite_hmm_tolerance,
                     seed=model_seed,
                     vocab_size=comparison_vocabulary_size,
+                    max_states=config.finite_hmm_max_states,
                 )
                 with ResourceMonitor() as finite_selection_resources:
                     finite_hmm.fit(
@@ -1455,6 +1513,8 @@ def run_learning_curve_experiment(
                         "n_train_tokens": n_train_tokens,
                         "n_params": finite_summary["n_params"],
                         "selected_states": finite_summary["selected_states"],
+                        "candidate_grid": json.dumps(finite_summary.get("candidate_grid")),
+                        "grid_extensions": finite_summary.get("grid_extensions"),
                         "effective_states": None,
                         "count_table_size": None,
                         "device": "cpu",
@@ -1719,6 +1779,11 @@ def run_learning_curve_experiment(
         output_root / "finite_hmm_grid_audit.json",
         build_finite_hmm_grid_audit(raw_rows, grid=config.finite_hmm_states),
     )
+    if config.include_vomm_control:
+        _write_json(
+            output_root / "vomm_order_grid_audit.json",
+            build_vomm_order_grid_audit(raw_rows, grid=config.vomm_candidate_orders),
+        )
     _write_json(
         output_root / "hardware_manifest.json",
         _build_hardware_manifest(

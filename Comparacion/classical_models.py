@@ -12,6 +12,8 @@ from src.data.observations import PITCH_CLASS_NAMES, ObservationSequence
 from src.models.hdp_hmm import TruncatedHDPHMM
 from src.models.utils import length_buckets
 
+from .grid import grid_ceiling_message, next_grid_candidates
+
 EPSILON = 1e-12
 BOS_TOKEN = "<BOS>"
 
@@ -175,6 +177,9 @@ class FiniteHMMFitResult:
     selected_validation_wall_clock_s: float = 0.0
     #: Una entrada por candidato: costo y NLL de validación.
     candidate_log: tuple[dict[str, float | int], ...] = ()
+    #: Rejilla evaluada, incluidas las ampliaciones automáticas (C2).
+    candidate_grid: tuple[int, ...] = ()
+    grid_extensions: int = 0
 
 
 class FiniteGlobalHMM:
@@ -186,8 +191,11 @@ class FiniteGlobalHMM:
         tolerance: float,
         seed: int,
         vocab_size: int = 13,
+        max_states: int | None = None,
     ) -> None:
         self.candidate_num_states = tuple(int(value) for value in candidate_num_states)
+        #: Con límite, la rejilla se amplía mientras la selección toque su máximo (C2).
+        self.max_states = None if max_states is None else int(max_states)
         self.max_iterations = int(max_iterations)
         self.tolerance = float(tolerance)
         self.seed = int(seed)
@@ -331,8 +339,12 @@ class FiniteGlobalHMM:
         best_candidate: tuple[int, np.ndarray, np.ndarray, np.ndarray] | None = None
         candidate_log: list[dict[str, float | int]] = []
         selected_timing = {"fit_wall_clock_s": 0.0, "validation_wall_clock_s": 0.0}
+        candidate_grid = list(self.candidate_num_states)
+        pending = list(candidate_grid)
+        grid_extensions = 0
 
-        for n_states in self.candidate_num_states:
+        while pending:
+            n_states = pending.pop(0)
             params = self._fit_candidate(
                 train_pieces=train_pieces,
                 validation_pieces=validation_pieces,
@@ -361,6 +373,21 @@ class FiniteGlobalHMM:
                 )
                 best_log = train_log
                 selected_timing = timing
+            if pending or self.max_states is None or best_candidate is None:
+                continue
+            if best_candidate[0] == max(candidate_grid):
+                pending = [k for k in next_grid_candidates(max(candidate_grid)) if k <= self.max_states]
+                if not pending:
+                    raise ValueError(
+                        grid_ceiling_message(
+                            family="finite HMM",
+                            parameter="max_states",
+                            limit=self.max_states,
+                            grid=tuple(candidate_grid),
+                        )
+                    )
+                candidate_grid.extend(pending)
+                grid_extensions += 1
 
         if best_candidate is None:
             raise ValueError("Finite HMM fitting did not produce a selected state count.")
@@ -376,6 +403,8 @@ class FiniteGlobalHMM:
             selected_fit_wall_clock_s=selected_timing["fit_wall_clock_s"],
             selected_validation_wall_clock_s=selected_timing["validation_wall_clock_s"],
             candidate_log=tuple(candidate_log),
+            candidate_grid=tuple(candidate_grid),
+            grid_extensions=grid_extensions,
         )
         return self.fit_result
 
@@ -427,6 +456,8 @@ class FiniteGlobalHMM:
                 "selection_wall_clock_s": self.fit_result.selection_wall_clock_s,
                 "selected_fit_wall_clock_s": self.fit_result.selected_fit_wall_clock_s,
                 "selected_validation_wall_clock_s": self.fit_result.selected_validation_wall_clock_s,
+                "candidate_grid": list(self.fit_result.candidate_grid),
+                "grid_extensions": self.fit_result.grid_extensions,
             },
             "piece_metrics": piece_metrics,
             "train_log": self.fit_result.train_log,

@@ -671,6 +671,9 @@ class ComparisonRunnerTests(unittest.TestCase):
             self.assertEqual(transformer_constructor.call_args.kwargs["vocab_size"], 14)
             self.assertEqual(finite_constructor.call_count, 1)
             self.assertEqual(hdp_constructor.call_count, 1)
+            # C2: ambas rejillas se amplían hasta su límite declarado.
+            self.assertEqual(finite_constructor.call_args.kwargs["max_states"], config.finite_hmm_max_states)
+            self.assertEqual(vomm_selector.call_args.kwargs["max_order"], config.vomm_max_order)
 
             output_root = Path(result["output_root"])
             required_artifacts = {
@@ -687,6 +690,9 @@ class ComparisonRunnerTests(unittest.TestCase):
             }
             self.assertTrue(required_artifacts.issubset({path.name for path in output_root.iterdir()}))
             self.assertFalse((output_root / "wilcoxon_test.json").exists())
+            vomm_audit = json.loads((output_root / "vomm_order_grid_audit.json").read_text(encoding="utf-8"))
+            self.assertEqual(vomm_audit["model"], "vomm")
+            self.assertEqual(vomm_audit["selected_values"], [2])
 
             with (output_root / "results_raw.csv").open(encoding="utf-8", newline="") as stream:
                 raw_rows = list(csv.DictReader(stream))

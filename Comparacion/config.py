@@ -27,6 +27,9 @@ class LearningCurveConfig:
     data_seeds: tuple[int, ...] = (1, 2, 3)
     model_seeds: tuple[int, ...] = (1, 2)
     finite_hmm_states: tuple[int, ...] = (12, 24, 48)
+    #: C2: la rejilla crece (×1.5, ×2) mientras la selección toque su máximo; al
+    #: llegar a este límite sin dejar de tocarlo, la corrida falla.
+    finite_hmm_max_states: int = 384
     finite_hmm_max_iterations: int = 100
     finite_hmm_tolerance: float = 1e-4
     # Truncacion de limite debil (Ishwaran & James 2001). El piloto ocupa 9-15 estados sea
@@ -42,6 +45,7 @@ class LearningCurveConfig:
     )
     include_vomm_control: bool = True
     vomm_candidate_orders: tuple[int, ...] = (1, 2, 4, 8)
+    vomm_max_order: int = 32
     bootstrap_samples: int = 10000
     bootstrap_seed: int = 17
     boundary_tolerance: int = 1
@@ -70,6 +74,12 @@ class LearningCurveConfig:
             raise ValueError("finite_hmm_states must not contain duplicates.")
         if list(self.finite_hmm_states) != sorted(self.finite_hmm_states):
             raise ValueError("finite_hmm_states must be sorted in increasing order.")
+        for name, limit, grid in (
+            ("finite_hmm_max_states", self.finite_hmm_max_states, self.finite_hmm_states),
+            ("vomm_max_order", self.vomm_max_order, self.vomm_candidate_orders),
+        ):
+            if isinstance(limit, bool) or not isinstance(limit, Integral) or int(limit) < max(grid):
+                raise ValueError(f"{name} must be an integer of at least the initial grid maximum.")
         if (
             isinstance(self.finite_hmm_max_iterations, bool)
             or not isinstance(self.finite_hmm_max_iterations, Integral)
