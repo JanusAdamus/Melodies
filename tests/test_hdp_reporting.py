@@ -49,6 +49,15 @@ class ReportingTests(unittest.TestCase):
         mean_transition = np.mean([sample.transition_matrix for sample in self.result.posterior_samples], axis=0)
         np.testing.assert_allclose(mean_transition, self.result.posterior_transition_mean)
 
+    def test_posterior_means_describe_the_states_of_latent_states(self) -> None:
+        # interpretation.py cruza latent_states con las medias posteriores (H6).
+        for state in self.result.active_states:
+            positions = self.result.latent_states == state
+            if positions.mean() < 0.05:
+                continue
+            observed = np.bincount(self.tokens[positions], minlength=6).argmax()
+            self.assertEqual(int(self.result.posterior_emission_mean[state].argmax()), int(observed))
+
     def test_heldout_matches_brute_force_mixture(self) -> None:
         fit_tokens, test_tokens = self.tokens[:240], self.tokens[240:]
         expected = []
@@ -84,6 +93,32 @@ class AlignmentTests(unittest.TestCase):
         mapping = hdp_hmm_module._alignment_permutation(relabelled, reference, n_states=4)
 
         np.testing.assert_array_equal(mapping[relabelled], reference)
+
+
+    def test_label_switched_samples_average_to_the_reference_parameters(self) -> None:
+        rng = np.random.default_rng(0)
+        reference = hdp_hmm_module.PosteriorSample(
+            iteration=2,
+            log_likelihood=-1.0,
+            initial_probs=rng.dirichlet(np.ones(3)),
+            transition_matrix=rng.dirichlet(np.ones(3), size=3),
+            emission_matrix=rng.dirichlet(np.ones(6), size=3),
+            beta=rng.dirichlet(np.ones(3)),
+            states=np.array([0, 0, 1, 1, 2, 2, 2, 0, 1]),
+        )
+        switched = reference.relabel(np.array([2, 0, 1]))
+        switched = hdp_hmm_module.PosteriorSample(**{**switched.__dict__, "iteration": 3, "log_likelihood": -2.0})
+        model = TruncatedHDPHMM(n_states=3, n_iters=4, burn_in=1)
+        diagnostics = hdp_hmm_module.HDPHMMDiagnostics([], [], [], [], "test", 0)
+
+        result = model._summarize([switched, reference], diagnostics, _observations(np.zeros(9, dtype=int)))
+
+        np.testing.assert_allclose(result.posterior_transition_mean, reference.transition_matrix)
+        np.testing.assert_allclose(result.posterior_emission_mean, reference.emission_matrix)
+        np.testing.assert_allclose(result.posterior_initial_mean, reference.initial_probs)
+        np.testing.assert_array_equal(result.diagnostics.state_samples[0], reference.states)
+        self.assertEqual(result.diagnostics.best_iteration, 2)
+        self.assertEqual(result.max_log_likelihood, -1.0)
 
 
 if __name__ == "__main__":
