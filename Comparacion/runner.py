@@ -51,7 +51,7 @@ from .resource_monitor import (
     protocol_resource_fields,
 )
 from .splits import FixedSplits, build_fixed_splits, build_nested_training_subsets
-from .statistics import pairwise_model_comparisons
+from .statistics import headline_estimates, pairwise_model_comparisons
 from .structural_metrics import adjusted_rand_index, boundary_f1, normalized_mutual_information
 from .vomm import select_vomm_by_validation
 
@@ -431,6 +431,7 @@ def _build_execution_plan(
         "results_summary.csv",
         "piece_metrics_raw.csv",
         "pairwise_comparisons.json",
+        "headline_estimates.json",
         "engineering_costs.csv",
         "protocol_audit.json",
         "structural_evaluation.json",
@@ -689,7 +690,26 @@ def _append_protocol_evidence(
         raise ValueError(f"protocol coverage violation for model {model_name}")
 
 
-def _aggregate_summary(raw_rows: list[dict[str, object]]) -> list[dict[str, object]]:
+def _headline_interval(
+    estimates: Mapping[str, object] | None, model: str, fraction: float, estimand: str
+) -> list[float] | None:
+    for item in (estimates or {}).get("estimates", []):
+        if item["model"] == model and float(item["frac"]) == fraction and item["estimand"] == estimand:
+            return list(item["bootstrap_95_ci"])
+    return None
+
+
+def _aggregate_summary(
+    raw_rows: list[dict[str, object]],
+    estimates: Mapping[str, object] | None = None,
+) -> list[dict[str, object]]:
+    """Mean over runs plus, per headline, the CI of its own estimand (C7).
+
+    ``mean_test_nll`` equals the token-weighted Σll/Σn averaged over runs; its CI
+    is the work-cluster bootstrap of that ratio. ``std_*`` columns are spread
+    across runs, not uncertainty of the headline.
+    """
+
     grouped: dict[tuple[str, float], list[dict[str, object]]] = {}
     for row in raw_rows:
         grouped.setdefault((str(row["model"]), float(row["frac"])), []).append(row)
@@ -699,6 +719,7 @@ def _aggregate_summary(raw_rows: list[dict[str, object]]) -> list[dict[str, obje
         perplexities = [float(row["test_ppl"]) for row in rows]
         nlls = [float(row["test_nll"]) for row in rows]
         train_tokens = [int(row["n_train_tokens"]) for row in rows]
+        nll_interval = _headline_interval(estimates, model, fraction, "token_weighted_nll")
         summary_rows.append(
             {
                 "model": model,
@@ -709,6 +730,14 @@ def _aggregate_summary(raw_rows: list[dict[str, object]]) -> list[dict[str, obje
                 "mean_test_nll": mean(nlls),
                 "std_test_nll": pstdev(nlls) if len(nlls) > 1 else 0.0,
                 "runs": len(rows),
+                "test_nll_estimand": "token_weighted_nll",
+                "test_nll_ci95_low": nll_interval[0] if nll_interval else None,
+                "test_nll_ci95_high": nll_interval[1] if nll_interval else None,
+                "token_weighted_ppl": math.exp(mean(nlls)),
+                "test_ppl_estimand": "exp_token_weighted_nll",
+                "test_ppl_ci95_low": math.exp(nll_interval[0]) if nll_interval else None,
+                "test_ppl_ci95_high": math.exp(nll_interval[1]) if nll_interval else None,
+                "ci_method": "work_cluster_bootstrap" if nll_interval else "unavailable",
             }
         )
     return summary_rows
@@ -721,17 +750,18 @@ def _plot_learning_curve(summary_rows: list[dict[str, object]], output_path: Pat
     frame = pd.DataFrame(summary_rows)
     for model_name, group in frame.groupby("model"):
         group = group.sort_values("mean_n_train_tokens")
-        plt.plot(group["mean_n_train_tokens"], group["mean_test_ppl"], marker="o", label=model_name)
-        plt.fill_between(
-            group["mean_n_train_tokens"],
-            group["mean_test_ppl"] - group["std_test_ppl"],
-            group["mean_test_ppl"] + group["std_test_ppl"],
-            alpha=0.2,
-        )
+        plt.plot(group["mean_n_train_tokens"], group["token_weighted_ppl"], marker="o", label=model_name)
+        if group["test_ppl_ci95_low"].notna().all():
+            plt.fill_between(
+                group["mean_n_train_tokens"],
+                group["test_ppl_ci95_low"].astype(float),
+                group["test_ppl_ci95_high"].astype(float),
+                alpha=0.2,
+            )
     plt.xscale("log")
     plt.xlabel("Tokens de entrenamiento")
-    plt.ylabel("Perplejidad de test = exp(NLL)")
-    plt.title("Curva predictiva compartida por familia")
+    plt.ylabel("Perplejidad de test = exp(Σ NLL / Σ n)")
+    plt.title("Curva predictiva compartida por familia (banda: IC 95 % bootstrap por obra)")
     plt.legend()
     plt.tight_layout()
     ensure_directory(output_path.parent)
@@ -1626,7 +1656,13 @@ def run_learning_curve_experiment(
                 flush=True,
             )
 
-    summary_rows = _aggregate_summary(raw_rows)
+    headline_payload = headline_estimates(
+        piece_metric_rows,
+        bootstrap_samples=config.bootstrap_samples,
+        seed=config.bootstrap_seed,
+    )
+    _write_json(output_root / "headline_estimates.json", headline_payload)
+    summary_rows = _aggregate_summary(raw_rows, headline_payload)
     write_csv(output_root / "results_raw.csv", raw_rows)
     write_csv(output_root / "results_summary.csv", summary_rows)
     write_csv(output_root / "piece_metrics_raw.csv", piece_metric_rows)

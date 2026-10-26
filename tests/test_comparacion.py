@@ -718,6 +718,19 @@ class ComparisonRunnerTests(unittest.TestCase):
             pareto = json.loads((output_root / "pareto_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(pareto["predictive_cost_partial_frontier"]["status"], "ok")
             self.assertEqual(pareto["full_three_axis_frontier"]["status"], "not_evaluated")
+            # C7: cada cifra titular con el IC de su propio estimando.
+            headline = json.loads((output_root / "headline_estimates.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                {item["estimand"] for item in headline["estimates"]},
+                {"token_weighted_nll", "token_weighted_perplexity", "work_mean_nll"},
+            )
+            with (output_root / "results_summary.csv").open(encoding="utf-8", newline="") as stream:
+                summary_rows = list(csv.DictReader(stream))
+            for row in summary_rows:
+                self.assertEqual(row["test_nll_estimand"], "token_weighted_nll")
+                self.assertLessEqual(float(row["test_nll_ci95_low"]), float(row["mean_test_nll"]) + 1e-9)
+                self.assertGreaterEqual(float(row["test_nll_ci95_high"]), float(row["mean_test_nll"]) - 1e-9)
+                self.assertLessEqual(float(row["test_ppl_ci95_low"]), float(row["test_ppl_ci95_high"]))
 
             json_paths = list(output_root.glob("*.json")) + list((output_root / "splits").glob("*.json"))
             for path in json_paths:

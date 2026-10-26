@@ -72,6 +72,157 @@ def _bootstrap_mean_interval(
     return [float(lower), float(upper)]
 
 
+def _row_log_likelihood_and_tokens(row: Mapping[str, object]) -> tuple[float, int] | None:
+    n_tokens = _finite_float(row.get("n_tokens"))
+    if n_tokens is None or n_tokens <= 0:
+        return None
+    log_likelihood = _finite_float(row.get("log_likelihood"))
+    if log_likelihood is None:
+        nll = _row_test_nll(row)
+        if nll is None:
+            return None
+        log_likelihood = -nll * n_tokens
+    return log_likelihood, int(n_tokens)
+
+
+def _work_totals(
+    rows: Iterable[Mapping[str, object]],
+) -> tuple[dict[tuple[str, float], dict[str, tuple[float, float]]], dict[tuple[str, float], int]]:
+    """Per (model, frac): work -> (Σll, Σn) averaged over runs; and the run count.
+
+    A run is one (split_seed, data_seed, model_seed). Repeated runs of the same
+    work are averaged, never counted as extra works.
+    """
+
+    by_run: dict[tuple[str, float], dict[tuple[object, ...], dict[str, list[float]]]] = {}
+    for row in rows:
+        model = row.get("model")
+        work = row.get("canonical_work_id")
+        fraction = _finite_float(row.get("frac"))
+        totals = _row_log_likelihood_and_tokens(row)
+        if not isinstance(model, str) or not isinstance(work, str) or not work.strip():
+            continue
+        if fraction is None or totals is None:
+            continue
+        run = tuple(str(row.get(key)) for key in ("split_seed", "data_seed", "model_seed"))
+        sums = by_run.setdefault((model, fraction), {}).setdefault(run, {}).setdefault(work, [0.0, 0.0])
+        sums[0] += totals[0]
+        sums[1] += totals[1]
+
+    averaged: dict[tuple[str, float], dict[str, tuple[float, float]]] = {}
+    run_counts: dict[tuple[str, float], int] = {}
+    for key, runs in by_run.items():
+        per_work: dict[str, list[list[float]]] = {}
+        for works in runs.values():
+            for work, sums in works.items():
+                per_work.setdefault(work, []).append(sums)
+        averaged[key] = {
+            work: (float(np.mean([item[0] for item in values])), float(np.mean([item[1] for item in values])))
+            for work, values in per_work.items()
+        }
+        run_counts[key] = len(runs)
+    return averaged, run_counts
+
+
+def _bootstrap_indices(n_works: int, samples: int, generator: np.random.Generator) -> np.ndarray:
+    return generator.integers(0, n_works, size=(samples, n_works))
+
+
+def _percentile_interval(values: np.ndarray) -> list[float]:
+    lower, upper = np.percentile(values, [2.5, 97.5])
+    return [float(lower), float(upper)]
+
+
+def headline_estimates(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    bootstrap_samples: int,
+    seed: int,
+) -> dict[str, object]:
+    """Headline NLL figures, each with a bootstrap-by-work CI of its own estimand (C7).
+
+    * ``token_weighted_nll``: Σll / Σn over test works; CI by resampling works and
+      recomputing the ratio.
+    * ``token_weighted_perplexity``: exp of the above, CI = exp of its bounds.
+    * ``work_mean_nll``: mean over works of each work's Σll/Σn; CI of that mean.
+    """
+
+    samples = _positive_integer(bootstrap_samples, name="bootstrap_samples")
+    generator = np.random.default_rng(_nonnegative_integer(seed, name="seed"))
+    totals, run_counts = _work_totals(rows)
+    estimates: list[dict[str, object]] = []
+    for (model, fraction), works in sorted(totals.items()):
+        log_likelihoods = np.asarray([value[0] for value in works.values()], dtype=float)
+        n_tokens = np.asarray([value[1] for value in works.values()], dtype=float)
+        indices = _bootstrap_indices(len(works), samples, generator)
+        token_draws = -log_likelihoods[indices].sum(axis=1) / n_tokens[indices].sum(axis=1)
+        work_nll = -log_likelihoods / n_tokens
+        work_draws = work_nll[indices].mean(axis=1)
+        token_point = float(-log_likelihoods.sum() / n_tokens.sum())
+        token_interval = _percentile_interval(token_draws)
+        common = {
+            "model": model,
+            "frac": fraction,
+            "n_works": len(works),
+            "n_runs": run_counts[(model, fraction)],
+            "n_tokens": float(n_tokens.sum()),
+        }
+        estimates.extend(
+            [
+                {
+                    **common,
+                    "estimand": "token_weighted_nll",
+                    "point_estimate": token_point,
+                    "bootstrap_95_ci": token_interval,
+                    "ci_method": "work_cluster_bootstrap_of_ratio_sum_ll_over_sum_n",
+                },
+                {
+                    **common,
+                    "estimand": "token_weighted_perplexity",
+                    "point_estimate": math.exp(token_point),
+                    "bootstrap_95_ci": [math.exp(bound) for bound in token_interval],
+                    "ci_method": "exp_of_token_weighted_nll_interval",
+                },
+                {
+                    **common,
+                    "estimand": "work_mean_nll",
+                    "point_estimate": float(work_nll.mean()),
+                    "bootstrap_95_ci": _percentile_interval(work_draws),
+                    "ci_method": "work_bootstrap_of_mean_work_nll",
+                },
+            ]
+        )
+    return {
+        "unit": "canonical_work",
+        "runs_averaged_within_work": True,
+        "bootstrap_samples": samples,
+        "seed": seed,
+        "estimates": estimates,
+    }
+
+
+def _token_weighted_difference(
+    totals_a: Mapping[str, tuple[float, float]],
+    totals_b: Mapping[str, tuple[float, float]],
+    works: list[str],
+    *,
+    bootstrap_samples: int,
+    generator: np.random.Generator,
+) -> tuple[float, list[float]] | None:
+    if not works or any(work not in totals_a or work not in totals_b for work in works):
+        return None
+    ll_a = np.asarray([totals_a[work][0] for work in works], dtype=float)
+    n_a = np.asarray([totals_a[work][1] for work in works], dtype=float)
+    ll_b = np.asarray([totals_b[work][0] for work in works], dtype=float)
+    n_b = np.asarray([totals_b[work][1] for work in works], dtype=float)
+    point = float(-ll_a.sum() / n_a.sum() + ll_b.sum() / n_b.sum())
+    indices = _bootstrap_indices(len(works), bootstrap_samples, generator)
+    draws = -ll_a[indices].sum(axis=1) / n_a[indices].sum(axis=1) + ll_b[indices].sum(axis=1) / n_b[
+        indices
+    ].sum(axis=1)
+    return point, _percentile_interval(draws)
+
+
 def _empty_comparison(model_a: str, model_b: str) -> dict[str, object]:
     return {
         "model_a": model_a,
@@ -91,6 +242,10 @@ def _empty_comparison(model_a: str, model_b: str) -> dict[str, object]:
         "wilcoxon_statistic": None,
         "p_value": None,
         "p_value_holm": None,
+        "estimand": "mean_over_works_of_work_nll_difference",
+        "token_weighted_estimand": "token_weighted_nll_difference",
+        "token_weighted_difference": None,
+        "token_weighted_bootstrap_95_ci": None,
     }
 
 
@@ -249,6 +404,12 @@ def pairwise_model_comparisons(
     for model, canonical_work_id in work_means:
         works_by_model[model].add(canonical_work_id)
 
+    full_fraction_totals = {
+        model: works
+        for (model, fraction), works in _work_totals(
+            row for row in rows_list if _full_fraction(row)
+        )[0].items()
+    }
     generator = np.random.default_rng(validated_seed)
     comparisons_payload: list[dict[str, object]] = []
     for model_a, model_b in combinations(sorted(model_names), 2):
@@ -287,7 +448,22 @@ def pairwise_model_comparisons(
             "wilcoxon_statistic": None,
             "p_value": None,
             "p_value_holm": None,
+            # C7: el titular ponderado por token lleva el IC de su propio cociente.
+            "estimand": "mean_over_works_of_work_nll_difference",
+            "token_weighted_estimand": "token_weighted_nll_difference",
+            "token_weighted_difference": None,
+            "token_weighted_bootstrap_95_ci": None,
         }
+        token_weighted = _token_weighted_difference(
+            full_fraction_totals.get(model_a, {}),
+            full_fraction_totals.get(model_b, {}),
+            canonical_work_ids,
+            bootstrap_samples=validated_bootstrap_samples,
+            generator=generator,
+        )
+        if token_weighted is not None:
+            comparison["token_weighted_difference"] = token_weighted[0]
+            comparison["token_weighted_bootstrap_95_ci"] = token_weighted[1]
         if int(np.count_nonzero(differences)) >= 2:
             try:
                 result = wilcoxon(differences)
