@@ -209,11 +209,23 @@ def leer_diagnostico(nombre: str) -> dict:
 
 
 def costos_ajuste(corrida: str) -> dict[str, float]:
+    """Segundos del ajuste seleccionado, frac = 1.0, media por modelo.
+
+    ``fit_wall_clock_s`` mezcla la selección completa de los clásicos con un solo
+    ajuste del transformador (C1), así que no se usa: la figura compara ajuste
+    seleccionado contra ajuste seleccionado.
+    """
     por_modelo = defaultdict(list)
     with open(COMPARACION / corrida / "engineering_costs.csv", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
+        lector = csv.DictReader(handle)
+        if "selected_fit_wall_clock_s" not in (lector.fieldnames or []):
+            raise ValueError(
+                f"{corrida}: engineering_costs.csv no trae selected_fit_wall_clock_s; "
+                "sin él no hay costo comparable entre familias."
+            )
+        for row in lector:
             if float(row["frac"]) == 1.0:
-                por_modelo[row["model"]].append(float(row["fit_wall_clock_s"]))
+                por_modelo[row["model"]].append(float(row["selected_fit_wall_clock_s"]))
     return {k: statistics.mean(v) for k, v in por_modelo.items()}
 
 
@@ -641,7 +653,7 @@ def figura_pareto() -> None:
     ax.set_xticklabels([f"{v:.0f}" for v in marcas])
     ax.minorticks_off()
     ax.get_xaxis().set_major_formatter(mpl.ticker.ScalarFormatter())
-    ax.set_xlabel("Segundos de ajuste, frac = 1.0 (escala logarítmica)")
+    ax.set_xlabel("Segundos del ajuste seleccionado, frac = 1.0 (escala logarítmica)")
     ax.set_ylabel("NLL de prueba por token")
 
     ax.annotate(

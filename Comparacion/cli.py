@@ -31,6 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--structural-annotations", default=None, help="Optional CSV with piece_id,event_index,segment_label,boundary columns.")
     parser.add_argument("--split-seed", type=int, default=None, help="Seed of the fixed train/validation/test partition. Repeat the run with different values to measure sensitivity to the partition.")
     parser.add_argument("--finite-hmm-states", default=None, help="Comma-separated candidate state counts for the finite HMM, for example 48,72,96. Must be increasing, unique and at least 2.")
+    parser.add_argument("--transformer-search-wall-clock-s", type=float, default=None, help="Wall-clock seconds of the Transformer architecture/hyperparameter search done outside this run. Without it the search cost is recorded as not measured.")
+    parser.add_argument("--transformer-search-device", default=None, help="Device of the declared Transformer search, for example cuda or cpu.")
     parser.add_argument("--finite-hmm-max-states", type=int, default=None, help="Upper limit for the automatic growth of the finite HMM state grid while validation keeps selecting its maximum. Reaching it still at the maximum stops the run.")
     parser.add_argument("--vomm-max-order", type=int, default=None, help="Upper limit for the automatic growth of the VOMM order grid while validation keeps selecting its maximum.")
     parser.add_argument("--finite-hmm-max-iterations", type=int, default=None, help="Iteration budget of the finite HMM. Fitting stops early when the validation NLL stops improving, so reaching this cap means the budget was binding and not that the model converged.")
@@ -227,6 +229,9 @@ def main() -> None:
         updates["finite_hmm_max_states"] = args.finite_hmm_max_states
     if args.vomm_max_order is not None:
         updates["vomm_max_order"] = args.vomm_max_order
+    if args.transformer_search_wall_clock_s is not None:
+        updates["transformer_search_wall_clock_s"] = args.transformer_search_wall_clock_s
+        updates["transformer_search_device"] = args.transformer_search_device
 
     config = replace(config, **updates)
     result = run_learning_curve_experiment(

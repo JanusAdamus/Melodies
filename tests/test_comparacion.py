@@ -698,6 +698,10 @@ class ComparisonRunnerTests(unittest.TestCase):
                 raw_rows = list(csv.DictReader(stream))
             self.assertEqual({row["model"] for row in raw_rows}, {"finite_hmm", "hdp_hmm", "vomm", "transformer"})
             self.assertEqual(len(raw_rows), 4)
+            # C1: la búsqueda del transformador fuera de la corrida no se inventa.
+            search_status = {row["model"]: row["full_search_status"] for row in raw_rows}
+            self.assertEqual(search_status["transformer"], "not_measured")
+            self.assertEqual(search_status["finite_hmm"], "unmeasured")
             with (output_root / "piece_metrics_raw.csv").open(encoding="utf-8", newline="") as stream:
                 piece_rows = list(csv.DictReader(stream))
             self.assertTrue(piece_rows)

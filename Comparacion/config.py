@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import math
 from numbers import Integral
 from pathlib import Path
 
@@ -50,6 +51,10 @@ class LearningCurveConfig:
     bootstrap_seed: int = 17
     boundary_tolerance: int = 1
     structural_annotations_path: str | None = None
+    #: C1: búsqueda de arquitectura/hiperparámetros del transformador hecha fuera
+    #: de esta corrida. Sin declararla, su costo queda como no medido.
+    transformer_search_wall_clock_s: float | None = None
+    transformer_search_device: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.include_vomm_control, bool):
@@ -104,6 +109,12 @@ class LearningCurveConfig:
             or int(self.boundary_tolerance) < 0
         ):
             raise ValueError("boundary_tolerance must be a nonnegative integer.")
+        if self.transformer_search_wall_clock_s is not None:
+            seconds = self.transformer_search_wall_clock_s
+            if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds < 0:
+                raise ValueError("transformer_search_wall_clock_s must be a finite nonnegative number.")
+            if not isinstance(self.transformer_search_device, str) or not self.transformer_search_device.strip():
+                raise ValueError("transformer_search_wall_clock_s requires transformer_search_device.")
         if self.structural_annotations_path is not None:
             if not isinstance(self.structural_annotations_path, str):
                 raise TypeError("structural_annotations_path must be a string or None.")

@@ -840,6 +840,74 @@ def _protocol_cost_fields(
     }
 
 
+#: Qué cubre la selección medida dentro de la corrida, por familia (C1).
+SEARCH_SCOPES = {
+    "finite_hmm": "capacity grid of K with EM per candidate, in run",
+    "hdp_hmm": "hyperparameter grid (alpha, alpha0, gamma), one chain per candidate, in run",
+    "vomm": "order grid, counts plus validation per candidate, in run",
+    "transformer": (
+        "epochs with early stopping in run; architecture and hyperparameter search "
+        "outside the run"
+    ),
+}
+
+SEARCH_COST_FIELDS = (
+    "search_scope",
+    "external_search_wall_clock_s",
+    "external_search_device",
+    "external_search_status",
+    "full_search_wall_clock_s",
+    "full_search_device",
+    "full_search_status",
+)
+
+
+def _search_cost_fields(
+    model_name: str,
+    *,
+    selection_wall_clock_s: object,
+    device: str,
+    config: LearningCurveConfig,
+) -> dict[str, object]:
+    """Búsqueda completa = selección en la corrida + búsqueda externa declarada.
+
+    Las familias clásicas buscan todo dentro de la corrida. La configuración del
+    transformador se eligió fuera; si nadie declara su costo, la búsqueda
+    completa queda en ``None`` con ``not_measured`` en vez de subestimarse.
+    """
+
+    selection = _finite_seconds(selection_wall_clock_s)
+    fields: dict[str, object] = {
+        "search_scope": SEARCH_SCOPES.get(model_name, "unknown"),
+        "external_search_wall_clock_s": None,
+        "external_search_device": None,
+        "external_search_status": "not_applicable",
+        "full_search_wall_clock_s": selection,
+        "full_search_device": device,
+        "full_search_status": "measured_in_run" if selection is not None else "unmeasured",
+    }
+    if model_name != "transformer":
+        return fields
+    external = config.transformer_search_wall_clock_s
+    if external is None or selection is None:
+        return {
+            **fields,
+            "external_search_status": "not_measured",
+            "full_search_wall_clock_s": None,
+            "full_search_status": "not_measured",
+        }
+    devices = sorted({device, str(config.transformer_search_device)})
+    return {
+        **fields,
+        "external_search_wall_clock_s": float(external),
+        "external_search_device": config.transformer_search_device,
+        "external_search_status": "declared_outside_run",
+        "full_search_wall_clock_s": selection + float(external),
+        "full_search_device": "+".join(devices),
+        "full_search_status": "in_run_plus_declared_external",
+    }
+
+
 def _row_grid(row: Mapping[str, object], default: Sequence[int]) -> list[int]:
     raw = row.get("candidate_grid")
     if isinstance(raw, str) and raw.strip():
@@ -997,8 +1065,10 @@ def _engineering_cost_rows(raw_rows: list[dict[str, object]]) -> list[dict[str, 
         "n_train_pieces",
         "n_train_tokens",
         "fit_wall_clock_s",
+        "fit_wall_clock_scope",
         *PROTOCOL_COST_FIELDS,
         "cost_status",
+        *SEARCH_COST_FIELDS,
         "n_params",
         "selected_states",
         "effective_states",
@@ -1433,6 +1503,14 @@ def run_learning_curve_experiment(
                         "test_brier_score": vomm_summary["brier_score"],
                         "train_time_sec": vomm_summary["train_time_sec"],
                         "fit_wall_clock_s": vomm_summary["train_time_sec"],
+                        # C1: fit_wall_clock_s no es comparable entre familias; ver su alcance.
+                        "fit_wall_clock_scope": "full_selection",
+                        **_search_cost_fields(
+                            "vomm",
+                            selection_wall_clock_s=vomm_summary.get("selection_wall_clock_s"),
+                            device="cpu",
+                            config=config,
+                        ),
                         **_protocol_cost_fields(
                             vomm_summary,
                             evaluation_wall_clock_s=vomm_summary["evaluation_wall_clock_s"],
@@ -1523,6 +1601,14 @@ def run_learning_curve_experiment(
                         "test_nll": finite_summary["test_nll_per_token"],
                         "train_time_sec": finite_summary["train_time_sec"],
                         "fit_wall_clock_s": finite_summary["train_time_sec"],
+                        # C1: fit_wall_clock_s no es comparable entre familias; ver su alcance.
+                        "fit_wall_clock_scope": "full_selection",
+                        **_search_cost_fields(
+                            "finite_hmm",
+                            selection_wall_clock_s=finite_summary.get("selection_wall_clock_s"),
+                            device="cpu",
+                            config=config,
+                        ),
                         **_protocol_cost_fields(
                             finite_summary, evaluation_wall_clock_s=finite_eval_elapsed
                         ),
@@ -1619,6 +1705,14 @@ def run_learning_curve_experiment(
                         "test_nll": hdp_summary["test_nll_per_token"],
                         "train_time_sec": hdp_summary["train_time_sec"],
                         "fit_wall_clock_s": hdp_summary["train_time_sec"],
+                        # C1: fit_wall_clock_s no es comparable entre familias; ver su alcance.
+                        "fit_wall_clock_scope": "full_selection",
+                        **_search_cost_fields(
+                            "hdp_hmm",
+                            selection_wall_clock_s=hdp_summary.get("selection_wall_clock_s"),
+                            device="cpu",
+                            config=config,
+                        ),
                         **_protocol_cost_fields(
                             hdp_summary, evaluation_wall_clock_s=hdp_eval_elapsed
                         ),
@@ -1704,6 +1798,14 @@ def run_learning_curve_experiment(
                         "test_brier_score": transformer_summary["test_brier_score"],
                         "train_time_sec": transformer_summary["train_time_sec"],
                         "fit_wall_clock_s": transformer_fit_wall_clock_s,
+                        # C1: fit_wall_clock_s no es comparable entre familias; ver su alcance.
+                        "fit_wall_clock_scope": "whole_fit_call_all_epochs",
+                        **_search_cost_fields(
+                            "transformer",
+                            selection_wall_clock_s=transformer_summary["selection_wall_clock_s"],
+                            device=transformer_summary["device"],
+                            config=config,
+                        ),
                         **_protocol_cost_fields(
                             transformer_summary,
                             evaluation_wall_clock_s=transformer_summary["evaluation_wall_clock_s"],
