@@ -289,18 +289,29 @@ def build_dataset_bundle(
     )
 
 
+def dataloader_seed(*, model_seed: int, data_seed: int) -> int:
+    """Semilla del barajado de lotes a partir de model_seed y data_seed (auditoría C4)."""
+
+    return int(model_seed) * 1_000_003 + int(data_seed)
+
+
 def build_dataloaders(
     tokenizer: SequenceTokenizer,
     config: ExperimentConfig,
     train_dataset: WindowedSequenceDataset,
     validation_dataset: WindowedSequenceDataset,
     test_dataset: WindowedSequenceDataset,
+    shuffle_seed: int | None = None,
 ) -> dict[str, DataLoader]:
-    """Build dataloaders for the Transformer experiment."""
+    """Build dataloaders for the Transformer experiment.
+
+    ``shuffle_seed`` debe venir de ``dataloader_seed``; si falta se usa la
+    semilla del split, como en el experimento de una sola semilla.
+    """
 
     collate = partial(collate_window_batch, pad_token_id=tokenizer.pad_token_id)
     generator = torch.Generator()
-    generator.manual_seed(config.split.seed)
+    generator.manual_seed(config.split.seed if shuffle_seed is None else shuffle_seed)
     num_workers = max(0, int(config.hardware.dataloader_workers))
     pin_memory = bool(config.hardware.pin_memory and config.hardware.target_device != "cpu")
     persistent_workers = num_workers > 0

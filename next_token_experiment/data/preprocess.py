@@ -254,7 +254,12 @@ def _decode_cache_entry(
     kind = payload.pop("kind")
     if kind == "exclusion":
         return ExclusionRecord(**payload)  # type: ignore[arg-type]
-    return PreparedPiece(vocabulary=vocabulary, **payload)  # type: ignore[arg-type]
+    # Las cachés anteriores al 2026-10-26 guardan la obra canónica truncada
+    # por Path().stem (auditoría C3); se recalcula con la regla vigente.
+    canonical_work_id = canonicalize_work_label(f"{payload['composer']} {payload['title']}")
+    return PreparedPiece(  # type: ignore[arg-type]
+        vocabulary=vocabulary, **{**payload, "canonical_work_id": canonical_work_id}
+    )
 
 
 def _entry_source_path(entry: PreparedPiece | ExclusionRecord) -> str:
