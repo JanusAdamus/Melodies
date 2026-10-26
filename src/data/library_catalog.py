@@ -135,6 +135,16 @@ def _estimated_key_label(score: music21.stream.Score) -> str:
         return ""
 
 
+def count_measures(score: music21.stream.Score) -> int:
+    """Compases reales: los de una sola parte (todas comparten compases), no el numero maximo."""
+
+    parts = list(score.parts)
+    container = parts[0] if parts else score
+    return len(container.getElementsByClass(music21.stream.Measure)) or len(
+        list(container.recurse().getElementsByClass(music21.stream.Measure))
+    )
+
+
 def classify_score(path: str | Path) -> dict[str, object]:
     score_path = Path(path)
     base_title = score_path.stem.replace("_", " ")
@@ -176,16 +186,14 @@ def classify_score(path: str | Path) -> dict[str, object]:
 
     composer = infer_composer(score_path.name, metadata.composer if metadata is not None else None)
     period = PERIOD_BY_COMPOSER.get(composer, "unknown")
-    measures = list(score.recurse().getElementsByClass(music21.stream.Measure))
     notes = list(score.recurse().notes)
     note_count = len(notes)
     chord_count = len(list(score.recurse().getElementsByClass(music21.chord.Chord)))
     unique_pitch_classes = len({int(note.pitch.pitchClass) for note in score.recurse().notes if hasattr(note, "pitch")})
-    measure_count = len(measures)
+    measure_count = count_measures(score)
     duration_quarters = float(score.duration.quarterLength)
     part_count = len(score.parts) if score.parts else 1
     avg_notes_per_measure = note_count / max(measure_count, 1)
-    max_measure_number = max((measure.number for measure in measures if measure.number is not None), default=measure_count)
 
     base_record.update(
         {
@@ -196,7 +204,7 @@ def classify_score(path: str | Path) -> dict[str, object]:
             "arrangement_tag": infer_arrangement_tag(title),
             "difficulty_bucket": infer_difficulty_bucket(title, note_count, avg_notes_per_measure),
             "part_count": part_count,
-            "measure_count": max_measure_number,
+            "measure_count": measure_count,
             "note_count": note_count,
             "chord_count": chord_count,
             "duration_quarters": duration_quarters,

@@ -10,7 +10,8 @@ from src.analysis.diagnostics import export_tables, segmentation_statistics, tra
 from src.analysis.interpretation import interpret_hdp_states
 from src.data.library_catalog import build_library_catalog, summarize_catalog
 from src.data.observations import build_observation_sequence
-from src.data.parsing import extract_events, parse_score
+from src.analysis.library_batch import prepare_corpus
+from src.data.parsing import EXTRACTION_MODES, MusicalEvent
 from src.models.finite_hmm import FiniteChordHMM
 from src.models.hdp_hmm import TruncatedHDPHMM
 
@@ -30,7 +31,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eta", type=float, default=1.0, help="Concentracion de emisiones.")
     parser.add_argument("--kappa", type=float, default=0.0, help="Sesgo sticky opcional.")
     parser.add_argument("--seed", type=int, default=7, help="Semilla reproducible.")
-    parser.add_argument("--prefer-treble", action="store_true", help="Prioriza partes en clave de sol.")
+    parser.add_argument("--prefer-treble", action="store_true", help="Solo con --extraction legacy_all_parts: prioriza partes en clave de sol.")
+    parser.add_argument("--extraction", default="melody", choices=EXTRACTION_MODES, help="melody: voz superior de la parte en sol; legacy_all_parts: extraccion anterior (para citarla).")
     return parser
 
 
@@ -98,9 +100,7 @@ def _selected_catalog(catalog: pd.DataFrame, limit: int) -> pd.DataFrame:
     return selected.loc[:, columns].copy()
 
 
-def _run_piece(path: str, obs_type: str, prefer_treble: bool, hdp_params: dict) -> dict[str, object]:
-    score = parse_score(path)
-    events = extract_events(score, prefer_treble=prefer_treble)
+def _run_piece(path: str, events: list[MusicalEvent], obs_type: str, hdp_params: dict) -> dict[str, object]:
     observations = build_observation_sequence(events, obs_type)
 
     finite_result = FiniteChordHMM().fit_predict(observations)
@@ -270,7 +270,9 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     catalog = build_library_catalog(args.library_dir)
-    selected = _selected_catalog(catalog, args.limit)
+    prepared = prepare_corpus(catalog, extraction=args.extraction, prefer_treble=args.prefer_treble)
+    selected = _selected_catalog(prepared.pieces, args.limit)
+    export_tables({"duplicates_removed": prepared.duplicates}, output_dir / "catalog", excel_name="duplicates_removed.xlsx")
     export_tables(summarize_catalog(selected), output_dir / "catalog", excel_name="catalog.xlsx")
     _write_text(output_dir / "catalog" / "catalog.tex", _latex_table(selected))
 
@@ -286,15 +288,16 @@ def main() -> None:
         "seed": args.seed,
     }
 
-    records = []
+    records = prepared.failures.to_dict("records")
     for _, row in selected.iterrows():
         record = {
             **row.to_dict(),
         }
         try:
-            record.update(_run_piece(row["path"], args.obs, args.prefer_treble, hdp_params))
+            record.update(_run_piece(row["path"], prepared.events[row["path"]], args.obs, hdp_params))
         except Exception as exc:
             record["error"] = f"{exc.__class__.__name__}: {exc}"
+            record["error_stage"] = "analisis"
         records.append(record)
 
     analysis_df = pd.DataFrame(records)
@@ -352,7 +355,8 @@ def main() -> None:
         "Nota tecnica del experimento clasico limitado",
         "",
         f"Corpus: {args.library_dir}",
-        f"Seleccion: primeras {args.limit} obras tras filtrar errores y ordenar por numero de notas y titulo.",
+        f"Extraccion: {args.extraction}.",
+        f"Seleccion: primeras {args.limit} obras tras quitar {len(prepared.failures)} con error y {len(prepared.duplicates)} duplicadas por contenido, ordenadas por numero de notas y titulo.",
         f"Modelo finito: HMM armonico con observaciones {args.obs}.",
         f"Modelo truncado: HDP-HMM con K={args.K}, iters={args.iters}, burn_in={args.burn_in}, alpha={args.alpha}, alpha0={args.alpha0}, gamma={args.gamma}, eta={args.eta}, kappa={args.kappa}.",
         f"Semilla: {args.seed}.",
@@ -377,6 +381,7 @@ def main() -> None:
     print(f"Obras seleccionadas: {len(selected)}")
     successful = len(analysis_df) if "error" not in analysis_df.columns else int((analysis_df["error"].fillna("") == "").sum())
     print(f"Obras analizadas con exito: {successful}")
+    print(f"Obras con error (catalogo + extraccion + analisis): {len(analysis_df) - successful}; duplicadas quitadas: {len(prepared.duplicates)}")
 
 
 if __name__ == "__main__":

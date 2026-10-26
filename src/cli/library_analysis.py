@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from src.analysis.library_batch import analyze_library
+from src.data.parsing import EXTRACTION_MODES
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -13,7 +14,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--obs", default="pitch_class", help="Tipo de observacion para el analisis.")
     parser.add_argument("--model", default="finite_hmm", choices=("finite_hmm", "hdp_hmm", "both"), help="Modelo a ejecutar sobre la biblioteca.")
     parser.add_argument("--limit", type=int, default=None, help="Limita el numero de obras a analizar.")
-    parser.add_argument("--prefer-treble", action="store_true", help="Prioriza partes en clave de sol al fusionar la partitura.")
+    parser.add_argument("--prefer-treble", action="store_true", help="Solo con --extraction legacy_all_parts: prioriza partes en clave de sol.")
+    parser.add_argument("--extraction", default="melody", choices=EXTRACTION_MODES, help="melody: voz superior de la parte en sol; legacy_all_parts: extraccion anterior (para citarla).")
     parser.add_argument("--K", type=int, default=20, help="Numero maximo de estados truncados para HDP-HMM.")
     parser.add_argument("--iters", type=int, default=80, help="Iteraciones del HDP-HMM.")
     parser.add_argument("--burn-in", dest="burn_in", type=int, default=40, help="Burn-in del HDP-HMM.")
@@ -32,6 +34,7 @@ def main() -> None:
         model=args.model,
         limit=args.limit,
         prefer_treble=args.prefer_treble,
+        extraction=args.extraction,
         hdp_params={
             "n_states": args.K,
             "n_iters": args.iters,
