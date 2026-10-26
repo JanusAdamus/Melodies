@@ -42,7 +42,7 @@ from .config import LearningCurveConfig
 from .canonicalization_audit import AUDIT_FILENAME as CANONICALIZATION_AUDIT_FILENAME
 from .canonicalization_audit import build_canonicalization_audit
 from .decision import pareto_front
-from .hdp_diagnostics import build_chain_diagnostics, write_chain_traces
+from .hdp_diagnostics import build_cell_chain_diagnostics, write_cell_traces
 from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
 from .denominator_audit import build_denominator_audit
 from .resource_monitor import (
@@ -96,6 +96,7 @@ _CHECKPOINT_ROW_KEYS = (
     "piece_metric_rows",
     "protocol_evidence",
     "structural_predictions",
+    "hdp_trace_rows",
 )
 
 
@@ -1231,9 +1232,9 @@ def run_learning_curve_experiment(
     piece_metric_rows: list[dict[str, object]] = list(restored["piece_metric_rows"]) if restored else []
     protocol_evidence: list[dict[str, object]] = list(restored["protocol_evidence"]) if restored else []
     structural_predictions: list[dict[str, object]] = list(restored["structural_predictions"]) if restored else []
+    hdp_trace_rows: list[dict[str, object]] = list(restored["hdp_trace_rows"]) if restored else []
     protocol_path = output_root / "protocol_audit.json"
 
-    hdp_traces_by_seed: dict[int, list[dict[str, object]]] = {}
     total_cells = sum(len(subsets) for subsets in nested_by_seed.values())
     if completed_cells:
         print(
@@ -1252,6 +1253,7 @@ def run_learning_curve_experiment(
                 "piece_metric_rows": len(piece_metric_rows),
                 "protocol_evidence": len(protocol_evidence),
                 "structural_predictions": len(structural_predictions),
+                "hdp_trace_rows": len(hdp_trace_rows),
             }
             n_train_tokens = sum(len(piece.tokens) for piece in train_pieces)
             n_train_pieces = len(train_pieces)
@@ -1436,7 +1438,7 @@ def run_learning_curve_experiment(
                         max_context_length=max_context_length,
                     )
                 for trace_row in hdp_fit.get("selected_chain_trace", []) or []:
-                    hdp_traces_by_seed.setdefault(model_seed, []).append(
+                    hdp_trace_rows.append(
                         {
                             "split_seed": config.split_seed,
                             "data_seed": data_seed,
@@ -1614,6 +1616,7 @@ def run_learning_curve_experiment(
                     "structural_predictions": structural_predictions[
                         marks["structural_predictions"] :
                     ],
+                    "hdp_trace_rows": hdp_trace_rows[marks["hdp_trace_rows"] :],
                 },
             )
             completed_cells.add(cell)
@@ -1628,16 +1631,18 @@ def run_learning_curve_experiment(
     write_csv(output_root / "results_summary.csv", summary_rows)
     write_csv(output_root / "piece_metrics_raw.csv", piece_metric_rows)
     write_csv(output_root / "engineering_costs.csv", _engineering_cost_rows(raw_rows))
-    # Las trazas del HDP-HMM se conservan por semilla; el diagnóstico las lee sin
-    # volver a muestrear y nunca declara convergencia.
-    trace_paths = write_chain_traces(hdp_traces_by_seed, output_root)
+    # H7: una cadena es una model_seed dentro de una celda (split, data_seed, frac);
+    # el burn-in queda fuera del diagnóstico, que nunca declara convergencia.
+    trace_path = write_cell_traces(hdp_trace_rows, output_root, burn_in=config.hdp_burn_in)
     _write_json(
         output_root / "hdp_chain_diagnostics.json",
         {
-            **build_chain_diagnostics(
-                hdp_traces_by_seed, min_iterations=max(1, config.hdp_n_iters // 2)
+            **build_cell_chain_diagnostics(
+                hdp_trace_rows,
+                burn_in=config.hdp_burn_in,
+                min_iterations=max(1, config.hdp_n_iters - config.hdp_burn_in),
             ),
-            "trace_files": [Path(path).name for path in trace_paths],
+            "trace_files": [Path(trace_path).name] if trace_path else [],
         },
     )
     _write_json(

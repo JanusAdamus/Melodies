@@ -56,7 +56,17 @@ def lag_one_autocorrelation(values: Sequence[float]) -> float | None:
     return numerator / denominator
 
 
+def _reject_mixed_chains(rows: Sequence[Mapping[str, object]]) -> None:
+    iterations = [row.get("iteration") for row in rows if row.get("iteration") is not None]
+    if len(iterations) != len(set(iterations)):
+        raise ValueError(
+            "a chain repeats iteration numbers: rows from distinct chains or cells were "
+            "concatenated; group traces by (split_seed, data_seed, frac, model_seed) first"
+        )
+
+
 def _chain_diagnostics(rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    _reject_mixed_chains(rows)
     log_likelihoods = [row.get("log_likelihood") for row in rows]
     active_states = [row.get("active_states") for row in rows]
     finite_log_likelihoods = _finite(log_likelihoods)
@@ -159,22 +169,82 @@ def build_chain_diagnostics(
     }
 
 
-def write_chain_traces(
-    traces_by_seed: Mapping[int, Sequence[Mapping[str, object]]], output_root: str | Path
-) -> list[str]:
-    """Escribe hdp_trace_SEED.csv, una traza por semilla de modelo."""
+#: Del veredicto más preocupante al menos preocupante; el global es el peor por celda.
+_VERDICT_SEVERITY = (
+    "no_evidence",
+    "chains_too_short",
+    "drift_detected",
+    "chains_disagree",
+    "single_chain_no_cross_chain_evidence",
+    "stable_within_the_observed_window",
+)
 
+_CELL_KEYS = ("split_seed", "data_seed", "frac")
+
+
+def _in_burn_in(row: Mapping[str, object], burn_in: int) -> bool:
+    return int(row["iteration"]) <= burn_in
+
+
+def build_cell_chain_diagnostics(
+    trace_rows: Sequence[Mapping[str, object]],
+    *,
+    burn_in: int,
+    min_iterations: int,
+) -> dict[str, object]:
+    """Diagnóstico por celda (split_seed, data_seed, frac), sin burn-in.
+
+    Dentro de una celda, cada ``model_seed`` es una cadena sobre la misma
+    posterior; celdas distintas nunca se concatenan (H7).
+    """
+
+    cells: dict[tuple[object, ...], dict[int, list[Mapping[str, object]]]] = {}
+    for row in trace_rows:
+        if _in_burn_in(row, burn_in):
+            continue
+        key = tuple(row.get(name) for name in _CELL_KEYS)
+        cells.setdefault(key, {}).setdefault(row["model_seed"], []).append(row)
+
+    cell_reports = [
+        {
+            "cell": dict(zip(_CELL_KEYS, key)),
+            "diagnostics": build_chain_diagnostics(chains, min_iterations=min_iterations),
+        }
+        for key, chains in sorted(cells.items(), key=lambda item: tuple(map(str, item[0])))
+    ]
+    verdict_counts: dict[str, int] = {}
+    for report in cell_reports:
+        verdict = str(report["diagnostics"]["verdict"])
+        verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+    present = [verdict for verdict in _VERDICT_SEVERITY if verdict in verdict_counts]
+    return {
+        "status": "ok" if cell_reports else "diagnostics_inconclusive",
+        "verdict": present[0] if present else "no_evidence",
+        "verdict_counts": verdict_counts,
+        "unit": "chain = model_seed within (split_seed, data_seed, frac)",
+        "burn_in_excluded": int(burn_in),
+        "min_iterations": int(min_iterations),
+        "n_cells": len(cell_reports),
+        "cells": cell_reports,
+        "convergence_claimed": False,
+        "policy": POLICY,
+    }
+
+
+def write_cell_traces(
+    trace_rows: Sequence[Mapping[str, object]], output_root: str | Path, *, burn_in: int
+) -> str | None:
+    """Escribe hdp_traces.csv en formato largo, con la marca ``in_burn_in``."""
+
+    if not trace_rows:
+        return None
+    rows = [{**row, "in_burn_in": _in_burn_in(row, burn_in)} for row in trace_rows]
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
-    written: list[str] = []
-    for seed, rows in sorted(traces_by_seed.items()):
-        if not rows:
-            continue
-        fieldnames = list(dict.fromkeys(key for row in rows for key in row))
-        path = root / f"hdp_trace_{seed}.csv"
-        with path.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-        written.append(str(path))
-    return written
+    path = root / "hdp_traces.csv"
+    fieldnames = list(dict.fromkeys(key for row in rows for key in row))
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return str(path)
