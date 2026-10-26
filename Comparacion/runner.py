@@ -1072,36 +1072,70 @@ def _build_structural_evaluation(
     }
 
 
+#: Diseño (C5): diferencias de tiempo menores al 10 % se leen como empate. Protege
+#: contra que el ruido de medición decida la frontera; se fijó antes de ver la corrida.
+PARETO_TIME_RELATIVE_TOLERANCE = 0.10
+
+
 def _build_pareto_summary(
     raw_rows: list[dict[str, object]],
     structural_evaluation: dict[str, object],
+    headline: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    """Frontera con incertidumbre por eje (C5).
+
+    Ejes de dominancia: NLL de prueba (IC bootstrap por obra de Σll/Σn) y tiempo
+    del ajuste seleccionado (rango entre corridas ± tolerancia relativa), el
+    mismo concepto de costo para las cuatro familias (C1). El tiempo de
+    evaluación se reporta pero no decide.
+    """
+
     grouped: dict[str, list[dict[str, object]]] = {}
     for row in raw_rows:
         if float(row["frac"]) == 1.0:
             grouped.setdefault(str(row["model"]), []).append(row)
     predictive_cost_rows = []
+    excluded_models = []
+    devices: dict[str, list[str]] = {}
     for model_name, rows in sorted(grouped.items()):
+        devices[model_name] = sorted({str(row.get("device")) for row in rows})
+        fits = [_finite_seconds(row.get("selected_fit_wall_clock_s")) for row in rows]
+        nll_interval = _headline_interval(headline, model_name, 1.0, "token_weighted_nll")
+        if any(value is None for value in fits) or nll_interval is None:
+            excluded_models.append(model_name)
+            continue
         values = {
             "model": model_name,
             "mean_test_nll": mean(float(row["test_nll"]) for row in rows),
-            "mean_fit_wall_clock_s": mean(float(row["fit_wall_clock_s"]) for row in rows),
+            "mean_test_nll_interval": nll_interval,
+            "mean_selected_fit_wall_clock_s": mean(fits),
+            "mean_selected_fit_wall_clock_s_interval": [
+                min(fits) * (1.0 - PARETO_TIME_RELATIVE_TOLERANCE),
+                max(fits) * (1.0 + PARETO_TIME_RELATIVE_TOLERANCE),
+            ],
             "mean_evaluation_wall_clock_s": mean(
                 float(row["evaluation_wall_clock_s"]) for row in rows
             ),
+            "devices": devices[model_name],
             "runs": len(rows),
         }
-        if all(math.isfinite(float(value)) for key, value in values.items() if key.startswith("mean_")):
+        if all(math.isfinite(float(value)) for key, value in values.items() if key.startswith("mean_") and not key.endswith("_interval")):
             predictive_cost_rows.append(values)
-    partial_axes = (
-        "mean_test_nll",
-        "mean_fit_wall_clock_s",
-        "mean_evaluation_wall_clock_s",
-    )
+        else:
+            excluded_models.append(model_name)
+    partial_axes = ("mean_test_nll", "mean_selected_fit_wall_clock_s")
     partial_payload = {
         "status": "ok" if predictive_cost_rows else "not_evaluated",
         "scope": "predictive_cost_partial_frontier",
         "axes": list(partial_axes),
+        "reported_not_dominance_axes": ["mean_evaluation_wall_clock_s"],
+        "dominance": "interval: strictly better only when intervals do not overlap",
+        "nll_interval": "work_cluster_bootstrap_95_ci_of_token_weighted_nll",
+        "time_relative_tolerance": PARETO_TIME_RELATIVE_TOLERANCE,
+        "devices": devices,
+        # Ninguna lectura de «más barato» cruza CPU y GPU sin declararlo.
+        "devices_differ": len({device for values in devices.values() for device in values}) > 1,
+        "excluded_models": excluded_models,
         "candidates": predictive_cost_rows,
         "frontier": pareto_front(predictive_cost_rows, minimize=partial_axes, maximize=())
         if predictive_cost_rows
@@ -1719,7 +1753,7 @@ def run_learning_curve_experiment(
         tolerance=config.boundary_tolerance,
     )
     _write_json(output_root / "structural_evaluation.json", structural_payload)
-    pareto_payload = _build_pareto_summary(raw_rows, structural_payload)
+    pareto_payload = _build_pareto_summary(raw_rows, structural_payload, headline_payload)
     _write_json(output_root / "pareto_summary.json", pareto_payload)
     _write_json(
         protocol_path,

@@ -565,6 +565,7 @@ class ComparisonRunnerTests(unittest.TestCase):
                     "n_tokens": sum(len(piece.tokens) for piece in pieces),
                     "n_params": 25,
                     "train_time_sec": 0.2,
+                    "selected_fit_wall_clock_s": 0.1,
                 },
                 "piece_metrics": _piece_metrics(pieces, nll=1.5),
             }
@@ -583,12 +584,13 @@ class ComparisonRunnerTests(unittest.TestCase):
                     "n_params": 25,
                     "effective_states": 2,
                     "train_time_sec": 0.3,
+                    "selected_fit_wall_clock_s": 0.2,
                 },
                 "piece_metrics": _piece_metrics(pieces, nll=1.4),
             }
             transformer_model = MagicMock()
             transformer_model.fit.return_value = {
-                "summary": {"best_validation_nll": 1.1},
+                "summary": {"best_validation_nll": 1.1, "selected_fit_wall_clock_s": 0.3},
                 "train_log": [{"train_wall_clock_s": 0.4, "validation_wall_clock_s": 0.1}],
             }
             transformer_model.evaluate.side_effect = lambda pieces: {
@@ -619,6 +621,7 @@ class ComparisonRunnerTests(unittest.TestCase):
                     "n_params": 20,
                     "count_table_size": 20,
                     "train_time_sec": 0.05,
+                    "selected_fit_wall_clock_s": 0.01,
                     "evaluation_wall_clock_s": 0.02,
                 },
                 "piece_metrics": _piece_metrics(pieces, nll=1.3),

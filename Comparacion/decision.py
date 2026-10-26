@@ -24,6 +24,20 @@ def _finite_axis_values(
     return values
 
 
+def _axis_interval(row: Mapping[str, object], axis: str, value: float) -> tuple[float, float]:
+    """``row[axis + "_interval"]`` when given (CI or tolerance band), else the point."""
+
+    interval = row.get(f"{axis}_interval")
+    if isinstance(interval, (list, tuple)) and len(interval) == 2:
+        try:
+            lower, upper = float(interval[0]), float(interval[1])
+        except (TypeError, ValueError):
+            return value, value
+        if math.isfinite(lower) and math.isfinite(upper) and lower <= upper:
+            return lower, upper
+    return value, value
+
+
 def _dominates(
     candidate: Mapping[str, object],
     target: Mapping[str, object],
@@ -31,26 +45,30 @@ def _dominates(
     minimize: tuple[str, ...],
     maximize: tuple[str, ...],
 ) -> bool:
+    """Interval dominance (C5).
+
+    No worse on an axis: the intervals overlap or the candidate is better.
+    Strictly better: the candidate's interval lies entirely on the better side.
+    Without intervals this is the usual point definition.
+    """
+
     axes = (*minimize, *maximize)
     candidate_values = _finite_axis_values(candidate, axes)
     target_values = _finite_axis_values(target, axes)
     if candidate_values is None or target_values is None:
         return False
 
-    no_worse = all(
-        candidate_values[axis] <= target_values[axis]
-        for axis in minimize
-    ) and all(
-        candidate_values[axis] >= target_values[axis]
-        for axis in maximize
-    )
-    strictly_better = any(
-        candidate_values[axis] < target_values[axis]
-        for axis in minimize
-    ) or any(
-        candidate_values[axis] > target_values[axis]
-        for axis in maximize
-    )
+    no_worse = True
+    strictly_better = False
+    for axis in axes:
+        candidate_low, candidate_high = _axis_interval(candidate, axis, candidate_values[axis])
+        target_low, target_high = _axis_interval(target, axis, target_values[axis])
+        if axis in minimize:
+            no_worse = no_worse and candidate_low <= target_high
+            strictly_better = strictly_better or candidate_high < target_low
+        else:
+            no_worse = no_worse and candidate_high >= target_low
+            strictly_better = strictly_better or candidate_low > target_high
     return no_worse and strictly_better
 
 
