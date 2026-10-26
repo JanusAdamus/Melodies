@@ -13,20 +13,33 @@ from .utils import (
     contiguous_segments,
     count_emissions,
     count_transitions,
-    dirichlet_logpdf,
-    normalize,
-    sample_truncated_stick_breaking,
+    sample_dirichlet,
     set_random_seed,
-    stick_breaking_from_v,
 )
 
-try:
-    from scipy.optimize import minimize
+#: Valor de `beta_update_mode`: β | m ~ Dir(γ/K + Σ_j m̄_jk) con mesas m por CRT (Fox et al., 2011).
+BETA_UPDATE_MODE = "crt_auxiliary_gibbs"
 
-    SCIPY_AVAILABLE = True
-except Exception:  # pragma: no cover - cubierto por fallback cuando scipy no esta.
-    minimize = None
-    SCIPY_AVAILABLE = False
+
+def _sample_crt(counts: np.ndarray, concentration: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Mesas de un restaurante chino: m = Σ_{i<n} Bernoulli(c / (c + i)), celda a celda."""
+
+    counts = np.asarray(counts, dtype=int)
+    concentration = np.broadcast_to(np.asarray(concentration, dtype=float), counts.shape)
+    flat_counts = counts.ravel()
+    occupied = np.flatnonzero(flat_counts)
+    tables = np.zeros(flat_counts.size, dtype=int)
+    if occupied.size == 0:
+        return tables.reshape(counts.shape)
+    customers = flat_counts[occupied]
+    cell = np.repeat(np.arange(occupied.size), customers)
+    position = np.arange(cell.size) - np.repeat(np.cumsum(customers) - customers, customers)
+    rate = concentration.ravel()[occupied][cell]
+    # El primer cliente siempre abre mesa; escribirlo aparte evita 0/0 si c subdesborda.
+    probability = np.where(position == 0, 1.0, rate / (rate + np.maximum(position, 1)))
+    opened = rng.random(cell.size) < probability
+    tables[occupied] = np.bincount(cell, weights=opened, minlength=occupied.size).astype(int)
+    return tables.reshape(counts.shape)
 
 
 def _count_segmented_transitions(
@@ -67,6 +80,8 @@ class HDPHMMDiagnostics:
     best_iteration: int
     #: Hiperparámetros de la cadena; van con la traza para que sea auditable.
     hyperparameters: dict[str, float] = field(default_factory=dict)
+    #: β del primer sorteo (prior); sirve para auditar que el resultado no lo hereda.
+    initial_beta: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
 
     def trace_rows(self) -> list[dict[str, float | int | str]]:
         """Traza por iteración, con los hiperparámetros que la produjeron."""
@@ -183,6 +198,11 @@ class TruncatedHDPHMM:
         self.seed = seed
         self.init_active_states = int(init_active_states)
         self.store_every = int(store_every)
+        if min(self.alpha, self.alpha0, self.gamma, self.eta) <= 0.0 or self.kappa < 0.0:
+            raise ValueError("alpha, alpha0, gamma y eta deben ser > 0; kappa >= 0.")
+        if self.n_states < 1 or self.store_every < 1 or not 0 <= self.burn_in < self.n_iters:
+            raise ValueError("Se requiere n_states >= 1, store_every >= 1 y 0 <= burn_in < n_iters.")
+        # El generador se crea en cada ajuste a partir de `seed` (hallazgo H8).
         self.rng = set_random_seed(seed)
 
     def _initialize_states(self, observations: np.ndarray, vocab_size: int) -> np.ndarray:
@@ -198,91 +218,44 @@ class TruncatedHDPHMM:
 
     def _sample_emissions(self, states: np.ndarray, observations: np.ndarray, vocab_size: int) -> np.ndarray:
         counts = count_emissions(states, observations, self.n_states, vocab_size)
-        prior = np.full(vocab_size, self.eta / vocab_size, dtype=float)
-        matrix = np.zeros((self.n_states, vocab_size), dtype=float)
-        for state in range(self.n_states):
-            matrix[state] = self.rng.dirichlet(prior + counts[state])
-        return matrix
+        return sample_dirichlet(self.eta / vocab_size + counts, self.rng)
 
     def _sample_initial(self, state_sequences: list[np.ndarray], beta: np.ndarray) -> np.ndarray:
-        initial_counts = np.bincount(
-            [int(states[0]) for states in state_sequences],
-            minlength=self.n_states,
-        )
-        prior = self.alpha0 * beta + EPSILON
-        return self.rng.dirichlet(prior + initial_counts)
+        return sample_dirichlet(self.alpha0 * beta + self._initial_counts(state_sequences), self.rng)
 
     def _sample_transitions(self, state_sequences: list[np.ndarray], beta: np.ndarray) -> np.ndarray:
         counts = _count_segmented_transitions(state_sequences, self.n_states)
-        matrix = np.zeros((self.n_states, self.n_states), dtype=float)
-        for state in range(self.n_states):
-            prior = self.alpha * beta + EPSILON
-            if self.kappa > 0.0:
-                prior[state] += self.kappa
-            matrix[state] = self.rng.dirichlet(prior + counts[state])
-        return matrix
+        return sample_dirichlet(self._transition_concentration(beta) + counts, self.rng)
 
-    def _beta_to_v(self, beta: np.ndarray) -> np.ndarray:
-        if beta.size == 1:
-            return np.array([], dtype=float)
-        remaining = 1.0
-        values = []
-        for weight in beta[:-1]:
-            if remaining <= EPSILON:
-                values.append(0.5)
-            else:
-                values.append(np.clip(weight / remaining, EPSILON, 1.0 - EPSILON))
-            remaining -= weight
-        return np.array(values, dtype=float)
+    def _initial_counts(self, state_sequences: list[np.ndarray]) -> np.ndarray:
+        return np.bincount([int(states[0]) for states in state_sequences], minlength=self.n_states)
 
-    def _negative_beta_log_posterior(
-        self,
-        logits: np.ndarray,
-        transition_matrix: np.ndarray,
-        initial_probs: np.ndarray,
-    ) -> float:
-        v = 1.0 / (1.0 + np.exp(-logits))
-        beta = stick_breaking_from_v(v)
-        total = 0.0
-        total -= float(np.sum((self.gamma - 1.0) * np.log(1.0 - v + EPSILON)))
-        total -= dirichlet_logpdf(initial_probs, self.alpha0 * beta + EPSILON)
-        for state in range(self.n_states):
-            prior = self.alpha * beta + EPSILON
-            if self.kappa > 0.0:
-                prior[state] += self.kappa
-            total -= dirichlet_logpdf(transition_matrix[state], prior)
-        if not np.isfinite(total):
-            return 1e12
-        return float(total)
+    def _transition_concentration(self, beta: np.ndarray) -> np.ndarray:
+        """Concentración de la fila j: alpha*beta + kappa*e_j."""
 
-    def _update_beta(
-        self,
-        beta: np.ndarray,
-        transition_matrix: np.ndarray,
-        initial_probs: np.ndarray,
-        states: np.ndarray,
-    ) -> tuple[np.ndarray, str]:
+        return self.alpha * beta[None, :] + self.kappa * np.eye(self.n_states)
+
+    def _update_beta(self, beta: np.ndarray, state_sequences: list[np.ndarray]) -> tuple[np.ndarray, str]:
+        """β | z por variables auxiliares (Fox et al., 2011, weak limit), con π integrado.
+
+        m_jk ~ CRT(n_jk, alpha*beta_k + kappa*[j=k]); si kappa > 0, w_j ~ Bin(m_jj,
+        rho / (rho + beta_j (1 - rho))) con rho = kappa / (alpha + kappa) y m̄_jj = m_jj - w_j.
+        La distribución inicial aporta sus propias mesas con concentración alpha0*beta.
+        Finalmente beta ~ Dir(gamma/K + Σ_j m̄_jk).
+        """
+
         if self.n_states == 1:
             return np.array([1.0], dtype=float), "degenerate"
-
-        if SCIPY_AVAILABLE:
-            initial_v = np.clip(self._beta_to_v(beta), 1e-4, 1.0 - 1e-4)
-            initial_logits = np.log(initial_v) - np.log(1.0 - initial_v)
-            result = minimize(
-                fun=self._negative_beta_log_posterior,
-                x0=initial_logits,
-                args=(transition_matrix, initial_probs),
-                method="L-BFGS-B",
-                bounds=[(-6.0, 6.0)] * len(initial_logits),
-            )
-            if result.success and np.isfinite(result.fun):
-                optimized_v = 1.0 / (1.0 + np.exp(-result.x))
-                return stick_breaking_from_v(optimized_v), "map_stick_breaking"
-
-        usage = np.bincount(states, minlength=self.n_states).astype(float)
-        pseudo = normalize(usage + self.gamma * beta + EPSILON)
-        updated = self.rng.dirichlet(pseudo * self.n_states + EPSILON)
-        return normalize(updated), "approx_dirichlet_fallback"
+        counts = _count_segmented_transitions(state_sequences, self.n_states)
+        tables = _sample_crt(counts, self._transition_concentration(beta), self.rng)
+        if self.kappa > 0.0:
+            rho = self.kappa / (self.alpha + self.kappa)
+            diagonal = np.diag(tables)
+            override = self.rng.binomial(diagonal, rho / (rho + beta * (1.0 - rho)))
+            tables = tables - np.diag(override)
+        initial_tables = _sample_crt(self._initial_counts(state_sequences), self.alpha0 * beta, self.rng)
+        concentration = self.gamma / self.n_states + tables.sum(axis=0) + initial_tables
+        return sample_dirichlet(concentration, self.rng), BETA_UPDATE_MODE
 
     def fit(self, observations: ObservationSequence) -> HDPHMMResult:
         """Fit one observation sequence, preserving the original public API."""
@@ -306,7 +279,9 @@ class TruncatedHDPHMM:
         sequence = np.concatenate(sequences)
         combined_observations = _concatenate_observations(observations)
         vocab_size = first.vocab_size
-        _, beta = sample_truncated_stick_breaking(self.gamma, self.n_states, self.rng)
+        self.rng = set_random_seed(self.seed)
+        beta = sample_dirichlet(np.full(self.n_states, self.gamma / self.n_states), self.rng)
+        initial_beta = beta.copy()
         state_sequences = [self._initialize_states(item, vocab_size) for item in sequences]
         states = np.concatenate(state_sequences)
         transition_matrix = self._sample_transitions(state_sequences, beta)
@@ -335,10 +310,10 @@ class TruncatedHDPHMM:
 
         for iteration in range(self.n_iters):
             states = np.concatenate(state_sequences)
+            beta, beta_update_mode = self._update_beta(beta, state_sequences)
             emission_matrix = self._sample_emissions(states, sequence, vocab_size)
             transition_matrix = self._sample_transitions(state_sequences, beta)
             initial_probs = self._sample_initial(state_sequences, beta)
-            beta, beta_update_mode = self._update_beta(beta, transition_matrix, initial_probs, states)
 
             state_sequences, sequence_log_likelihoods = ffbs_sample_batch(
                 initial_probs=initial_probs,
@@ -403,6 +378,7 @@ class TruncatedHDPHMM:
                 "n_states_truncation": int(self.n_states),
                 "burn_in": int(self.burn_in),
             },
+            initial_beta=initial_beta,
         )
         return HDPHMMResult(
             latent_states=best_states,
