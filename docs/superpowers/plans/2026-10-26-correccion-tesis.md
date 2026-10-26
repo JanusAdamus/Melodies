@@ -27,7 +27,7 @@ generadas por script.
 - La regla de decisión de cada comparación se escribe y fecha antes de ver el resultado.
 - Los hallazgos que la corrección no resuelva se declaran como limitación en el texto.
 
-## Decisiones que toma Adrián antes de empezar
+## Decisiones de Adrián (tomadas el 2026-10-26; ver preregistro)
 
 1. **Qué es «melodía»** (D1): (a) voz superior de la parte en clave de sol, sin
    ligaduras repetidas, sin adornos ni cifrados — coincide con lo que dice el
