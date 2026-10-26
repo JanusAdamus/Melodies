@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 from typing import Iterable
 
+import numpy as np
 import pandas as pd
 
 from .library_catalog import MUSICXML_EXTENSIONS, classify_score, iter_musicxml_files
@@ -52,13 +53,59 @@ def parse_symbtr_filename(path: str | Path) -> dict[str, str]:
     }
 
 
-def build_symbtr_catalog(root_dir: str | Path, file_limit: int | None = None) -> pd.DataFrame:
-    """Construye un catalogo enriquecido para SymbTr."""
+def _largest_remainder(total: int, weights: dict[str, int]) -> dict[str, int]:
+    """Reparto de Hamilton: pisos de la cuota y el resto a los mayores residuos (empates por nombre)."""
+
+    weight_sum = sum(weights.values())
+    if total <= 0 or weight_sum == 0:
+        return {key: 0 for key in weights}
+    quotas = {key: total * weight / weight_sum for key, weight in weights.items()}
+    allocation = {key: int(quota) for key, quota in quotas.items()}
+    leftover = total - sum(allocation.values())
+    by_remainder = sorted(weights, key=lambda key: (-(quotas[key] - allocation[key]), key))
+    for key in by_remainder[:leftover]:
+        allocation[key] += 1
+    return allocation
+
+
+def stratified_symbtr_sample(paths: list[Path], n: int, seed: int = 7) -> list[Path]:
+    """Muestra de ``n`` obras SymbTr estratificada por makam (decision 4 del preregistro).
+
+    Regla: si ``n`` alcanza para todos los makams, cada uno recibe 1 y el resto se reparte en
+    proporcion a (tamano - 1); si no alcanza, todo se reparte en proporcion al tamano. En
+    ambos casos por mayores residuos (Hamilton). Dentro de cada makam, muestreo sin reemplazo
+    con ``numpy.random.default_rng(seed)``, recorriendo los makams en orden alfabetico.
+    """
+
+    if n >= len(paths):
+        return sorted(paths)
+    groups: dict[str, list[Path]] = {}
+    for path in sorted(paths, key=lambda item: item.name):
+        groups.setdefault(parse_symbtr_filename(path)["makam"], []).append(path)
+    sizes = {makam: len(items) for makam, items in groups.items()}
+    if n >= len(groups):
+        extra = _largest_remainder(n - len(groups), {makam: size - 1 for makam, size in sizes.items()})
+        allocation = {makam: 1 + extra[makam] for makam in groups}
+    else:
+        allocation = _largest_remainder(n, sizes)
+    rng = np.random.default_rng(seed)
+    sample: list[Path] = []
+    for makam in sorted(groups):
+        chosen = rng.choice(len(groups[makam]), size=allocation[makam], replace=False)
+        sample.extend(groups[makam][index] for index in sorted(chosen))
+    return sample
+
+
+def build_symbtr_catalog(root_dir: str | Path, file_limit: int | None = None, seed: int = 7) -> pd.DataFrame:
+    """Construye un catalogo enriquecido para SymbTr; ``file_limit`` toma la muestra estratificada."""
 
     root = Path(root_dir)
     musicxml_dir = root / "MusicXML" if (root / "MusicXML").exists() else root
+    paths = iter_musicxml_files(musicxml_dir)
+    if file_limit is not None:
+        paths = stratified_symbtr_sample(paths, max(file_limit, 0), seed=seed)
     rows: list[dict[str, object]] = []
-    for path in _limit_paths(iter_musicxml_files(musicxml_dir), file_limit):
+    for path in paths:
         parsed = parse_symbtr_filename(path)
         row = classify_score(path)
         row.update(
