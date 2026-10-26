@@ -11,7 +11,7 @@ import music21
 import pandas as pd
 
 from src.analysis.library_batch import prepare_corpus
-from src.analysis.library_visualization import build_analysis_explanation
+from src.analysis.library_visualization import build_analysis_explanation, generate_analysis_figures
 from src.data.dedup import content_fingerprint, deduplicate_by_fingerprint
 from src.data.library_catalog import count_measures
 from src.data.multicorpus import stratified_symbtr_sample
@@ -118,6 +118,8 @@ class PrepareCorpusTests(unittest.TestCase):
         )
         text = build_analysis_explanation(analysis)
         self.assertIn("Obras con error: 3 (catalogo: 1, extraccion: 1, analisis: 1)", text)
+        with tempfile.TemporaryDirectory() as tmp:
+            generate_analysis_figures(analysis, tmp)  # las filas con error no rompen las figuras
 
 
 if __name__ == "__main__":
