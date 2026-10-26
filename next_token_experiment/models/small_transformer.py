@@ -532,14 +532,20 @@ class SmallTransformerNextTokenModel(NextTokenModel):
             remapped[valid_targets & (target_ids > special_id)] -= 1
         return remapped
 
-    def _compute_loss(self, logits: torch.Tensor, target_ids: torch.Tensor) -> torch.Tensor:
+    def _compute_loss(
+        self,
+        logits: torch.Tensor,
+        target_ids: torch.Tensor,
+        *,
+        label_smoothing: float = 0.0,
+    ) -> torch.Tensor:
         comparison_logits = self._comparison_logits(logits)
         comparison_targets = self._comparison_targets(target_ids)
         return F.cross_entropy(
             comparison_logits.reshape(-1, comparison_logits.size(-1)),
             comparison_targets.reshape(-1),
             ignore_index=-100,
-            label_smoothing=self.spec.label_smoothing,
+            label_smoothing=label_smoothing,
         )
 
     def _optimizer_step(self) -> None:
@@ -577,10 +583,20 @@ class SmallTransformerNextTokenModel(NextTokenModel):
             with torch.set_grad_enabled(train):
                 with self._autocast_context():
                     logits = self.model(batch["input_ids"], batch["attention_mask"])
-                    raw_loss = self._compute_loss(logits, batch["target_ids"])
+                    # T1: el suavizado sólo entra en la pérdida optimizada; lo que se
+                    # reporta y decide el early stopping es la NLL sin suavizar.
+                    nll_loss = self._compute_loss(logits, batch["target_ids"])
+                    if train and self.spec.label_smoothing > 0.0:
+                        objective = self._compute_loss(
+                            logits,
+                            batch["target_ids"],
+                            label_smoothing=self.spec.label_smoothing,
+                        )
+                    else:
+                        objective = nll_loss
 
                 if train:
-                    loss = raw_loss / accumulation_steps
+                    loss = objective / accumulation_steps
                     if self.use_grad_scaler:
                         self.grad_scaler.scale(loss).backward()
                     else:
@@ -597,7 +613,7 @@ class SmallTransformerNextTokenModel(NextTokenModel):
             comparison_logits = self._comparison_logits(logits)
             valid_targets = comparison_targets[target_mask]
             valid_logits = comparison_logits[target_mask]
-            total_loss += float(raw_loss.detach().float().cpu()) * int(valid_targets.numel())
+            total_loss += float(nll_loss.detach().float().cpu()) * int(valid_targets.numel())
             total_tokens += int(valid_targets.numel())
             if valid_targets.numel() > 0:
                 predictions = torch.argmax(valid_logits, dim=-1)
