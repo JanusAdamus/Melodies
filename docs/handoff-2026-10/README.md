@@ -38,7 +38,7 @@ computadora.
 | `fix/auditoria-tesis` | Rama de integración. Auditoría, plan, preregistro, este handoff, `visualizaciones/`, y ya mezcladas `particiones` y `datos`. Suite: 240 pruebas en verde | base de todo |
 | `fix/auditoria-particiones` | Partición por contenido, orden independiente del SO, `data_seed` efectivo (90 % en frac = 1.0), siembra del DataLoader | revisada y mezclada |
 | `fix/auditoria-datos` | Melodía = voz superior, ligaduras, adornos y cifrados fuera, errores contados, deduplicación, SymbTr estratificado, microtonos | revisada y mezclada |
-| `fix/auditoria-hdp` | β por mesas auxiliares CRT (Fox et al. 2011), Dirichlet sin ceros, reporte posterior, predictiva held-out | **en curso al irme**: 5 commits subidos; puede tener más en la laptop |
+| `fix/auditoria-hdp` | β por mesas auxiliares CRT (Fox et al. 2011), Dirichlet sin ceros ni −inf silencioso, generador dentro de cada ajuste, reporte posterior (log L media tras burn-in, etiquetas alineadas, estados por ocupación), predictiva held-out, compatibilidad con `Comparacion` | **detenida el 2026-10-26 a petición de Adrián**: 6 commits en origin (último: evidencia del criterio b), 219 pruebas en verde en la rama, sin trabajo sin commit. β ya se mueve y el K medio entre 20 semillas pasó de 4.07–11.71 a 5.28–6.08, pero el criterio (b) |r| < 0.3 no se cumple formalmente (r = −0.40, pendiente −0.05): repetir con ≥ 50 semillas. Falta verificar los criterios (c) y (h) de la tarea 1.1 y hacer la revisión adversarial |
 | `fix/auditoria-comparacion` | BOS fuera del soporte, NLL sin label smoothing, IC por estimando, Pareto, diagnóstico HDP, rejillas sin techo, costo comparable | **en curso al irme**: 8 commits subidos; puede tener más en la laptop |
 
 **Objetivo final:** tesis experimental y escrita corregidas, verificadas número por
@@ -47,8 +47,8 @@ rehecho y un reporte de cierre.
 
 ## 2. Antes de salir de la laptop Debian (2 minutos)
 
-Los dos desarrolladores que seguían trabajando pueden haber dejado commits
-locales. Súbelos:
+Ya no queda ningún desarrollador trabajando: el del HDP se detuvo y su rama está completa en GitHub.
+El de comparación terminó. Por si acaso, estos comandos no hacen daño si no hay nada nuevo:
 
 ```bash
 cd "$HOME/Documentos/Relacionado con Escuela/Melodies-wt-hdp" && git status --short && git push origin fix/auditoria-hdp

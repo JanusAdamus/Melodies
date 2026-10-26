@@ -23,3 +23,10 @@ Una entrada por tarea cerrada (ver PROMPT_CLAUDE.md, «Bitácora»).
   6. Riesgo: si el HMM llega a K = 384 (`finite_hmm_max_states`) tocando el máximo, la corrida falla tras horas con `ValueError`. Hacer el piloto de la tarea 1.5 antes de la corrida completa.
   7. Artefactos nuevos o cambiados: `headline_estimates.json`, `vomm_order_grid_audit.json`, `hdp_traces.csv` (formato largo, columna `in_burn_in`; reemplaza `hdp_trace_<seed>.csv`), `hdp_chain_diagnostics.json` con `cells`; columnas nuevas en `results_raw.csv`, `engineering_costs.csv`, `results_summary.csv` y `pairwise_comparisons.json`.
 - `fix/auditoria-hdp` seguía en curso al cerrar esta entrada (último commit subido: 64f62ec).
+
+## 2026-10-26, cierre en la laptop: `fix/auditoria-hdp` DETENIDA a petición de Adrián
+
+- 6 commits en origin: 988cf41 (Dirichlet sin ceros), 0dc8dc5 (β por CRT y generador por ajuste), 2968a83 (reporte posterior y predictiva held-out), fda3816 (compatibilidad con Comparacion), 64f62ec (alineación de etiquetas, H6), y la evidencia del criterio (b). Sin trabajo sin commit. 219 pruebas en verde en la rama.
+- Criterio (b): r = −0.40 (umbral |r| < 0.3 NO cumplido), pendiente −0.05, rango de K medio 5.28–6.08 contra 4.07–11.71 antes. Ver `scripts/auditoria_2026_10_26/hdp/s5_beta_seed_v2_salida_20261026.txt`. Repetir con ≥ 50 semillas y decidir con la pendiente y su IC.
+- Sin verificar: criterios (c) (recuperar 3 estados de un HMM simulado) y (h) (dos `fit` con la misma semilla), y revisión adversarial. Lo último que el desarrollador anunció antes de detenerse fue reescribir el muestreador; el commit 0dc8dc5 ya trae una versión CRT: revisar que sea correcta (Fox et al. 2011) antes de mezclar.
+- Ningún agente queda trabajando en la laptop.
