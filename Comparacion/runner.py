@@ -95,6 +95,20 @@ def _train_subset_sha256(pieces: Sequence[PreparedPiece]) -> str:
     return hashlib.sha256(json.dumps(keys, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+def _corpus_sha256(pieces: Sequence[PreparedPiece]) -> str:
+    """Hash del contenido preparado: id normalizado, representación y tokens de cada pieza.
+
+    El hash de la partición sólo ve ids; éste detecta un corpus con los mismos ids
+    y otra melodía (otro preprocesamiento u otra caché).
+    """
+
+    payload = sorted(
+        [normalized_piece_key(piece.piece_id), str(piece.representation), [int(token) for token in piece.tokens]]
+        for piece in pieces
+    )
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def _config_sha256(config: LearningCurveConfig) -> str:
     """Hash de la configuración; ``results_root`` no cuenta (la corrida puede moverse)."""
 
@@ -108,7 +122,7 @@ def _guard_resume_inputs(
     checkpoint_path: Path,
     expected: Mapping[str, str],
 ) -> None:
-    """``--resume`` sólo continúa celdas hechas con la misma partición y configuración."""
+    """``--resume`` sólo continúa celdas hechas con el mismo corpus, partición y configuración."""
 
     if not checkpoint_path.exists() or not checkpoint_path.read_text(encoding="utf-8").strip():
         return
@@ -123,6 +137,11 @@ def _guard_resume_inputs(
         raise ValueError(
             "No puedo reanudar: la partición (sha256 de splits/manifest.json) no coincide "
             "con la del checkpoint."
+        )
+    if recorded.get("corpus_sha256") != expected["corpus_sha256"]:
+        raise ValueError(
+            "No puedo reanudar: el contenido del corpus preparado (tokens por pieza) no "
+            "coincide con el del checkpoint, o el checkpoint no lo registró."
         )
     if recorded.get("config_sha256") != expected["config_sha256"]:
         raise ValueError(
@@ -1443,6 +1462,7 @@ def run_learning_curve_experiment(
     )
     resume_inputs = {
         "split_sha256": manifest["sha256"],
+        "corpus_sha256": _corpus_sha256(preparation.pieces),
         "config_sha256": _config_sha256(config),
     }
     checkpoint_path = output_root / "checkpoint.jsonl"

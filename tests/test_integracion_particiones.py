@@ -195,6 +195,29 @@ class ResumeGuardTests(unittest.TestCase):
             self.assertEqual(finite.call_count, 0)
             self.assertEqual(config_path.read_text(encoding="utf-8"), before)
 
+    def test_resume_rejects_changed_melodies_under_the_same_piece_ids(self) -> None:
+        # Mismos ids y misma partición, pero otra extracción de la melodía (p. ej. tras
+        # cambiar el preprocesamiento): mezclar celdas viejas y nuevas no es reanudar.
+        original = _synthetic_preparation()
+        shifted = CorpusPreparationResult(
+            pieces=[replace(piece, tokens=[(token + 5) % 12 for token in piece.tokens]) for piece in original.pieces],
+            exclusions=list(original.exclusions),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            _run(directory, "run", config=self._config(directory), preparation=original)
+            with self.assertRaisesRegex(ValueError, "corpus"):
+                _run(directory, "run", config=self._config(directory), preparation=shifted, resume=True)
+
+    def test_resume_rejects_a_checkpoint_without_a_corpus_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _run(directory, "run", config=self._config(directory))
+            inputs_path = Path(directory) / "run" / runner.RESUME_INPUTS_FILENAME
+            recorded = json.loads(inputs_path.read_text(encoding="utf-8"))
+            recorded.pop("corpus_sha256", None)
+            inputs_path.write_text(json.dumps(recorded), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "corpus"):
+                _run(directory, "run", config=self._config(directory), resume=True)
+
     def test_resume_with_the_same_inputs_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _run(directory, "run", config=self._config(directory))
