@@ -43,7 +43,7 @@ from .classical_models import FiniteGlobalHMM, GlobalHDPHMM
 from .config import LearningCurveConfig
 from .canonicalization_audit import AUDIT_FILENAME as CANONICALIZATION_AUDIT_FILENAME
 from .canonicalization_audit import build_canonicalization_audit
-from .decision import pareto_front
+from .decision import dominance_cycles, pareto_front
 from .hdp_diagnostics import build_cell_chain_diagnostics, write_cell_traces
 from .denominator_audit import AUDIT_FILENAME as DENOMINATOR_AUDIT_FILENAME
 from .denominator_audit import build_denominator_audit
@@ -1260,6 +1260,11 @@ def _build_structural_evaluation(
 #: contra que el ruido de medición decida la frontera; se fijó antes de ver la corrida.
 PARETO_TIME_RELATIVE_TOLERANCE = 0.10
 
+#: Diseño (revisión de C5): un IC pareado sobre menos obras en común no decide la
+#: NLL; con una sola obra el bootstrap colapsa a un punto.  Se fijó antes de ver la
+#: corrida y no se ajusta a sus resultados.
+PARETO_MIN_PAIRED_WORKS = 10
+
 
 def _build_pareto_summary(
     raw_rows: list[dict[str, object]],
@@ -1309,16 +1314,29 @@ def _build_pareto_summary(
         else:
             excluded_models.append(model_name)
     partial_axes = ("mean_test_nll", "mean_selected_fit_wall_clock_s")
-    # Regla preregistrada: en NLL decide la diferencia pareada por obra
-    # (IC bootstrap de la NLL ponderada por tokens), no el traslape de marginales.
+    # Regla preregistrada (sección B, «la misma de A»): en NLL decide la diferencia
+    # pareada por obra (NLL ponderada por tokens) con su IC «tras Holm».  Un par que
+    # Holm no rechaza es empate aunque su IC excluya 0 (Holm por pasos); un par con
+    # menos de PARETO_MIN_PAIRED_WORKS obras en común no decide y se usan los marginales.
     paired_nll: dict[tuple[str, str], tuple[float, float]] = {}
+    paired_skipped: list[dict[str, object]] = []
     for comparison in (pairwise or {}).get("comparisons", []):
-        interval = comparison.get("token_weighted_bootstrap_95_ci")
-        if comparison.get("status") == "ok" and interval is not None:
-            paired_nll[(str(comparison["model_a"]), str(comparison["model_b"]))] = (
-                float(interval[0]),
-                float(interval[1]),
-            )
+        if comparison.get("status") != "ok":
+            continue
+        pair = (str(comparison["model_a"]), str(comparison["model_b"]))
+        interval = comparison.get("token_weighted_holm_ci")
+        rejects = comparison.get("token_weighted_holm_rejects_zero")
+        n_pairs = int(comparison.get("n_pairs") or 0)
+        if interval is None or rejects is None:
+            paired_skipped.append({"pair": list(pair), "reason": "no_holm_adjusted_interval"})
+            continue
+        if n_pairs < PARETO_MIN_PAIRED_WORKS:
+            paired_skipped.append({"pair": list(pair), "reason": "too_few_paired_works", "n_pairs": n_pairs})
+            continue
+        low, high = float(interval[0]), float(interval[1])
+        if not rejects:
+            low, high = min(low, 0.0), max(high, 0.0)
+        paired_nll[pair] = (low, high)
     paired_intervals = {"mean_test_nll": paired_nll} if paired_nll else None
     partial_payload = {
         "status": "ok" if predictive_cost_rows else "not_evaluated",
@@ -1326,12 +1344,21 @@ def _build_pareto_summary(
         "axes": list(partial_axes),
         "reported_not_dominance_axes": ["mean_evaluation_wall_clock_s"],
         "dominance": (
-            "nll: paired work-bootstrap CI of the token-weighted difference decides "
-            "(worse if it excludes 0 on the worse side); marginal intervals only when no "
-            "paired comparison exists; time: strictly better only when intervals do not overlap"
+            "nll: paired work-bootstrap Holm-adjusted CI of the token-weighted difference "
+            "decides (worse if Holm rejects and it excludes 0 on the worse side); marginal "
+            "intervals only when no usable paired comparison exists; time: strictly better "
+            "only when intervals do not overlap; rows tied by a dominance cycle stay on the frontier"
         ),
-        "nll_paired_interval": "token_weighted_bootstrap_95_ci_of_model_a_minus_model_b",
+        "nll_paired_interval": "token_weighted_holm_step_down_ci_of_model_a_minus_model_b",
         "nll_paired_pairs": len(paired_nll),
+        "nll_paired_min_works": PARETO_MIN_PAIRED_WORKS,
+        "nll_paired_pairs_skipped": paired_skipped,
+        "dominance_cycles": dominance_cycles(
+            predictive_cost_rows,
+            partial_axes,
+            (),
+            paired_intervals=paired_intervals,
+        ),
         "nll_interval": "work_cluster_bootstrap_95_ci_of_token_weighted_nll",
         "time_relative_tolerance": PARETO_TIME_RELATIVE_TOLERANCE,
         "devices": devices,
@@ -1386,6 +1413,12 @@ def _build_pareto_summary(
                     maximize=("mean_boundary_f1",),
                     paired_intervals=paired_intervals,
                 ) if full_rows else [],
+                "dominance_cycles": dominance_cycles(
+                    full_rows,
+                    partial_axes,
+                    ("mean_boundary_f1",),
+                    paired_intervals=paired_intervals,
+                ),
             }
     return {
         "predictive_cost_partial_frontier": partial_payload,

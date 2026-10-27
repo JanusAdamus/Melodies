@@ -161,21 +161,71 @@ def pareto_front(
         raise ValueError(f"axes cannot be both minimized and maximized: {names}")
 
     row_copies = [dict(row) for row in rows]
+    dominates, reaches = _dominance_relation(
+        row_copies, minimized_axes, maximized_axes, paired_intervals
+    )
     nondominated: list[dict[str, object]] = []
     for target_index, target in enumerate(row_copies):
+        # Con IC pareados sobre intersecciones distintas de obras la dominancia no es
+        # transitiva y puede cerrar ciclos (A>B>C>A).  Una fila sale de la frontera
+        # sólo si la domina otra que ella no alcanza de vuelta: dentro de un ciclo
+        # nadie queda resuelto y la frontera nunca se vacía.
         dominated = any(
-            candidate_index != target_index
-            and _dominates(
-                candidate,
-                target,
-                minimize=minimized_axes,
-                maximize=maximized_axes,
-                paired_intervals=paired_intervals,
-            )
-            for candidate_index, candidate in enumerate(row_copies)
+            dominates[candidate_index][target_index] and not reaches[target_index][candidate_index]
+            for candidate_index in range(len(row_copies))
         )
         if not dominated:
             nondominated.append(
                 _strict_json_axis_copy(target, (*minimized_axes, *maximized_axes))
             )
     return nondominated
+
+
+def _dominance_relation(
+    rows: list[dict[str, object]],
+    minimize: tuple[str, ...],
+    maximize: tuple[str, ...],
+    paired_intervals: PairedIntervals | None,
+) -> tuple[list[list[bool]], list[list[bool]]]:
+    """Matriz ``dominates[i][j]`` y su cierre transitivo ``reaches[i][j]``."""
+
+    size = len(rows)
+    dominates = [
+        [
+            i != j
+            and _dominates(
+                rows[i], rows[j], minimize=minimize, maximize=maximize, paired_intervals=paired_intervals
+            )
+            for j in range(size)
+        ]
+        for i in range(size)
+    ]
+    reaches = [list(row) for row in dominates]
+    for middle in range(size):
+        for i in range(size):
+            if reaches[i][middle]:
+                for j in range(size):
+                    reaches[i][j] = reaches[i][j] or reaches[middle][j]
+    return dominates, reaches
+
+
+def dominance_cycles(
+    rows: Iterable[Mapping[str, object]],
+    minimize: tuple[str, ...],
+    maximize: tuple[str, ...],
+    *,
+    paired_intervals: PairedIntervals | None = None,
+) -> list[list[str]]:
+    """Grupos de modelos (en orden de entrada) unidos por un ciclo de dominancia."""
+
+    row_copies = [dict(row) for row in rows]
+    _, reaches = _dominance_relation(row_copies, tuple(minimize), tuple(maximize), paired_intervals)
+    cycles: list[list[str]] = []
+    seen: set[int] = set()
+    for i in range(len(row_copies)):
+        if i in seen or not reaches[i][i]:
+            continue
+        members = [j for j in range(len(row_copies)) if reaches[i][j] and reaches[j][i]]
+        seen.update(members)
+        cycles.append([str(row_copies[j].get("model")) for j in members])
+    return cycles

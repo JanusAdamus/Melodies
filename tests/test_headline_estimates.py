@@ -116,5 +116,58 @@ class PairwiseTokenWeightedTests(unittest.TestCase):
         self.assertGreaterEqual(high, expected)
 
 
+class HolmAdjustedIntervalTests(unittest.TestCase):
+    """Preregistro, sección B: la regla de decisión usa el IC «tras Holm»."""
+
+    def _rows(self) -> list[dict]:
+        import numpy as np
+
+        rng = np.random.default_rng(3)
+        rows = []
+        for index in range(30):
+            n_tokens = 20 + 3 * index
+            base = 2.0 + 0.3 * rng.standard_normal()
+            rows.append(_row("a", f"w{index}", n_tokens, base))
+            rows.append(_row("b", f"w{index}", n_tokens, base + 0.5 + 0.01 * rng.standard_normal()))
+            rows.append(_row("c", f"w{index}", n_tokens, base + 0.02 * rng.standard_normal()))
+        return rows
+
+    def _comparisons(self) -> list[dict]:
+        return pairwise_model_comparisons(self._rows(), bootstrap_samples=2000, seed=0)["comparisons"]
+
+    def test_each_comparison_carries_a_step_down_holm_interval(self) -> None:
+        comparisons = self._comparisons()
+        by_pair = {(item["model_a"], item["model_b"]): item for item in comparisons}
+
+        alphas = sorted(item["token_weighted_holm_alpha"] for item in comparisons)
+        self.assertEqual(alphas, sorted([0.05 / 3, 0.05 / 2, 0.05 / 1]))
+        for item in comparisons:
+            with self.subTest(pair=(item["model_a"], item["model_b"])):
+                raw_low, raw_high = item["token_weighted_bootstrap_95_ci"]
+                low, high = item["token_weighted_holm_ci"]
+                self.assertLessEqual(low, raw_low)
+                self.assertGreaterEqual(high, raw_high)
+        self.assertTrue(by_pair[("a", "b")]["token_weighted_holm_rejects_zero"])
+        self.assertTrue(by_pair[("b", "c")]["token_weighted_holm_rejects_zero"])
+        self.assertFalse(by_pair[("a", "c")]["token_weighted_holm_rejects_zero"])
+        self.assertEqual(by_pair[("a", "c")]["token_weighted_holm_alpha"], 0.05)
+
+    def test_holm_steps_down_in_order_of_the_bootstrap_p_value(self) -> None:
+        ordered = sorted(self._comparisons(), key=lambda item: item["token_weighted_holm_alpha"])
+
+        decisions = [item["token_weighted_holm_rejects_zero"] for item in ordered]
+        # Una vez que una comparación no se rechaza, ninguna posterior se rechaza.
+        self.assertEqual(decisions, sorted(decisions, reverse=True))
+        p_values = [item["token_weighted_bootstrap_p_value"] for item in ordered]
+        self.assertEqual(p_values, sorted(p_values))
+
+    def test_a_rejection_matches_a_holm_interval_that_excludes_zero(self) -> None:
+        for item in self._comparisons():
+            with self.subTest(pair=(item["model_a"], item["model_b"])):
+                low, high = item["token_weighted_holm_ci"]
+                if item["token_weighted_holm_rejects_zero"]:
+                    self.assertTrue(low > 0.0 or high < 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

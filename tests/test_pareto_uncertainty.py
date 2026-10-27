@@ -147,8 +147,11 @@ class RunnerParetoTests(unittest.TestCase):
                     "model_a": "cheap",
                     "model_b": "good",
                     "status": "ok",
+                    "n_pairs": 40,
                     "token_weighted_difference": 0.030,
                     "token_weighted_bootstrap_95_ci": [0.030, 0.030],
+                    "token_weighted_holm_ci": [0.030, 0.030],
+                    "token_weighted_holm_rejects_zero": True,
                 }
             ]
         }
@@ -181,6 +184,136 @@ class RunnerParetoTests(unittest.TestCase):
 
         self.assertEqual(partial["candidates"], [])
         self.assertEqual(partial["excluded_models"], ["a"])
+
+
+def _paired(model_a: str, model_b: str, *, raw, holm, rejects: bool, n_pairs: int = 40) -> dict:
+    return {
+        "model_a": model_a,
+        "model_b": model_b,
+        "status": "ok",
+        "n_pairs": n_pairs,
+        "token_weighted_difference": (raw[0] + raw[1]) / 2,
+        "token_weighted_bootstrap_95_ci": list(raw),
+        "token_weighted_holm_ci": list(holm),
+        "token_weighted_holm_rejects_zero": rejects,
+    }
+
+
+class PreregisteredParetoRuleTests(unittest.TestCase):
+    """Revisión adversarial de C5: Holm, n mínimo de obras y ciclos de dominancia."""
+
+    def _fast_slow(self) -> tuple[list[dict], dict]:
+        raw = [
+            _raw("fast", 2.08, selected_fit=1.0, evaluation=1.0),
+            _raw("slow", 2.00, selected_fit=10.0, evaluation=1.0),
+        ]
+        return raw, _headline({"fast": (1.9, 2.2), "slow": (1.85, 2.15)})
+
+    def test_nll_dominance_uses_the_holm_adjusted_interval_not_the_plain_95(self) -> None:
+        # Reproduce chk_holm2.py: el IC del 95 % excluye 0 pero el de Holm lo cruza.
+        raw, headline = self._fast_slow()
+        pairwise = {
+            "comparisons": [
+                _paired("fast", "slow", raw=(0.0014, 0.0843), holm=(-0.0064, 0.0939), rejects=False)
+            ]
+        }
+
+        partial = _build_pareto_summary(raw, {"status": "not_evaluated"}, headline, pairwise)[
+            "predictive_cost_partial_frontier"
+        ]
+
+        self.assertEqual([row["model"] for row in partial["frontier"]], ["fast"])
+        self.assertIn("holm", partial["nll_paired_interval"])
+
+    def test_a_pair_not_rejected_by_holm_is_a_tie_even_if_its_interval_excludes_zero(self) -> None:
+        # Holm por pasos: tras el primer no rechazo, los siguientes tampoco se rechazan.
+        raw, headline = self._fast_slow()
+        pairwise = {
+            "comparisons": [_paired("fast", "slow", raw=(0.02, 0.05), holm=(0.01, 0.06), rejects=False)]
+        }
+
+        partial = _build_pareto_summary(raw, {"status": "not_evaluated"}, headline, pairwise)[
+            "predictive_cost_partial_frontier"
+        ]
+
+        self.assertEqual([row["model"] for row in partial["frontier"]], ["fast"])
+
+    def test_a_holm_rejection_still_decides_the_axis(self) -> None:
+        raw, headline = self._fast_slow()
+        pairwise = {
+            "comparisons": [_paired("fast", "slow", raw=(0.02, 0.05), holm=(0.01, 0.06), rejects=True)]
+        }
+
+        partial = _build_pareto_summary(raw, {"status": "not_evaluated"}, headline, pairwise)[
+            "predictive_cost_partial_frontier"
+        ]
+
+        self.assertEqual(sorted(row["model"] for row in partial["frontier"]), ["fast", "slow"])
+
+    def test_a_paired_interval_over_too_few_works_does_not_decide(self) -> None:
+        # adv_pareto.py: con una obra en común el bootstrap colapsa a un punto.
+        raw = [
+            _raw("a", 2.00, selected_fit=10.0, evaluation=1.0),
+            _raw("b", 2.01, selected_fit=10.0, evaluation=1.0),
+        ]
+        headline = _headline({"a": (1.0, 3.0), "b": (1.0, 3.0)})
+        pairwise = {
+            "comparisons": [
+                _paired("a", "b", raw=(-0.00999, -0.00999), holm=(-0.00999, -0.00999), rejects=True, n_pairs=1)
+            ]
+        }
+
+        partial = _build_pareto_summary(raw, {"status": "not_evaluated"}, headline, pairwise)[
+            "predictive_cost_partial_frontier"
+        ]
+
+        self.assertEqual(sorted(row["model"] for row in partial["frontier"]), ["a", "b"])
+        self.assertEqual(partial["nll_paired_pairs"], 0)
+        self.assertGreater(partial["nll_paired_min_works"], 1)
+
+    def test_a_dominance_cycle_never_empties_the_frontier(self) -> None:
+        # adv_pareto.py: cada par sobre su propia intersección de obras da A>B>C>A.
+        rows = [{"model": name, "nll": 2.0, "nll_interval": [1.9, 2.1], "fit": 10.0} for name in "ABC"]
+        paired = {"nll": {("A", "B"): (-0.2, -0.1), ("B", "C"): (-0.2, -0.1), ("A", "C"): (0.1, 0.2)}}
+
+        front = pareto_front(rows, minimize=("nll", "fit"), maximize=(), paired_intervals=paired)
+
+        self.assertEqual([row["model"] for row in front], ["A", "B", "C"])
+
+    def test_a_row_dominated_from_outside_its_cycle_still_leaves_the_frontier(self) -> None:
+        rows = [{"model": name, "nll": 2.0, "nll_interval": [1.9, 2.1], "fit": 10.0} for name in "ABCD"]
+        paired = {
+            "nll": {
+                ("A", "B"): (-0.2, -0.1),
+                ("B", "C"): (-0.2, -0.1),
+                ("A", "C"): (0.1, 0.2),
+                ("D", "A"): (-0.2, -0.1),
+                ("D", "B"): (-0.1, 0.1),
+                ("D", "C"): (-0.1, 0.1),
+            }
+        }
+
+        front = pareto_front(rows, minimize=("nll", "fit"), maximize=(), paired_intervals=paired)
+
+        self.assertEqual([row["model"] for row in front], ["B", "C", "D"])
+
+    def test_runner_reports_dominance_cycles(self) -> None:
+        raw = [_raw(name, 2.0, selected_fit=10.0, evaluation=1.0) for name in "ABC"]
+        headline = _headline({name: (1.9, 2.1) for name in "ABC"})
+        pairwise = {
+            "comparisons": [
+                _paired("A", "B", raw=(-1.0, -0.99), holm=(-1.0, -0.99), rejects=True, n_pairs=20),
+                _paired("A", "C", raw=(0.99, 1.0), holm=(0.99, 1.0), rejects=True, n_pairs=20),
+                _paired("B", "C", raw=(-1.0, -0.99), holm=(-1.0, -0.99), rejects=True, n_pairs=20),
+            ]
+        }
+
+        partial = _build_pareto_summary(raw, {"status": "not_evaluated"}, headline, pairwise)[
+            "predictive_cost_partial_frontier"
+        ]
+
+        self.assertEqual(sorted(row["model"] for row in partial["frontier"]), ["A", "B", "C"])
+        self.assertEqual(partial["dominance_cycles"], [["A", "B", "C"]])
 
 
 if __name__ == "__main__":

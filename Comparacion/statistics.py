@@ -249,7 +249,7 @@ def _token_weighted_difference(
     *,
     bootstrap_samples: int,
     generator: np.random.Generator,
-) -> tuple[float, list[float]] | None:
+) -> tuple[float, list[float], np.ndarray] | None:
     if not works or any(work not in totals_a or work not in totals_b for work in works):
         return None
     ll_a = np.asarray([totals_a[work][0] for work in works], dtype=float)
@@ -261,7 +261,54 @@ def _token_weighted_difference(
     draws = -ll_a[indices].sum(axis=1) / n_a[indices].sum(axis=1) + ll_b[indices].sum(axis=1) / n_b[
         indices
     ].sum(axis=1)
-    return point, _percentile_interval(draws)
+    return point, _percentile_interval(draws), draws
+
+
+#: Nivel familiar de la regla preregistrada (IC del 95 % «tras Holm»).
+HOLM_FAMILY_ALPHA = 0.05
+
+
+def _bootstrap_two_sided_p_value(draws: np.ndarray) -> float:
+    """p bilateral del bootstrap: el menor nivel al que el IC percentil excluye 0."""
+
+    below = float(np.mean(draws <= 0.0))
+    above = float(np.mean(draws >= 0.0))
+    return min(1.0, 2.0 * min(below, above))
+
+
+def _apply_token_weighted_holm(
+    comparisons: list[dict[str, object]],
+    draws_by_index: Mapping[int, np.ndarray],
+    *,
+    family_alpha: float = HOLM_FAMILY_ALPHA,
+) -> None:
+    """IC de Holm por pasos para la diferencia ponderada por token (preregistro B).
+
+    Se ordenan las comparaciones por su p bilateral del bootstrap; la de rango r
+    (desde 0) lleva el IC percentil al nivel 1 − α/(m − r).  Se rechaza mientras el
+    IC excluya 0; tras el primer no rechazo, ninguna posterior se rechaza.
+    """
+
+    ordered = sorted(
+        draws_by_index,
+        key=lambda index: (
+            _bootstrap_two_sided_p_value(draws_by_index[index]),
+            str(comparisons[index]["model_a"]),
+            str(comparisons[index]["model_b"]),
+        ),
+    )
+    n_tests = len(ordered)
+    still_rejecting = True
+    for rank, index in enumerate(ordered):
+        draws = draws_by_index[index]
+        alpha = family_alpha / (n_tests - rank)
+        low, high = np.percentile(draws, [100.0 * alpha / 2.0, 100.0 * (1.0 - alpha / 2.0)])
+        excludes_zero = bool(low > 0.0 or high < 0.0)
+        still_rejecting = still_rejecting and excludes_zero
+        comparisons[index]["token_weighted_bootstrap_p_value"] = _bootstrap_two_sided_p_value(draws)
+        comparisons[index]["token_weighted_holm_alpha"] = alpha
+        comparisons[index]["token_weighted_holm_ci"] = [float(low), float(high)]
+        comparisons[index]["token_weighted_holm_rejects_zero"] = still_rejecting
 
 
 def _empty_comparison(model_a: str, model_b: str) -> dict[str, object]:
@@ -287,7 +334,16 @@ def _empty_comparison(model_a: str, model_b: str) -> dict[str, object]:
         "token_weighted_estimand": "token_weighted_nll_difference",
         "token_weighted_difference": None,
         "token_weighted_bootstrap_95_ci": None,
+        **_EMPTY_TOKEN_WEIGHTED_HOLM,
     }
+
+
+_EMPTY_TOKEN_WEIGHTED_HOLM: dict[str, object] = {
+    "token_weighted_bootstrap_p_value": None,
+    "token_weighted_holm_alpha": None,
+    "token_weighted_holm_ci": None,
+    "token_weighted_holm_rejects_zero": None,
+}
 
 
 def _apply_holm_adjustment(comparisons: list[dict[str, object]]) -> int:
@@ -453,6 +509,7 @@ def pairwise_model_comparisons(
     }
     generator = np.random.default_rng(validated_seed)
     comparisons_payload: list[dict[str, object]] = []
+    token_weighted_draws: dict[int, np.ndarray] = {}
     for model_a, model_b in combinations(sorted(model_names), 2):
         canonical_work_ids = sorted(works_by_model[model_a] & works_by_model[model_b])
         if not canonical_work_ids:
@@ -494,6 +551,7 @@ def pairwise_model_comparisons(
             "token_weighted_estimand": "token_weighted_nll_difference",
             "token_weighted_difference": None,
             "token_weighted_bootstrap_95_ci": None,
+            **_EMPTY_TOKEN_WEIGHTED_HOLM,
         }
         token_weighted = _token_weighted_difference(
             full_fraction_totals.get(model_a, {}),
@@ -505,6 +563,7 @@ def pairwise_model_comparisons(
         if token_weighted is not None:
             comparison["token_weighted_difference"] = token_weighted[0]
             comparison["token_weighted_bootstrap_95_ci"] = token_weighted[1]
+            token_weighted_draws[len(comparisons_payload)] = token_weighted[2]
         if int(np.count_nonzero(differences)) >= 2:
             try:
                 result = wilcoxon(differences)
@@ -523,6 +582,7 @@ def pairwise_model_comparisons(
         comparisons_payload.append(comparison)
 
     n_valid_tests = _apply_holm_adjustment(comparisons_payload)
+    _apply_token_weighted_holm(comparisons_payload, token_weighted_draws)
     # Con varias semillas de partición, las obras se repiten entre particiones y
     # no pueden agruparse como observaciones nuevas: se compara dentro de cada
     # partición y se reporta la variación aparte.
