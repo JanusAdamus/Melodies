@@ -30,3 +30,10 @@ Una entrada por tarea cerrada (ver PROMPT_CLAUDE.md, «Bitácora»).
 - Criterio (b): r = −0.40 (umbral |r| < 0.3 NO cumplido), pendiente −0.05, rango de K medio 5.28–6.08 contra 4.07–11.71 antes. Ver `scripts/auditoria_2026_10_26/hdp/s5_beta_seed_v2_salida_20261026.txt`. Repetir con ≥ 50 semillas y decidir con la pendiente y su IC.
 - Sin verificar: criterios (c) (recuperar 3 estados de un HMM simulado) y (h) (dos `fit` con la misma semilla), y revisión adversarial. Lo último que el desarrollador anunció antes de detenerse fue reescribir el muestreador; el commit 0dc8dc5 ya trae una versión CRT: revisar que sea correcta (Fox et al. 2011) antes de mezclar.
 - Ningún agente queda trabajando en la laptop.
+
+## 2026-10-26, computadora con GPU: tarea 1.2 (`fix/auditoria-comparacion`) implementada, sin mezclar
+
+- Base traída con `git merge origin/fix/auditoria-tesis` (commit 0c1986e). Suite tras la mezcla: `282 passed, 3 skipped` (`python -m pytest -q`).
+- C1, C2, C5, C7, H7, F3, T1, T2: las pruebas de cada commit de la rama (`tests/test_bos_support.py`, `next_token_experiment/tests/test_label_smoothing.py`, `next_token_experiment/tests/test_benchmark_representations.py`, `tests/test_hdp_cell_diagnostics.py`, `tests/test_headline_estimates.py`, `tests/test_pareto_uncertainty.py`, `tests/test_grid_ceiling.py`, `tests/test_cost_scope.py`) fallan o no importan sobre la base previa c8c49a0 y pasan en la rama.
+- Puntos (a)-(f) y notas 3 y 4 de esta bitácora: commit 4a64c48, pruebas en `tests/test_integracion_particiones.py` (vistas en rojo). Archivos nuevos por corrida: `splits/manifest.json`, `checkpoint_inputs.json`; `execution_plan.json` lleva `split_sha256` y se escribe también en corridas completas; columna `train_subset_sha256` en `results_raw.csv` y `piece_metrics_raw.csv`.
+- Abierto: revisión adversarial (2 subagentes) y merge a `fix/auditoria-tesis`; nota 1 (burn-in del diagnóstico del HDP) depende de cómo quede `fix/auditoria-hdp`; nota 5 (títulos de `scripts/figuras_tesis.py`, p. ej. «media de 6 corridas») queda para la Fase 3.
