@@ -11,9 +11,9 @@ clases de altura 0..11), p. ej. artifacts/corpus_cache_3000.jsonl. Se toman las 
 0, every, 2*every, ... (n_works de ellas) o, con --single-work, una sola obra.
 Truncamiento K=20 y, por omisión, la cadena del preregistro (400 iteraciones, burn-in 200;
 docs/preregistro-2026-10-26.md).  s5_beta_seed_v2.py y la salida del 2026-10-26 usaron
-80/40, una cadena corta en la que hay dependencia con datos simulados (r = 0.318, p = 0.025,
-50 semillas); la salida avisa cuando la cadena no es la del preregistro, porque entonces no
-evalúa el criterio (b).
+80/40, que no es la cadena del preregistro; la salida avisa cuando la cadena no es la del
+preregistro, porque entonces no evalúa el criterio (b).  La decisión sobre (b) en bloques
+disjuntos de semillas está en s8_criterio_b_bloques.py.
 Reporta Pearson, Spearman, IC 95 % de Fisher para r, prueba de equivalencia TOST para
 |ρ| < 0.3 (z de Fisher), pendiente por mínimos cuadrados con IC 95 % (t) e IC 95 % bootstrap
 por semilla (10 000 remuestreos, semilla 0).  Con --resumen recalcula todo desde las filas
