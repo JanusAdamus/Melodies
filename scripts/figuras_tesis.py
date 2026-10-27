@@ -819,7 +819,8 @@ def figura_unidad_de_analisis() -> dict | None:
             or comparacion.get("status")
         )
     if comparacion is None or any(comparacion[k] is None for k in CAMPOS_FIG6):
-        print(f"  fig6_unidad_de_analisis omitida: HDP-HMM − VOMM no evaluable ({motivo})")
+        # Consola en ASCII: con la salida redirigida en Windows (cp1252) "−" no se codifica.
+        print(f"  fig6_unidad_de_analisis omitida: HDP-HMM - VOMM no evaluable ({motivo})")
         return None
 
     def orientado(intervalo) -> list[float]:
@@ -950,6 +951,11 @@ def figura_unidad_de_analisis() -> dict | None:
 
 
 def main() -> None:
+    # Un carácter que la consola no codifica (p. ej. cp1252 con la salida redirigida)
+    # se reemplaza en vez de abortar el script a mitad de las figuras.
+    reconfigurar = getattr(sys.stdout, "reconfigure", None)
+    if reconfigurar is not None:
+        reconfigurar(errors="replace")
     aplicar_estilo()
     print(f"figuras -> {OUTPUT_DIR}")
     figura_curva_aprendizaje()

@@ -35,7 +35,7 @@ for rel in (False, True):
     for t in range(15):
         y = x.clone(); y[0, t + 1:] = torch.randint(0, V, (15 - t,))
         worst = max(worst, (m.model(y, mask)[0, : t + 1] - base[0, : t + 1]).abs().max().item())
-    print(f"[causal rel={rel}] max |Δlogit| en posiciones <=t al cambiar el futuro: {worst:.2e}")
+    print(f"[causal rel={rel}] max |delta logit| en posiciones <=t al cambiar el futuro: {worst:.2e}")
     # 3) invariancia a padding/lote: NLL de una ventana sola == en lote con relleno
     batch = collate_window_batch([ds[i] for i in range(len(ds))], tok.pad_token_id)
     lp = torch.log_softmax(m._comparison_logits(m.model(batch["input_ids"], batch["attention_mask"])), -1)

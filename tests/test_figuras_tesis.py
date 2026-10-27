@@ -361,6 +361,40 @@ class UnitOfAnalysisFigureTests(FigureTestCase):
         self.assertIsNone(self.module.figura_unidad_de_analisis())
         self.assertFalse((self.module.OUTPUT_DIR / "fig6_unidad_de_analisis.png").exists())
 
+    def test_a_skipped_fig6_does_not_crash_on_a_cp1252_console(self) -> None:
+        # r3sw_runs/B: con la salida redirigida en Windows (cp1252) el aviso de omitir fig6
+        # no puede abortar el script; se corre main() en un subproceso de verdad.
+        import os
+        import subprocess
+        import sys
+
+        _write_unit_run(self.original, _unit_rows(n_works=3, vomm_effect=0.05))
+        code = (
+            "import importlib.util, sys\n"
+            "from pathlib import Path\n"
+            "spec = importlib.util.spec_from_file_location('fig', sys.argv[1])\n"
+            "m = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(m)\n"
+            "m.COMPARACION, m.OUTPUT_DIR = Path(sys.argv[2]), Path(sys.argv[3])\n"
+            "for name in ('figura_curva_aprendizaje', 'figura_capacidad_hmm',\n"
+            "             'figura_sensibilidades', 'figura_comparaciones_pareadas', 'figura_pareto'):\n"
+            "    setattr(m, name, lambda: None)\n"
+            "m.main()\n"
+        )
+        log = Path(self._tmp.name) / "log.txt"
+        env = {**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"}
+        with log.open("wb") as handle:
+            result = subprocess.run(
+                [sys.executable, "-c", code, str(REPO / "scripts" / "figuras_tesis.py"),
+                 str(self.module.COMPARACION), str(self.module.OUTPUT_DIR)],
+                stdout=handle, stderr=subprocess.PIPE, env=env, cwd=REPO, timeout=300,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+        salida = log.read_bytes().decode("cp1252")
+        self.assertIn("fig6_unidad_de_analisis omitida", salida)
+        self.assertIn("listo", salida)
+
     def test_an_old_pairwise_file_is_rejected(self) -> None:
         _write_unit_run(self.original, _unit_rows(n_works=16, vomm_effect=0.05))
         payload = json.loads((self.original / "pairwise_comparisons.json").read_text(encoding="utf-8"))
