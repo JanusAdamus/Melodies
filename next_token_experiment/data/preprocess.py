@@ -13,7 +13,7 @@ import warnings
 
 from src.data.library_catalog import infer_composer
 from src.data.observations import PITCH_CLASS_NAMES
-from src.data.parsing import extract_events, parse_score
+from src.data.parsing import EXTRACTION_MODES, extract_events_for_mode, parse_score
 
 from ..config import ExperimentConfig, PreprocessingConfig, RepresentationConfig
 from ..experiment.splits import canonicalize_work_label
@@ -28,6 +28,60 @@ except Exception:  # pragma: no cover - depende del entorno.
     pass
 
 REST_EVENT_LABEL = "REST"
+
+
+CACHE_MODE_KEY = "extraction_mode"
+# Los caches anteriores al hallazgo D1b no guardan modo: todos salieron de la extraccion
+# antigua (``extract_events``), que hoy se llama ``legacy_all_parts``.
+UNRECORDED_CACHE_MODE = "legacy_all_parts"
+
+
+class CorpusCacheModeError(ValueError):
+    """El cache de partituras se extrajo con un modo distinto al que pide la corrida."""
+
+
+def _require_extraction_mode(mode: str) -> None:
+    if mode not in EXTRACTION_MODES:
+        raise ValueError(f"Modo de extraccion no soportado: {mode!r}; usa uno de {EXTRACTION_MODES}.")
+
+
+def default_corpus_cache_name(max_files: int | None, mode: str) -> str:
+    """Nombre de cache por modo; el de ``legacy_all_parts`` es el de agosto, para reproducirlo."""
+
+    _require_extraction_mode(mode)
+    size = "all" if max_files is None else str(max_files)
+    if mode == UNRECORDED_CACHE_MODE:
+        return f"corpus_cache_{size}.jsonl"
+    return f"corpus_cache_{size}_{mode}.jsonl"
+
+
+def read_corpus_cache_modes(cache_path: str | Path) -> set[str]:
+    """Modos de extraccion presentes en un cache JSONL (vacio si no existe o no tiene filas)."""
+
+    path = Path(cache_path)
+    modes: set[str] = set()
+    if not path.exists():
+        return modes
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                modes.add(json.loads(line).get(CACHE_MODE_KEY, UNRECORDED_CACHE_MODE))
+    return modes
+
+
+def check_corpus_cache_mode(cache_path: str | Path | None, mode: str) -> None:
+    """Se niega a usar un cache cuyas filas no salieron todas del modo pedido."""
+
+    _require_extraction_mode(mode)
+    if cache_path is None:
+        return
+    modes = read_corpus_cache_modes(cache_path)
+    if modes and modes != {mode}:
+        raise CorpusCacheModeError(
+            f"El cache {cache_path} tiene modo de extraccion {sorted(modes)} y la corrida pide "
+            f"{mode!r}; usa un cache propio de ese modo (por ejemplo "
+            f"{default_corpus_cache_name(3000, mode)} para 3000 partituras)."
+        )
 
 
 def _duration_to_bin_index(duration: float, duration_bins: tuple[float, ...]) -> int:
@@ -144,6 +198,13 @@ def preprocess_score_file(
 ) -> PreparedPiece | ExclusionRecord:
     """Parse a score file and convert it into a discrete token sequence."""
 
+    # Un modo invalido es un error de configuracion: no debe convertirse en una exclusion
+    # por partitura que vacie el corpus en silencio.
+    extraction_mode = preprocessing_config.extraction_mode
+    _require_extraction_mode(extraction_mode)
+    if extraction_mode == "melody" and preprocessing_config.include_rests:
+        raise ValueError("El modo 'melody' no extrae silencios; usa include_rests=False.")
+
     piece_id = build_piece_id(path, root_dir)
     try:
         score = parse_score(path)
@@ -156,10 +217,11 @@ def preprocess_score_file(
         )
 
     try:
-        events = extract_events(
+        events = extract_events_for_mode(
             score,
-            include_rests=preprocessing_config.include_rests,
+            mode=extraction_mode,
             prefer_treble=preprocessing_config.prefer_treble,
+            include_rests=preprocessing_config.include_rests,
         )
     except Exception as exc:
         return ExclusionRecord(
@@ -201,6 +263,7 @@ def preprocess_score_file(
         n_events=len(events),
         metadata={
             "relative_path": piece_id,
+            "extraction_mode": extraction_mode,
             "time_signature_count": len(
                 list(score.recurse().getElementsByClass("TimeSignature"))
             ),
@@ -237,8 +300,9 @@ def _prepare_one_without_vocabulary(
     return prepared
 
 
-def _encode_cache_entry(entry: PreparedPiece | ExclusionRecord) -> str:
+def _encode_cache_entry(entry: PreparedPiece | ExclusionRecord, extraction_mode: str) -> str:
     payload = asdict(entry)
+    payload[CACHE_MODE_KEY] = extraction_mode
     if isinstance(entry, ExclusionRecord):
         payload["kind"] = "exclusion"
     else:
@@ -252,6 +316,7 @@ def _decode_cache_entry(
     vocabulary: list[str],
 ) -> PreparedPiece | ExclusionRecord:
     kind = payload.pop("kind")
+    payload.pop(CACHE_MODE_KEY, None)  # ya validado por check_corpus_cache_mode
     if kind == "exclusion":
         return ExclusionRecord(**payload)  # type: ignore[arg-type]
     # Las cachés anteriores al 2026-10-26 guardan la obra canónica truncada
@@ -304,6 +369,9 @@ def prepare_corpus(
     # mas partituras que `max_files` las arrastraria todas e ignoraria el muestreo.
     selected = {str(path) for path in score_paths}
 
+    extraction_mode = config.preprocessing.extraction_mode
+    check_corpus_cache_mode(cache_path, extraction_mode)
+
     entries: list[PreparedPiece | ExclusionRecord] = []
     cache_file = Path(cache_path) if cache_path is not None else None
     if cache_file is not None and cache_file.exists():
@@ -341,7 +409,9 @@ def prepare_corpus(
         if n_workers == 1 or not pending:
             _silence_worker_warnings()
             stream = (worker(path) for path in pending)
-            _consume_prepared(stream, entries, cache_handle, vocabulary, len(pending), progress_every)
+            _consume_prepared(
+                stream, entries, cache_handle, vocabulary, len(pending), progress_every, extraction_mode
+            )
         else:
             with ProcessPoolExecutor(
                 max_workers=n_workers,
@@ -349,7 +419,13 @@ def prepare_corpus(
             ) as pool:
                 stream = pool.map(worker, pending, chunksize=chunksize)
                 _consume_prepared(
-                    stream, entries, cache_handle, vocabulary, len(pending), progress_every
+                    stream,
+                    entries,
+                    cache_handle,
+                    vocabulary,
+                    len(pending),
+                    progress_every,
+                    extraction_mode,
                 )
     finally:
         if cache_handle is not None:
@@ -370,12 +446,13 @@ def _consume_prepared(
     vocabulary: list[str],
     total: int,
     progress_every: int,
+    extraction_mode: str,
 ) -> None:
     """Drain prepared scores, restoring the shared vocabulary and flushing the cache."""
 
     for index, prepared in enumerate(stream, start=1):
         if cache_handle is not None:
-            cache_handle.write(_encode_cache_entry(prepared) + "\n")
+            cache_handle.write(_encode_cache_entry(prepared, extraction_mode) + "\n")
             if index % 200 == 0:
                 cache_handle.flush()
         if isinstance(prepared, PreparedPiece):

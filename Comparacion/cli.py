@@ -5,6 +5,8 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+from src.data.parsing import EXTRACTION_MODES
+
 from .artifact_audit import write_audit_reports
 from .cost_scenarios import write_cost_scenarios
 from .evidence_package import export_evidence_package, verify_evidence_package
@@ -24,7 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-seeds", default=None, help="Comma-separated model seeds, for example 1,2.")
     parser.add_argument("--fractions", default=None, help="Comma-separated training fractions, for example 0.1,0.5,1.0.")
     parser.add_argument("--n-workers", type=int, default=None, help="Parsing processes for corpus preparation; 1 forces the serial path. Defaults to CPU count minus one.")
-    parser.add_argument("--corpus-cache", default=None, help="JSONL file caching parsed scores so an interrupted run resumes instead of reparsing.")
+    parser.add_argument("--extraction", default="melody", choices=EXTRACTION_MODES, help="Event extraction: melody (top voice of the treble part, the current definition) or legacy_all_parts (only to reproduce the August runs).")
+    parser.add_argument("--corpus-cache", default=None, help="JSONL file caching parsed scores so an interrupted run resumes instead of reparsing. It records the extraction mode; a cache from another mode is refused. Suggested name: corpus_cache_<max-files>_melody.jsonl.")
     parser.add_argument("--resume", action="store_true", help="Continue an interrupted run in the same --run-name directory, skipping the (data_seed, fraction) cells already recorded in checkpoint.jsonl.")
     parser.add_argument("--plan-only", action="store_true", help="Write an execution plan without constructing or fitting models.")
     parser.add_argument("--without-vomm", action="store_true", help="Disable the optional PPM-inspired VOMM diagnostic control.")
@@ -175,7 +178,10 @@ def main() -> None:
         corpus_root=args.corpus_root,
         results_root=args.results_root,
     )
-    experiment = config.experiment
+    experiment = replace(
+        config.experiment,
+        preprocessing=replace(config.experiment.preprocessing, extraction_mode=args.extraction),
+    )
 
     if args.transformer_max_epochs is not None:
         experiment = replace(

@@ -28,7 +28,11 @@ from next_token_experiment.data.dataset import (
     build_dataloaders,
     build_training_exposure_audit,
 )
-from next_token_experiment.data.preprocess import build_preprocessing_report, prepare_corpus
+from next_token_experiment.data.preprocess import (
+    build_preprocessing_report,
+    check_corpus_cache_mode,
+    prepare_corpus,
+)
 from next_token_experiment.data.tokenizer import build_tokenizer
 from next_token_experiment.experiment.storage import ensure_directory, write_csv
 from next_token_experiment.models.small_transformer import (
@@ -1158,6 +1162,9 @@ def run_learning_curve_experiment(
     run_directory = Path(config.results_root) / run_name
     if not resume:
         _guard_fresh_run_directory(run_directory)
+    # Hallazgo D1b: un cache de otro modo de extraccion no se usa; se rechaza antes de
+    # crear el directorio de la corrida.
+    check_corpus_cache_mode(corpus_cache_path, config.experiment.preprocessing.extraction_mode)
     output_root = ensure_directory(run_directory)
     preparation = prepare_corpus(
         config.experiment,
