@@ -176,6 +176,63 @@ class ExpectedModelsFamilyTests(unittest.TestCase):
         )
 
 
+class DegeneratePairHolmTests(unittest.TestCase):
+    """Un par con pocas obras en común no afloja el α de las demás (ronda 2)."""
+
+    @staticmethod
+    def _rows(*, vomm_works: int) -> list[dict]:
+        rng = np.random.default_rng(3)
+        rows = []
+        for index in range(40):
+            base = rng.normal(2, 0.3)
+            for model, effect in {"finite_hmm": 0.0, "hdp_hmm": 0.02, "transformer": -0.02}.items():
+                rows.append(_row(model, f"w{index}", 50, base + effect + rng.normal(0, 0.05)))
+        for index in range(vomm_works):
+            rows.append(_row("vomm", f"w{index}", 50, 9.0))
+        return rows
+
+    def _by_pair(self, vomm_works: int) -> dict:
+        payload = pairwise_model_comparisons(
+            self._rows(vomm_works=vomm_works),
+            bootstrap_samples=4000,
+            seed=0,
+            expected_models=["finite_hmm", "hdp_hmm", "transformer", "vomm"],
+        )
+        return payload, {(item["model_a"], item["model_b"]): item for item in payload["comparisons"]}
+
+    def test_a_pair_with_one_common_work_does_not_reject_nor_shift_the_others(self) -> None:
+        _, without = self._by_pair(vomm_works=0)
+        payload, with_one = self._by_pair(vomm_works=1)
+        for prefix in ("work_mean", "token_weighted"):
+            for pair in [("finite_hmm", "vomm"), ("hdp_hmm", "vomm"), ("transformer", "vomm")]:
+                with self.subTest(prefix=prefix, pair=pair):
+                    self.assertEqual(with_one[pair]["n_pairs"], 1)
+                    self.assertEqual(with_one[pair][f"{prefix}_holm_status"], "too_few_paired_works")
+                    self.assertIsNone(with_one[pair][f"{prefix}_holm_rejects_zero"])
+                    self.assertIsNone(with_one[pair][f"{prefix}_holm_alpha"])
+            for pair, item in without.items():
+                if "vomm" in pair:
+                    continue
+                with self.subTest(prefix=prefix, pair=pair):
+                    self.assertEqual(with_one[pair][f"{prefix}_holm_alpha"], item[f"{prefix}_holm_alpha"])
+                    self.assertEqual(
+                        with_one[pair][f"{prefix}_holm_rejects_zero"], item[f"{prefix}_holm_rejects_zero"]
+                    )
+        block = payload["holm_family"]["work_mean_ci"]
+        self.assertEqual(block["family_size"], 6)
+        self.assertEqual(block["n_evaluable"], 3)
+        self.assertEqual(block["min_paired_works"], 10)
+        self.assertEqual(
+            block["not_evaluable"],
+            [["finite_hmm", "vomm"], ["hdp_hmm", "vomm"], ["transformer", "vomm"]],
+        )
+
+    def test_ten_common_works_are_enough_to_enter_the_holm_steps(self) -> None:
+        _, by_pair = self._by_pair(vomm_works=10)
+        self.assertEqual(by_pair[("hdp_hmm", "vomm")]["n_pairs"], 10)
+        self.assertEqual(by_pair[("hdp_hmm", "vomm")]["work_mean_holm_status"], "ok")
+
+
 class RunnerFamilyModelsTests(unittest.TestCase):
     def test_runner_family_is_the_configured_model_set(self) -> None:
         from Comparacion.runner import _comparison_family_models

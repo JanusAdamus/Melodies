@@ -413,6 +413,29 @@ class WorkMeanParetoTests(unittest.TestCase):
             [{"pair": ["a", "b"], "reason": "no_paired_finite_works", "n_pairs": 0}],
         )
 
+    def test_a_real_pair_with_too_few_works_is_listed_with_that_reason(self) -> None:
+        # Ronda 2: el pareado ya no da IC de Holm a un par con < 10 obras; la frontera
+        # debe seguir diciendo por qué no decide, no «no_holm_adjusted_interval».
+        from Comparacion.statistics import pairwise_model_comparisons
+
+        rows = [
+            {"model": model, "canonical_work_id": f"w{index}", "frac": 1.0, "test_nll": 2.0 + 0.1 * index + offset, "n_tokens": 30}
+            for index in range(3)
+            for model, offset in (("a", 0.0), ("b", 0.5))
+        ]
+        pairwise = pairwise_model_comparisons(rows, bootstrap_samples=50, seed=0)
+        raw = [_raw("a", 2.0, selected_fit=10.0, evaluation=1.0), _raw("b", 2.5, selected_fit=10.0, evaluation=1.0)]
+        headline = _headline({"a": (1.9, 2.1), "b": (2.4, 2.6)})
+
+        partial = _build_pareto_summary(raw, {"status": "not_evaluated"}, headline, pairwise)[
+            "predictive_cost_partial_frontier"
+        ]
+
+        self.assertEqual(
+            partial["nll_paired_pairs_skipped"],
+            [{"pair": ["a", "b"], "reason": "too_few_paired_works", "n_pairs": 3}],
+        )
+
     def test_the_time_tolerance_band_is_declared_in_the_output(self) -> None:
         raw = [_raw("a", 2.0, selected_fit=100.0, evaluation=1.0)]
         partial = _build_pareto_summary(raw, {"status": "not_evaluated"}, _headline({"a": (1.9, 2.1)}))[

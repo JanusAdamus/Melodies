@@ -59,7 +59,7 @@ from .splits import (
     normalized_piece_key,
     split_manifest,
 )
-from .statistics import headline_estimates, pairwise_model_comparisons
+from .statistics import MIN_PAIRED_WORKS, headline_estimates, pairwise_model_comparisons
 from .structural_metrics import adjusted_rand_index, boundary_f1, normalized_mutual_information
 from .vomm import select_vomm_by_validation
 
@@ -1429,7 +1429,7 @@ _PARETO_TIME_INTERVAL = {
 #: Diseño (revisión de C5): un IC pareado sobre menos obras en común no decide la
 #: NLL; con una sola obra el bootstrap colapsa a un punto.  Se fijó antes de ver la
 #: corrida y no se ajusta a sus resultados.
-PARETO_MIN_PAIRED_WORKS = 10
+PARETO_MIN_PAIRED_WORKS = MIN_PAIRED_WORKS
 
 
 def _build_pareto_summary(
@@ -1511,15 +1511,15 @@ def _build_pareto_summary(
                 }
             )
             continue
+        if n_pairs < PARETO_MIN_PAIRED_WORKS:
+            paired_skipped.append({"pair": list(pair), "reason": "too_few_paired_works", "n_pairs": n_pairs})
+            continue
         interval = comparison.get("work_mean_holm_decision_ci")
         rejects = comparison.get("work_mean_holm_rejects_zero")
         if interval is None or rejects is None:
             paired_skipped.append(
                 {"pair": list(pair), "reason": "no_holm_adjusted_interval", "n_pairs": n_pairs}
             )
-            continue
-        if n_pairs < PARETO_MIN_PAIRED_WORKS:
-            paired_skipped.append({"pair": list(pair), "reason": "too_few_paired_works", "n_pairs": n_pairs})
             continue
         low, high = float(interval[0]), float(interval[1])
         if not rejects:

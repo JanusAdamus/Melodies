@@ -341,6 +341,12 @@ def _token_weighted_difference(
 #: Nivel familiar de la regla preregistrada (IC del 95 % «tras Holm»).
 HOLM_FAMILY_ALPHA = 0.05
 
+#: Enmienda 1: un par con menos obras en común no decide.  Con una sola obra todas
+#: las réplicas bootstrap valen lo mismo, su p es 0 y, si entrara a los pasos de
+#: Holm, rechazaría al nivel más estricto y aflojaría el α de las demás.  Por eso
+#: no entra: cuenta en la familia como p = 1, igual que una prueba sin datos.
+MIN_PAIRED_WORKS = 10
+
 
 def _bootstrap_two_sided_p_value(draws: np.ndarray) -> float:
     """p bilateral del bootstrap: el menor nivel al que el IC percentil excluye 0."""
@@ -350,14 +356,14 @@ def _bootstrap_two_sided_p_value(draws: np.ndarray) -> float:
     return min(1.0, 2.0 * min(below, above))
 
 
-def _empty_holm(prefix: str) -> dict[str, object]:
+def _empty_holm(prefix: str, status: str = "not_evaluable") -> dict[str, object]:
     return {
         f"{prefix}_bootstrap_p_value": None,
         f"{prefix}_holm_alpha": None,
         f"{prefix}_holm_ci": None,
         f"{prefix}_holm_decision_ci": None,
         f"{prefix}_holm_rejects_zero": None,
-        f"{prefix}_holm_status": "not_evaluable",
+        f"{prefix}_holm_status": status,
     }
 
 
@@ -383,12 +389,20 @@ def _apply_bootstrap_holm(
     m es la familia completa (todas las comparaciones), no las que tienen datos:
     una prueba sin datos cuenta en la familia como si su p fuera 1 (va al final y
     no se rechaza) y queda «not_evaluable».  Así, faltar el n_tokens de una obra
-    no encoge la familia ni afloja el α de las demás.
+    no encoge la familia ni afloja el α de las demás.  Lo mismo un par con menos
+    de MIN_PAIRED_WORKS obras en común (Enmienda 1), que queda
+    «too_few_paired_works».
     """
 
+    eligible = {}
     for index, comparison in enumerate(comparisons):
         if index not in draws_by_index:
             comparison.update(_empty_holm(prefix))
+        elif comparison.get("n_pairs") is not None and int(comparison["n_pairs"]) < MIN_PAIRED_WORKS:
+            comparison.update(_empty_holm(prefix, "too_few_paired_works"))
+        else:
+            eligible[index] = draws_by_index[index]
+    draws_by_index = eligible
     ordered = sorted(
         draws_by_index,
         key=lambda index: (
@@ -468,12 +482,13 @@ def _holm_family_record(comparisons: list[dict[str, object]]) -> dict[str, objec
 
     tests = [[str(item["model_a"]), str(item["model_b"])] for item in comparisons]
 
-    def _block(is_evaluable) -> dict[str, object]:
+    def _block(is_evaluable, **extra) -> dict[str, object]:
         missing = [pair for pair, item in zip(tests, comparisons) if not is_evaluable(item)]
         return {
             "family_size": len(tests),
             "n_evaluable": len(tests) - len(missing),
             "not_evaluable": missing,
+            **extra,
         }
 
     return {
@@ -482,8 +497,12 @@ def _holm_family_record(comparisons: list[dict[str, object]]) -> dict[str, objec
         "tests": tests,
         "ci_usage": _CI_USAGE,
         "wilcoxon": _block(lambda item: item["p_value_holm"] is not None),
-        "work_mean_ci": _block(lambda item: item["work_mean_holm_status"] == "ok"),
-        "token_weighted_ci": _block(lambda item: item["token_weighted_holm_status"] == "ok"),
+        "work_mean_ci": _block(
+            lambda item: item["work_mean_holm_status"] == "ok", min_paired_works=MIN_PAIRED_WORKS
+        ),
+        "token_weighted_ci": _block(
+            lambda item: item["token_weighted_holm_status"] == "ok", min_paired_works=MIN_PAIRED_WORKS
+        ),
     }
 
 

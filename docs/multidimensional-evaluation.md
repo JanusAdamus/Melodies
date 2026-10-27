@@ -100,6 +100,14 @@ La familia es la del preregistro: cuatro modelos y seis pares. Con
 evaluables y todas las salidas llevan `analysis_status.status = exploratory`,
 porque una corrida sin VOMM no evalúa la regla de B.
 
+Un par con menos de `MIN_PAIRED_WORKS = 10` obras en común tampoco entra a los
+pasos de Holm: cuenta en la familia como p = 1 y queda con
+`*_holm_status = too_few_paired_works`, sin IC de Holm ni rechazo. Con una sola
+obra todas las réplicas bootstrap valen lo mismo y su p es 0; si entrara,
+rechazaría al nivel más estricto y aflojaría el α de las demás pruebas. El mínimo
+es el mismo de la frontera de Pareto (Enmienda 1) y queda escrito en
+`holm_family.work_mean_ci.min_paired_works`.
+
 ### Frontera de Pareto (Enmienda 1)
 
 `pareto_summary.json` distingue dos alcances. Si faltan mediciones
@@ -111,7 +119,7 @@ completa de estructura, prediccion y costo queda `not_evaluated` o
 En el eje de NLL (`work_mean_test_nll`) decide `work_mean_holm_decision_ci` de la
 diferencia pareada: un modelo es peor sólo si Holm rechaza y el IC queda del lado
 peor de 0; un par que Holm no rechaza es empate. Un par con menos de
-`PARETO_MIN_PAIRED_WORKS = 10` obras en común, o sin obras en común, no decide con
+`PARETO_MIN_PAIRED_WORKS = MIN_PAIRED_WORKS = 10` obras en común, o sin obras en común, no decide con
 la pareada: se comparan los IC marginales de la media por obra y el par queda en
 `nll_paired_pairs_skipped` con su motivo. La NLL ponderada por token
 (`mean_test_nll`) se reporta y no decide. Las figuras leen esta frontera; no la
