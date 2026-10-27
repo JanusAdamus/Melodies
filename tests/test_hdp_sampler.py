@@ -8,7 +8,10 @@ import os
 import subprocess
 import sys
 import unittest
+import unittest.mock
+import warnings
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import numpy as np
@@ -141,9 +144,41 @@ def _criterion_b_point(args: tuple[int, int, int, bool]) -> tuple[int, float]:
     return int(np.sum(result.diagnostics.initial_beta > 0.01)), float(result.effective_states)
 
 
+#: Procesos de las pruebas paralelas; «1» las corre en secuencia en este proceso.
+PARALLEL_WORKERS_ENV = "MELODIES_TEST_WORKERS"
+
+
+def _worker_count(n_jobs: int) -> int:
+    """Procesos para `n_jobs` tareas: MELODIES_TEST_WORKERS, o por omisión la mitad de las CPU."""
+
+    configured = os.environ.get(PARALLEL_WORKERS_ENV)
+    workers = int(configured) if configured else (os.cpu_count() or 1) // 2
+    return max(1, min(n_jobs, workers))
+
+
 def _in_parallel(function, jobs: list) -> list:
-    with ProcessPoolExecutor(max_workers=min(len(jobs), os.cpu_count() or 1)) as pool:
-        return list(pool.map(function, jobs))
+    """`[function(job) for job in jobs]` en un pool de `_worker_count` procesos.
+
+    Si el pool cae (BrokenProcessPool, u OSError como «[WinError 6] Controlador no válido» con la
+    máquina ocupada), las tareas sin resultado se corren en secuencia en este proceso.  Cada tarea
+    fija su semilla, así que el resultado es el mismo; y un error de la propia función reaparece aquí.
+    """
+
+    workers = _worker_count(len(jobs))
+    results: list = []
+    if workers > 1:
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                for result in pool.map(function, jobs):
+                    results.append(result)
+        except (BrokenProcessPool, OSError) as error:
+            warnings.warn(
+                f"pool de procesos caído tras {len(results)}/{len(jobs)} tareas ({error!r}); "
+                "el resto corre en secuencia con las mismas semillas",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+    return results + [function(job) for job in jobs[len(results):]]
 
 
 def _criterion_b_rows(seeds, n_iters: int, burn_in: int, freeze_beta: bool = False) -> tuple[list[int], list[float]]:
@@ -400,6 +435,62 @@ class ImportWithoutPytestTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(process.returncode, 0, process.stderr[-2000:])
+
+
+def _short_chain(seed: int) -> list[float]:
+    """Historia de log L de una cadena corta; sirve para comparar ejecución en pool y secuencial."""
+
+    model = TruncatedHDPHMM(n_states=6, n_iters=8, burn_in=2, seed=seed)
+    return list(model.fit(_observations(three_state_tokens(80, seed=4))).diagnostics.log_likelihood_history)
+
+
+def _short_chain_dies_in_a_worker(seed: int) -> list[float]:
+    """Como _short_chain, pero el proceso hijo de la semilla 2 muere: simula la caída del pool
+    (BrokenProcessPool, «[WinError 6] Controlador no válido» con la máquina ocupada)."""
+
+    import multiprocessing
+
+    if seed == 2 and multiprocessing.parent_process() is not None:
+        os._exit(1)
+    return _short_chain(seed)
+
+
+class ParallelRunnerTests(unittest.TestCase):
+    """Un rojo de las pruebas del preregistro debe hablar del muestreador, no de la carga de la máquina."""
+
+    def test_worker_count_is_bounded_and_configurable(self) -> None:
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(PARALLEL_WORKERS_ENV, None)
+            default = _worker_count(200)
+            self.assertGreaterEqual(default, 1)
+            self.assertLessEqual(default, max(1, (os.cpu_count() or 1) // 2))
+            self.assertEqual(_worker_count(1), 1)
+            os.environ[PARALLEL_WORKERS_ENV] = "3"
+            self.assertEqual(_worker_count(200), 3)
+            self.assertEqual(_worker_count(2), 2)
+            os.environ[PARALLEL_WORKERS_ENV] = "1"
+            self.assertEqual(_worker_count(200), 1)
+
+    def test_sequential_and_parallel_give_the_same_result(self) -> None:
+        seeds = [1, 2, 3]
+        expected = [_short_chain(seed) for seed in seeds]
+        with unittest.mock.patch.dict(os.environ, {PARALLEL_WORKERS_ENV: "1"}):
+            self.assertEqual(_in_parallel(_short_chain, seeds), expected)
+        with unittest.mock.patch.dict(os.environ, {PARALLEL_WORKERS_ENV: "2"}):
+            self.assertEqual(_in_parallel(_short_chain, seeds), expected)
+
+    def test_a_broken_pool_falls_back_to_sequential_with_the_same_result(self) -> None:
+        seeds = [1, 2, 3, 4]
+        expected = [_short_chain(seed) for seed in seeds]
+        with unittest.mock.patch.dict(os.environ, {PARALLEL_WORKERS_ENV: "2"}):
+            with self.assertWarns(RuntimeWarning):
+                self.assertEqual(_in_parallel(_short_chain_dies_in_a_worker, seeds), expected)
+
+    def test_an_error_of_the_function_is_not_swallowed(self) -> None:
+        # La vuelta a secuencial repite la función en este proceso: un error suyo reaparece.
+        with unittest.mock.patch.dict(os.environ, {PARALLEL_WORKERS_ENV: "2"}):
+            with self.assertRaises(ValueError):
+                _in_parallel(int, ["1", "no es un número"])
 
 
 if __name__ == "__main__":
