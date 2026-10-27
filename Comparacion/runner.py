@@ -1246,6 +1246,7 @@ def _build_pareto_summary(
     raw_rows: list[dict[str, object]],
     structural_evaluation: dict[str, object],
     headline: Mapping[str, object] | None = None,
+    pairwise: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Frontera con incertidumbre por eje (C5).
 
@@ -1289,12 +1290,29 @@ def _build_pareto_summary(
         else:
             excluded_models.append(model_name)
     partial_axes = ("mean_test_nll", "mean_selected_fit_wall_clock_s")
+    # Regla preregistrada: en NLL decide la diferencia pareada por obra
+    # (IC bootstrap de la NLL ponderada por tokens), no el traslape de marginales.
+    paired_nll: dict[tuple[str, str], tuple[float, float]] = {}
+    for comparison in (pairwise or {}).get("comparisons", []):
+        interval = comparison.get("token_weighted_bootstrap_95_ci")
+        if comparison.get("status") == "ok" and interval is not None:
+            paired_nll[(str(comparison["model_a"]), str(comparison["model_b"]))] = (
+                float(interval[0]),
+                float(interval[1]),
+            )
+    paired_intervals = {"mean_test_nll": paired_nll} if paired_nll else None
     partial_payload = {
         "status": "ok" if predictive_cost_rows else "not_evaluated",
         "scope": "predictive_cost_partial_frontier",
         "axes": list(partial_axes),
         "reported_not_dominance_axes": ["mean_evaluation_wall_clock_s"],
-        "dominance": "interval: strictly better only when intervals do not overlap",
+        "dominance": (
+            "nll: paired work-bootstrap CI of the token-weighted difference decides "
+            "(worse if it excludes 0 on the worse side); marginal intervals only when no "
+            "paired comparison exists; time: strictly better only when intervals do not overlap"
+        ),
+        "nll_paired_interval": "token_weighted_bootstrap_95_ci_of_model_a_minus_model_b",
+        "nll_paired_pairs": len(paired_nll),
         "nll_interval": "work_cluster_bootstrap_95_ci_of_token_weighted_nll",
         "time_relative_tolerance": PARETO_TIME_RELATIVE_TOLERANCE,
         "devices": devices,
@@ -1302,7 +1320,12 @@ def _build_pareto_summary(
         "devices_differ": len({device for values in devices.values() for device in values}) > 1,
         "excluded_models": excluded_models,
         "candidates": predictive_cost_rows,
-        "frontier": pareto_front(predictive_cost_rows, minimize=partial_axes, maximize=())
+        "frontier": pareto_front(
+            predictive_cost_rows,
+            minimize=partial_axes,
+            maximize=(),
+            paired_intervals=paired_intervals,
+        )
         if predictive_cost_rows
         else [],
     }
@@ -1342,6 +1365,7 @@ def _build_pareto_summary(
                     full_rows,
                     minimize=partial_axes,
                     maximize=("mean_boundary_f1",),
+                    paired_intervals=paired_intervals,
                 ) if full_rows else [],
             }
     return {
@@ -2003,7 +2027,9 @@ def run_learning_curve_experiment(
         tolerance=config.boundary_tolerance,
     )
     _write_json(output_root / "structural_evaluation.json", structural_payload)
-    pareto_payload = _build_pareto_summary(raw_rows, structural_payload, headline_payload)
+    pareto_payload = _build_pareto_summary(
+        raw_rows, structural_payload, headline_payload, pairwise_payload
+    )
     _write_json(output_root / "pareto_summary.json", pareto_payload)
     _write_json(
         protocol_path,

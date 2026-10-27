@@ -62,6 +62,51 @@ class IntervalDominanceTests(unittest.TestCase):
         self.assertEqual([row["model"] for row in pareto_front(rows, minimize=("nll", "fit"), maximize=())], ["a"])
 
 
+class PairedDominanceTests(unittest.TestCase):
+    """C5 con la regla preregistrada: en NLL decide la diferencia pareada por obra."""
+
+    def _rows(self) -> list[dict]:
+        # Marginales que se traslapan (gran dispersión entre obras), pero «cheap» es
+        # peor que «good» en todas las obras por 0.03: la diferencia pareada no cruza 0.
+        return [
+            {"model": "cheap", "nll": 2.04, "nll_interval": [1.909, 2.175], "fit": 1.0},
+            {"model": "good", "nll": 2.01, "nll_interval": [1.882, 2.145], "fit": 10.0},
+        ]
+
+    def test_a_significantly_worse_model_does_not_dominate_through_overlapping_marginals(self) -> None:
+        paired = {"nll": {("cheap", "good"): (0.030, 0.030)}}
+
+        front = pareto_front(self._rows(), minimize=("nll", "fit"), maximize=(), paired_intervals=paired)
+
+        self.assertEqual(sorted(row["model"] for row in front), ["cheap", "good"])
+
+    def test_paired_interval_is_read_in_both_orientations(self) -> None:
+        # Sólo se da good − cheap; la regla debe leer cheap − good = −(good − cheap).
+        paired = {"nll": {("good", "cheap"): (-0.030, -0.030)}}
+
+        front = pareto_front(self._rows(), minimize=("nll", "fit"), maximize=(), paired_intervals=paired)
+
+        self.assertEqual(sorted(row["model"] for row in front), ["cheap", "good"])
+
+    def test_paired_interval_crossing_zero_is_a_tie_on_that_axis(self) -> None:
+        paired = {"nll": {("cheap", "good"): (-0.01, 0.07)}}
+
+        front = pareto_front(self._rows(), minimize=("nll", "fit"), maximize=(), paired_intervals=paired)
+
+        self.assertEqual([row["model"] for row in front], ["cheap"])
+
+    def test_paired_interval_below_zero_is_strictly_better(self) -> None:
+        rows = [
+            {"model": "a", "nll": 2.00, "nll_interval": [1.8, 2.2], "fit": 10.0},
+            {"model": "b", "nll": 2.01, "nll_interval": [1.8, 2.2], "fit": 10.0},
+        ]
+        paired = {"nll": {("a", "b"): (-0.02, -0.005)}}
+
+        front = pareto_front(rows, minimize=("nll", "fit"), maximize=(), paired_intervals=paired)
+
+        self.assertEqual([row["model"] for row in front], ["a"])
+
+
 class RunnerParetoTests(unittest.TestCase):
     def test_evaluation_time_does_not_decide_and_selected_fit_is_the_cost_axis(self) -> None:
         raw = [
@@ -89,6 +134,31 @@ class RunnerParetoTests(unittest.TestCase):
         self.assertEqual(sorted(row["model"] for row in partial["frontier"]), ["transformer", "vomm"])
         self.assertTrue(partial["devices_differ"])
         self.assertEqual(partial["devices"]["transformer"], ["cuda"])
+
+    def test_runner_uses_the_paired_work_difference_for_nll_dominance(self) -> None:
+        raw = [
+            _raw("cheap", 2.04, selected_fit=1.0, evaluation=1.0),
+            _raw("good", 2.01, selected_fit=10.0, evaluation=1.0),
+        ]
+        headline = _headline({"cheap": (1.909, 2.175), "good": (1.882, 2.145)})
+        pairwise = {
+            "comparisons": [
+                {
+                    "model_a": "cheap",
+                    "model_b": "good",
+                    "status": "ok",
+                    "token_weighted_difference": 0.030,
+                    "token_weighted_bootstrap_95_ci": [0.030, 0.030],
+                }
+            ]
+        }
+
+        partial = _build_pareto_summary(raw, {"status": "not_evaluated"}, headline, pairwise)[
+            "predictive_cost_partial_frontier"
+        ]
+
+        self.assertEqual(sorted(row["model"] for row in partial["frontier"]), ["cheap", "good"])
+        self.assertIn("paired", partial["dominance"])
 
     def test_times_within_the_tolerance_are_ties(self) -> None:
         raw = [_raw("a", 2.0, selected_fit=100.0, evaluation=1.0), _raw("b", 2.0, selected_fit=105.0, evaluation=1.0)]

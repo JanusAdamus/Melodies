@@ -38,18 +38,54 @@ def _axis_interval(row: Mapping[str, object], axis: str, value: float) -> tuple[
     return value, value
 
 
+PairedIntervals = Mapping[str, Mapping[tuple[str, str], tuple[float, float]]]
+
+
+def _paired_difference_interval(
+    candidate: Mapping[str, object],
+    target: Mapping[str, object],
+    axis: str,
+    paired_intervals: PairedIntervals | None,
+) -> tuple[float, float] | None:
+    """CI of ``candidate − target`` on ``axis`` from the paired comparison, if any."""
+
+    by_pair = (paired_intervals or {}).get(axis)
+    if not by_pair:
+        return None
+    candidate_name, target_name = candidate.get("model"), target.get("model")
+    interval = by_pair.get((candidate_name, target_name))
+    if interval is None:
+        reverse = by_pair.get((target_name, candidate_name))
+        if reverse is None:
+            return None
+        interval = (-float(reverse[1]), -float(reverse[0]))
+    try:
+        lower, upper = float(interval[0]), float(interval[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if math.isfinite(lower) and math.isfinite(upper) and lower <= upper:
+        return lower, upper
+    return None
+
+
 def _dominates(
     candidate: Mapping[str, object],
     target: Mapping[str, object],
     *,
     minimize: tuple[str, ...],
     maximize: tuple[str, ...],
+    paired_intervals: PairedIntervals | None = None,
 ) -> bool:
     """Interval dominance (C5).
 
-    No worse on an axis: the intervals overlap or the candidate is better.
-    Strictly better: the candidate's interval lies entirely on the better side.
-    Without intervals this is the usual point definition.
+    When ``paired_intervals`` gives the CI of ``candidate − target`` on an axis
+    (paired over the same works, the preregistered decision rule), that CI
+    decides the axis: worse when it lies entirely on the worse side of 0,
+    strictly better when it lies entirely on the better side, a tie when it
+    crosses 0.  Otherwise, no worse: the marginal intervals overlap or the
+    candidate is better; strictly better: the candidate's interval lies
+    entirely on the better side.  Without intervals this is the usual point
+    definition.
     """
 
     axes = (*minimize, *maximize)
@@ -61,6 +97,16 @@ def _dominates(
     no_worse = True
     strictly_better = False
     for axis in axes:
+        difference = _paired_difference_interval(candidate, target, axis, paired_intervals)
+        if difference is not None:
+            low, high = difference
+            if axis in minimize:
+                no_worse = no_worse and low <= 0.0
+                strictly_better = strictly_better or high < 0.0
+            else:
+                no_worse = no_worse and high >= 0.0
+                strictly_better = strictly_better or low > 0.0
+            continue
         candidate_low, candidate_high = _axis_interval(candidate, axis, candidate_values[axis])
         target_low, target_high = _axis_interval(target, axis, target_values[axis])
         if axis in minimize:
@@ -93,6 +139,8 @@ def pareto_front(
     rows: Iterable[Mapping[str, object]],
     minimize: tuple[str, ...],
     maximize: tuple[str, ...],
+    *,
+    paired_intervals: PairedIntervals | None = None,
 ) -> list[dict[str, object]]:
     """Return nondominated row copies in input order.
 
@@ -101,6 +149,8 @@ def pareto_front(
     incomparable.  Dominance requires a candidate to be no worse on all axes
     and strictly better on at least one. Non-finite declared-axis values are
     replaced with ``None`` in returned copies so JSON can reject NaN safely.
+    ``paired_intervals`` maps an axis to ``{(model_a, model_b): CI of a − b}``;
+    for those pairs the paired CI replaces the marginal intervals on that axis.
     """
 
     minimized_axes = tuple(minimize)
@@ -120,6 +170,7 @@ def pareto_front(
                 target,
                 minimize=minimized_axes,
                 maximize=maximized_axes,
+                paired_intervals=paired_intervals,
             )
             for candidate_index, candidate in enumerate(row_copies)
         )
