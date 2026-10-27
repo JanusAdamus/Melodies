@@ -115,3 +115,16 @@ se reporta como secundaria, con su propio IC, y no decide.
 
 **Familia de B.** Las seis comparaciones incluyen al VOMM. Una corrida sin VOMM
 no evalúa la regla de B; si se hace, se declara exploratoria.
+
+## Enmienda 3, 2026-10-27 (antes de ver resultados de las corridas corregidas)
+
+Decisión de Adrián. Agrega a la sección A un hiperparámetro que el texto original
+no fijaba.
+
+**Concentración de la previa de emisiones del HDP-HMM (η).** Se elige por obra en
+la validación interna, de {1, 3, 6}, con el mismo procedimiento que el α de los
+n-gramas y el K del finito: se ajusta con el primer 80 % del 80 % de ajuste, se
+evalúa la NLL predictiva en el último 20 % de ese 80 %, se elige el η de menor
+NLL y se reajusta con el 80 % completo. Se reporta el η elegido por obra.
+Motivo, registrado en la auditoría (H10): con datos simulados de 3 estados y
+emisiones con ruido moderado, η = 1 da 4.90 estados ocupados y η = 6 da ≈ 3.3.
