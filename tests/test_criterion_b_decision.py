@@ -11,7 +11,13 @@ import importlib.util
 import unittest
 from pathlib import Path
 
+import numpy as np
+from scipy.stats import norm, pearsonr
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "auditoria_2026_10_26" / "hdp" / "s8_criterio_b_bloques.py"
+#: Salida guardada del control negativo que corre en CI (test_criterion_b_fails_with_a_frozen_beta).
+#: (Antes era la obra simulada, r = 0.314: P(not_met) = 0.588, sin potencia; ahora PDMX obra 200.)
+CONTROL_OUTPUT = SCRIPT.with_name("s8_criterio_b_bloques_pdmx200_beta_congelado_salida_20261027.txt")
 
 
 def _script():
@@ -56,6 +62,19 @@ class CriterionBDecisionTests(unittest.TestCase):
         self.assertIn("semillas 0..11", text)
         self.assertIn("descriptivo", text)
         self.assertTrue(lines[-1].startswith("decisión del criterio (b): "))
+
+    def test_negative_control_in_ci_has_power(self) -> None:
+        # El control negativo de CI (test_hdp_sampler: β congelado, el defecto H1) sólo muestra que
+        # la prueba del criterio (b) puede fallar si, con la dependencia que él mismo produce, la
+        # regla da not_met casi siempre.  Con la z de Fisher, atanh(r̂) ~ N(atanh(ρ), 1/(n - 3)) y
+        # not_met ⇔ |r̂| ≥ 0.3; se evalúa en ρ = r medido en la salida guardada del control.
+        rows = self.script.v3.parse_rows(CONTROL_OUTPUT.read_text(encoding="utf8"))
+        n_large = [value for section in rows for value in section[1]]
+        occupied = [value for section in rows for value in section[2]]
+        r, n = float(pearsonr(n_large, occupied).statistic), len(n_large)
+        se, bound = 1.0 / np.sqrt(n - 3), np.arctanh(self.script.BOUND)
+        power = norm.sf((bound - np.arctanh(r)) / se) + norm.cdf((-bound - np.arctanh(r)) / se)
+        self.assertGreater(power, 0.95, f"r = {r:.3f}, n = {n}, P(not_met) = {power:.3f}")
 
     def test_pooled_report_rejects_repeated_seeds(self) -> None:
         sections = [([0, 1], [3, 4], [3.0, 3.1]), ([1, 2], [5, 6], [3.0, 3.2])]

@@ -3,19 +3,28 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import subprocess
+import sys
 import unittest
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
-import pytest
 from scipy.special import gammaln
 from scipy.stats import pearsonr
 
 from src.data.observations import ObservationSequence
 from src.models import hdp_hmm as hdp_hmm_module
 from src.models.hdp_hmm import TruncatedHDPHMM
+
+try:  # pytest no es dependencia: CI corre `unittest discover`, donde las pruebas lentas corren siempre.
+    from pytest import mark as _pytest_mark
+except ImportError:
+    slow = lambda test: test  # noqa: E731
+else:
+    slow = _pytest_mark.slow
 
 VOCABULARY = [f"s{index}" for index in range(6)]
 
@@ -33,12 +42,11 @@ def _observations(tokens: np.ndarray) -> ObservationSequence:
 
 
 def three_state_tokens(length: int, seed: int = 0) -> np.ndarray:
-    """Muestra de un HMM de 3 estados pegajosos, cada uno con un símbolo dominante.
+    """Muestra de un HMM de 3 estados pegajosos, cada uno con un símbolo dominante (0.95).
 
-    Con emisiones repartidas entre dos símbolos, o con ruido de 4 % por símbolo, el
-    posterior del HDP-HMM (η/V = 1/6, emisiones dispersas) prefiere de verdad estados
-    extra que emiten un solo símbolo; eso es el modelo, no el muestreador. Aquí cada
-    símbolo de ruido queda por debajo del 2 % de ocupación.
+    Generador limpio: cada símbolo de ruido (0.01) queda por debajo del 2 % de ocupación.  Con
+    ruido moderado (noisy_three_state_tokens) el HDP-HMM con η = 1 no recupera 3 estados sino
+    ≈ 4.4-4.9; RecoveryTests muestra que eso viene del prior de emisión, no del muestreador.
     """
 
     rng = np.random.default_rng(seed)
@@ -53,10 +61,67 @@ def three_state_tokens(length: int, seed: int = 0) -> np.ndarray:
     return tokens
 
 
-#: Cadena del preregistro (docs/preregistro-2026-10-26.md: 400 iteraciones, burn-in 200).
+def noisy_three_state_tokens(length: int, seed: int, dominant: float) -> tuple[np.ndarray, np.ndarray]:
+    """(símbolos, estados verdaderos) del mismo HMM de 3 estados con `dominant` en el símbolo propio
+    y (1 - dominant)/5 en cada uno de los otros cinco."""
+
+    rng = np.random.default_rng(seed)
+    transition = np.full((3, 3), 0.05) + np.eye(3) * 0.85
+    emission = np.full((3, 6), (1.0 - dominant) / 5.0)
+    emission[[0, 1, 2], [0, 2, 4]] = dominant
+    state = 0
+    tokens, states = np.empty(length, dtype=int), np.empty(length, dtype=int)
+    for index in range(length):
+        states[index] = state
+        tokens[index] = rng.choice(6, p=emission[state])
+        state = rng.choice(3, p=transition[state])
+    return tokens, states
+
+
+class _StartFromStatesHDPHMM(TruncatedHDPHMM):
+    """Arranca la cadena desde una segmentación dada (p. ej. los estados verdaderos)."""
+
+    def __init__(self, start_states: np.ndarray, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.start_states = np.asarray(start_states, dtype=int)
+
+    def _initialize_states(self, observations, vocab_size):
+        return self.start_states.copy()
+
+
+def _recovery_point(args: tuple[str, int, float, bool]) -> float:
+    """effective_states de una cadena del preregistro (K=20, 400/200) sobre datos de 3 estados."""
+
+    data, seed, eta, start_from_truth = args
+    if data == "limpia":
+        tokens, truth = three_state_tokens(500, seed=11), None
+    else:
+        tokens, truth = noisy_three_state_tokens(500, seed=11, dominant=0.80)
+    n_iters, burn_in = CRITERION_B_CHAIN
+    kwargs = dict(n_states=PREREGISTERED_TRUNCATION, n_iters=n_iters, burn_in=burn_in, seed=seed, eta=eta)
+    model = _StartFromStatesHDPHMM(truth, **kwargs) if start_from_truth else TruncatedHDPHMM(**kwargs)
+    return float(model.fit(_observations(tokens)).effective_states)
+
+
+#: Semillas de las 4 cadenas del preregistro.
+PREREGISTERED_SEEDS = (1, 2, 3, 4)
+
+
+#: Cadena del preregistro (docs/preregistro-2026-10-26.md: truncamiento 20, 400 iteraciones, burn-in 200).
+PREREGISTERED_TRUNCATION = 20
 CRITERION_B_CHAIN = (400, 200)
-#: Semillas 0..199, las de s8_criterio_b_bloques_simulada_salida_20261026.txt.
+#: Semillas 0..199, las de s8_criterio_b_bloques_pdmx200_salida_20261026.txt.
 CRITERION_B_SEEDS = range(200)
+#: PDMX obra 200 (599 clases de altura), copiada del caché del runner por s8 --single-work 200.
+#: Es la obra del criterio (b) en PDMX; con ella el control de β congelado tiene potencia
+#: (r = 0.675; en la obra simulada three_state_tokens(300, seed=5) daba r = 0.314).
+PDMX_WORK_200 = Path(__file__).resolve().with_name("data") / "pdmx_obra200_pitch_classes.json"
+
+
+def pdmx_work_200() -> ObservationSequence:
+    payload = json.loads(PDMX_WORK_200.read_text(encoding="utf8"))
+    tokens = np.asarray(payload["tokens"], dtype=int)
+    return ObservationSequence("symbolic", tokens, list(payload["vocabulary"]), [""] * tokens.size, [], {})
 
 
 class _FrozenBetaHDPHMM(TruncatedHDPHMM):
@@ -67,19 +132,22 @@ class _FrozenBetaHDPHMM(TruncatedHDPHMM):
 
 
 def _criterion_b_point(args: tuple[int, int, int, bool]) -> tuple[int, float]:
-    """(#β_k > 0.01 del primer sorteo, K ocupados) de una semilla sobre la obra simulada fija."""
+    """(#β_k > 0.01 del primer sorteo, K ocupados) de una semilla sobre PDMX obra 200."""
 
     n_iters, burn_in, seed, freeze_beta = args
     model_class = _FrozenBetaHDPHMM if freeze_beta else TruncatedHDPHMM
-    tokens = three_state_tokens(300, seed=5)
-    result = model_class(n_states=20, n_iters=n_iters, burn_in=burn_in, seed=seed).fit(_observations(tokens))
+    model = model_class(n_states=PREREGISTERED_TRUNCATION, n_iters=n_iters, burn_in=burn_in, seed=seed)
+    result = model.fit(pdmx_work_200())
     return int(np.sum(result.diagnostics.initial_beta > 0.01)), float(result.effective_states)
 
 
-def _criterion_b_rows(seeds, n_iters: int, burn_in: int, freeze_beta: bool = False) -> tuple[list[int], list[float]]:
-    jobs = [(n_iters, burn_in, seed, freeze_beta) for seed in seeds]
+def _in_parallel(function, jobs: list) -> list:
     with ProcessPoolExecutor(max_workers=min(len(jobs), os.cpu_count() or 1)) as pool:
-        rows = list(pool.map(_criterion_b_point, jobs))
+        return list(pool.map(function, jobs))
+
+
+def _criterion_b_rows(seeds, n_iters: int, burn_in: int, freeze_beta: bool = False) -> tuple[list[int], list[float]]:
+    rows = _in_parallel(_criterion_b_point, [(n_iters, burn_in, seed, freeze_beta) for seed in seeds])
     return [row[0] for row in rows], [row[1] for row in rows]
 
 
@@ -128,32 +196,77 @@ class BetaSamplingTests(unittest.TestCase):
         }
         self.assertGreater(len(n_large), 2, n_large)
 
-    @pytest.mark.slow
+    @slow
     def test_occupied_states_do_not_follow_the_first_beta_draw(self) -> None:
-        # Criterio (b) (PROMPT_CLAUDE.md, |r| < 0.3) con la cadena del preregistro y las 200 semillas
-        # juntas: |r| < 0.3 y equivalencia TOST significativa (regla en s8_criterio_b_bloques.py).
-        # Medido el 2026-10-26: r = 0.069, TOST p = 0.00037 (s8_criterio_b_agrupado_simulada_salida_20261026.txt).
+        # Criterio (b) (PROMPT_CLAUDE.md, |r| < 0.3) en PDMX obra 200 con la cadena del preregistro y
+        # las 200 semillas juntas: |r| < 0.3 y equivalencia TOST significativa (regla en
+        # s8_criterio_b_bloques.py).  Medido el 2026-10-26: r = -0.100, TOST p = 0.0016
+        # (s8_criterio_b_agrupado_pdmx200_salida_20261026.txt).  (b) no dice que las cadenas mezclen:
+        # en esta obra el R-hat de log L entre las semillas 1-4 es 2.59 (hallazgo H9, s10_mezcla_pdmx200.py).
         self.assertEqual(_criterion_b_decision(*_criterion_b_rows(CRITERION_B_SEEDS, *CRITERION_B_CHAIN)), "met")
 
-    @pytest.mark.slow
+    @slow
     def test_criterion_b_fails_with_a_frozen_beta(self) -> None:
         # Control de que la prueba anterior puede fallar: con β congelado en el primer sorteo (el
-        # defecto H1) y las mismas 200 semillas, la regla no puede dar «met».  Con n = 200 la TOST sólo
-        # es significativa si r < tanh(atanh(0.3) - 1.645/sqrt(197)) ≈ 0.19; medido el 2026-10-26:
-        # r = 0.314, not_met (s8_criterio_b_bloques_simulada_beta_congelado_salida_20261026.txt).
+        # defecto H1), la misma obra y las mismas 200 semillas, la regla da not_met.  Medido el
+        # 2026-10-27: r = 0.675, IC 95 % [0.592, 0.744]
+        # (s8_criterio_b_bloques_pdmx200_beta_congelado_salida_20261027.txt); con esa dependencia la
+        # regla da not_met con probabilidad ≈ 1 (test_criterion_b_decision, potencia del control).
         decision = _criterion_b_decision(*_criterion_b_rows(CRITERION_B_SEEDS, *CRITERION_B_CHAIN, freeze_beta=True))
-        self.assertNotEqual(decision, "met")
+        self.assertEqual(decision, "not_met")
+
+
+def _pdmx_chain_log_likelihoods(seed: int) -> list[float]:
+    """log p(x | θ_t) tras burn-in de una cadena del preregistro (K=20, 400/200) en PDMX obra 200."""
+
+    n_iters, burn_in = CRITERION_B_CHAIN
+    model = TruncatedHDPHMM(n_states=PREREGISTERED_TRUNCATION, n_iters=n_iters, burn_in=burn_in, seed=seed)
+    return [sample.log_likelihood for sample in model.fit(pdmx_work_200()).posterior_samples]
+
+
+class PreregisteredConvergenceTests(unittest.TestCase):
+    def test_convergence_rule_flags_pdmx_work_200(self) -> None:
+        # Hallazgo H9 (abierto): con β corregido y la cadena del preregistro las 4 cadenas no mezclan
+        # en PDMX obra 200; cada semilla se queda cerca de su K.  La regla «Convergencia» del
+        # preregistro (R-hat de log L < 1.1 entre las semillas 1-4) debe detectarlo y dejar la obra
+        # fuera de la métrica principal.  Medido el 2026-10-27: R-hat = 2.589
+        # (s10_mezcla_pdmx200_salida_20261027.txt).  Si un cambio del muestreador hace mezclar estas
+        # cadenas, esta prueba falla y hay que cerrar H9 en docs/auditoria-2026-10-26.md.
+        chains = _in_parallel(_pdmx_chain_log_likelihoods, list(PREREGISTERED_SEEDS))
+        rhat = hdp_hmm_module.split_rhat(chains)
+        self.assertAlmostEqual(rhat, 2.589, places=3)
+        self.assertGreaterEqual(rhat, 1.1)
+
+
+class RecoveryTests(unittest.TestCase):
+    """Criterio (c) con la configuración del preregistro (K=20, 400/200, semillas 1-4).
+
+    (c) se cumple con el generador limpio.  Con ruido moderado (0.80 en el símbolo propio, 0.04 en
+    cada otro) el HDP-HMM con η = 1 da ≈ 4.4-4.9 estados ocupados de 3 verdaderos (hallazgo H10 de
+    docs/auditoria-2026-10-26.md).  Medido el 2026-10-27 (scripts/auditoria_2026_10_26/hdp/
+    s11_estados_con_ruido.py): η = 1 arrancando por omisión 4.90, desde los estados verdaderos 4.35,
+    desde un estado por símbolo 4.72; η = 6 (prior de emisión uniforme) 3.25, 3.33 y 3.27.
+    """
+
+    def _mean_occupied(self, data: str, eta: float = 1.0, start_from_truth: bool = False) -> list[float]:
+        return _in_parallel(_recovery_point, [(data, seed, eta, start_from_truth) for seed in PREREGISTERED_SEEDS])
 
     def test_recovers_three_occupied_states(self) -> None:
-        tokens = three_state_tokens(500, seed=11)
-        occupied = [
-            TruncatedHDPHMM(n_states=12, n_iters=150, burn_in=75, seed=seed).fit(_observations(tokens)).effective_states
-            for seed in range(3)
-        ]
-
         # Antes del arreglo: 9 estados «activos» (cualquier ocupación en la muestra máxima).
+        # Medido el 2026-10-27: media 3.19 (s11_estados_con_ruido_salida_20261027.txt).
+        occupied = self._mean_occupied("limpia")
         self.assertGreaterEqual(np.mean(occupied), 2.5, occupied)
         self.assertLessEqual(np.mean(occupied), 3.8, occupied)
+
+    def test_extra_states_under_emission_noise_come_from_the_emission_prior(self) -> None:
+        # Si los estados extra fueran falta de mezcla, una cadena que arranca en la segmentación
+        # verdadera se quedaría en 3.  No: con η = 1 la deja (el posterior prefiere estados que
+        # emiten un solo símbolo).  El mismo muestreador con η = 6 recupera ≈ 3.
+        from_truth = self._mean_occupied("ruido", eta=1.0, start_from_truth=True)
+        self.assertGreater(np.mean(from_truth), 3.8, from_truth)
+        uniform_prior = self._mean_occupied("ruido", eta=6.0)
+        self.assertGreaterEqual(np.mean(uniform_prior), 2.5, uniform_prior)
+        self.assertLessEqual(np.mean(uniform_prior), 3.8, uniform_prior)
 
 
 def _log_beta_posterior(beta: np.ndarray, state_sequences, model: TruncatedHDPHMM) -> np.ndarray:
@@ -270,6 +383,23 @@ class SeedTests(unittest.TestCase):
         np.testing.assert_array_equal(first.diagnostics.initial_beta, second.diagnostics.initial_beta)
         self.assertEqual(first.effective_states, second.effective_states)
         self.assertNotEqual(first.diagnostics.log_likelihood_history, other.diagnostics.log_likelihood_history)
+
+
+class ImportWithoutPytestTests(unittest.TestCase):
+    def test_hdp_test_modules_import_without_pytest(self) -> None:
+        # CI (.github/workflows/tests.yml) instala sólo `pip install -e .` y corre
+        # `python -m unittest discover -s tests`; pytest no es dependencia declarada.
+        code = (
+            "import sys; sys.modules['pytest'] = None\n"
+            "import tests.test_hdp_sampler, tests.test_hdp_reporting\n"
+        )
+        process = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(process.returncode, 0, process.stderr[-2000:])
 
 
 if __name__ == "__main__":

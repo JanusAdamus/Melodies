@@ -1,0 +1,8 @@
+cadena: K=20, 400 iteraciones, burn-in 200; semillas 1-4; 500 eventos (semilla 11)
+limpia     arranque omision  eta 1.0: K ocupados por cadena [3.195, 3.05, 3.115, 3.415] media 3.19
+ruido 0.80 arranque omision  eta 1.0: K ocupados por cadena [5.11, 5.2, 4.46, 4.85] media 4.90
+ruido 0.80 arranque omision  eta 6.0: K ocupados por cadena [3.29, 3.395, 3.11, 3.19] media 3.25
+ruido 0.80 arranque verdad   eta 1.0: K ocupados por cadena [4.43, 4.19, 4.885, 3.91] media 4.35
+ruido 0.80 arranque verdad   eta 6.0: K ocupados por cadena [3.545, 3.28, 3.21, 3.27] media 3.33
+ruido 0.80 arranque simbolos eta 1.0: K ocupados por cadena [5.07, 4.29, 4.655, 4.855] media 4.72
+ruido 0.80 arranque simbolos eta 6.0: K ocupados por cadena [3.165, 3.32, 3.195, 3.385] media 3.27

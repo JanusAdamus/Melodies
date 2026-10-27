@@ -9,8 +9,10 @@ Uso:
 --congelar-beta es el control negativo: β queda fijo en el primer sorteo (el defecto H1), así que la
 regla debe dejar de dar «met».
 
-«simulada» es la obra de las pruebas: three_state_tokens(300, seed=5) de tests/test_hdp_sampler.py
-(HMM de 3 estados, 6 símbolos).  Con un caché del runner se toma la obra --single-work (clases de
+«simulada» es three_state_tokens(300, seed=5) de tests/test_hdp_sampler.py (HMM de 3 estados, 6
+símbolos).  Las pruebas del criterio (b) usan PDMX obra 200 (tests/data/pdmx_obra200_pitch_classes.json,
+copia de --single-work 200): ahí el control con β congelado da r = 0.675 y tiene potencia; en la
+simulada daba r = 0.314, con P(not_met) ≈ 0.59.  Con un caché del runner se toma la obra --single-work (clases de
 altura 0..11).  Truncamiento K=20; por omisión 400 iteraciones y burn-in 200
 (docs/preregistro-2026-10-26.md, que sólo fija la cadena).  Para cada semilla: #β_k > 0.01 del
 primer sorteo y K ocupados (effective_states, ocupación ≥ 2 %).  Con --resumen recalcula todo

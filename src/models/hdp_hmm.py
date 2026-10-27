@@ -154,6 +154,37 @@ def heldout_nll_per_token(
     return -float(logsumexp(log_predictive) - np.log(log_predictive.size)) / test_tokens.size
 
 
+def split_rhat(chains: Sequence[Sequence[float]]) -> float:
+    """R-hat dividido (Gelman et al., BDA3, §11.4) de una cantidad escalar entre cadenas.
+
+    Cada cadena (todas del mismo largo, >= 4) se parte en dos mitades (si el largo es impar se
+    descarta el valor central); con m mitades de largo n, W = media de las varianzas dentro,
+    B = n · varianza de las medias y R-hat = sqrt(((n - 1)/n · W + B/n) / W).
+    """
+
+    values = [np.asarray(chain, dtype=float) for chain in chains]
+    if len(values) < 2:
+        raise ValueError("R-hat requiere al menos dos cadenas.")
+    if len({value.size for value in values}) != 1 or values[0].size < 4:
+        raise ValueError("Las cadenas deben tener el mismo largo, al menos 4.")
+    half = values[0].size // 2
+    halves = np.stack([part for value in values for part in (value[:half], value[-half:])])
+    within = halves.var(axis=1, ddof=1).mean()
+    between = half * halves.mean(axis=1).var(ddof=1)
+    if within == 0.0:
+        return 1.0 if between == 0.0 else float("inf")
+    return float(np.sqrt(((half - 1) / half * within + between / half) / within))
+
+
+def log_likelihood_rhat(results: Sequence["HDPHMMResult"]) -> float:
+    """R-hat dividido de log p(x | θ_t) sobre las muestras tras burn-in de varias cadenas.
+
+    Es el diagnóstico de convergencia del preregistro (R-hat < 1.1 entre las 4 cadenas).
+    """
+
+    return split_rhat([[sample.log_likelihood for sample in result.posterior_samples] for result in results])
+
+
 def _count_segmented_transitions(
     state_sequences: list[np.ndarray],
     n_states: int,
