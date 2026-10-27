@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 from scipy.special import gammaln
-from scipy.stats import spearmanr
+from scipy.stats import pearsonr
 
 from src.data.observations import ObservationSequence
 from src.models import hdp_hmm as hdp_hmm_module
@@ -76,16 +76,21 @@ class BetaSamplingTests(unittest.TestCase):
         tokens = three_state_tokens(300, seed=5)
         n_large, occupied = [], []
         for seed in range(10):
-            result = TruncatedHDPHMM(n_states=20, n_iters=80, burn_in=40, seed=seed).fit(_observations(tokens))
+            # Cadena del preregistro (400 iteraciones, burn-in 200).  Con 80/40, 50 semillas
+            # sobre estos mismos datos dan r = 0.318 (p = 0.025): la dependencia residual es
+            # de cadena corta; con 400/200 las mismas 50 semillas dan r = 0.025 (p = 0.86).
+            result = TruncatedHDPHMM(n_states=20, n_iters=400, burn_in=200, seed=seed).fit(_observations(tokens))
             n_large.append(int(np.sum(result.diagnostics.initial_beta > 0.01)))
             occupied.append(result.effective_states)
 
-        # Antes del arreglo la correlación era 0.96 (s5_beta_seed.py). Con n = 10 el valor
-        # crítico bilateral al 5 % de Spearman es 0.648; |r| < 0.3 fallaría por azar ~40 %
-        # de las veces aun con independencia exacta.
+        # Criterio (b) tal como está preregistrado (PROMPT_CLAUDE.md): 10 semillas, una obra,
+        # correlación de Pearson |r| < 0.3 (antes del arreglo era 0.96, s5_beta_seed.py).
+        # Es un umbral sobre la estimación puntual: con n = 10 no demuestra independencia
+        # (el IC 95 % de Fisher de r tiene ancho ~1.26).  La evidencia con 50 semillas, IC y
+        # equivalencia está en scripts/auditoria_2026_10_26/hdp/s5_beta_seed_v3*.
         self.assertGreater(len(set(n_large)), 2, "el primer β debe variar entre semillas")
-        rho = spearmanr(n_large, occupied).statistic
-        self.assertTrue(np.isnan(rho) or abs(rho) < 0.648, f"rho={rho}, K={occupied}, n_beta={n_large}")
+        r = pearsonr(n_large, occupied).statistic
+        self.assertLess(abs(r), 0.3, f"r={r}, K={occupied}, n_beta={n_large}")
         self.assertLess(np.ptp(occupied), 1.5, f"K por semilla: {occupied}")
 
     def test_recovers_three_occupied_states(self) -> None:
