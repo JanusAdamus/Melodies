@@ -22,7 +22,7 @@ class CacheCanonicalIdTests(unittest.TestCase):
             "metadata": {},
         }
 
-        piece = _decode_cache_entry(payload, ["0", "2", "4"])
+        piece = _decode_cache_entry(payload, ["0", "2", "4"], "C:\\PDMX")
 
         self.assertEqual(piece.canonical_work_id, "anon scatter the mud")
 

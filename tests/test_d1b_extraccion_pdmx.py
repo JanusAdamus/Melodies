@@ -435,8 +435,11 @@ class CacheRepresentationTests(unittest.TestCase):
             for row in rows:
                 for key in ("duration_bins", "metrical_levels"):
                     row.pop(key, None)
+            # El umbral es el del resto del cache (_config usa 1); aqui solo se prueba
+            # la representacion ausente en la exclusion.
             rows.append({"kind": "exclusion", "piece_id": "x", "path": "x",
-                         "reason": "too_short", "detail": "", "extraction_mode": "melody"})
+                         "reason": "too_short", "detail": "", "extraction_mode": "melody",
+                         "min_events_per_piece": 1})
             cache.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
             reused = prepare_corpus(

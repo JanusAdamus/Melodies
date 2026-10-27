@@ -15,7 +15,7 @@ from src.data.library_catalog import infer_composer
 from src.data.observations import PITCH_CLASS_NAMES
 from src.data.parsing import EXTRACTION_MODES, extract_events_for_mode, parse_score
 
-from ..config import ExperimentConfig, PreprocessingConfig, RepresentationConfig
+from ..config import CorpusConfig, ExperimentConfig, PreprocessingConfig, RepresentationConfig
 from ..experiment.splits import canonicalize_work_label
 from ..schemas import CorpusPreparationResult, ExclusionRecord, PreparedPiece
 from .reader import build_piece_id, discover_score_paths
@@ -213,6 +213,69 @@ def check_corpus_cache_representation(
             f"El cache {cache_path} tiene tokens {sorted(signatures, key=repr)} y la "
             f"corrida pide {expected}; usa un cache propio de esa representacion."
         )
+
+
+# Hallazgo D1b (auditoria): el contenido de una fila depende tambien de los filtros del
+# corpus. ``min_events_per_piece`` decide entre pieza y exclusion ``too_short``; un cache
+# hecho con otro umbral devolvia piezas que una corrida limpia excluye. ``extractor_version``
+# se sube cuando cambia el codigo de extraccion o de tokenizacion, para que los caches
+# viejos se rechacen en vez de mezclarse.
+MIN_EVENTS_KEY = "min_events_per_piece"
+EXTRACTOR_VERSION_KEY = "extractor_version"
+EXTRACTOR_VERSION = 1
+# Todas las filas de los caches de artifacts/ dicen "min_events_per_piece=32" en el detalle
+# de sus exclusiones too_short, y todos los config.json de agosto usan 32.
+AUGUST_MIN_EVENTS_PER_PIECE = 32
+# Las filas sin version salieron del extractor vigente al introducir la version.
+UNRECORDED_EXTRACTOR_VERSION = 1
+CORPUS_FILTER_KEYS = (MIN_EVENTS_KEY, EXTRACTOR_VERSION_KEY)
+
+
+def corpus_filter_fields(corpus: CorpusConfig) -> dict[str, object]:
+    """Campos del corpus y del codigo que, ademas de extraccion y tokens, fijan una fila."""
+
+    return {
+        MIN_EVENTS_KEY: int(corpus.min_events_per_piece),
+        EXTRACTOR_VERSION_KEY: EXTRACTOR_VERSION,
+    }
+
+
+def _filter_signature(fields: dict[str, object]) -> tuple:
+    return (
+        fields.get(MIN_EVENTS_KEY, AUGUST_MIN_EVENTS_PER_PIECE),
+        fields.get(EXTRACTOR_VERSION_KEY, UNRECORDED_EXTRACTOR_VERSION),
+    )
+
+
+def check_corpus_cache_filters(cache_path: str | Path | None, corpus: CorpusConfig) -> None:
+    """Se niega a usar un cache hecho con otro umbral de eventos o con otro extractor."""
+
+    expected = _filter_signature(corpus_filter_fields(corpus))
+    if cache_path is None or not Path(cache_path).exists():
+        return
+    signatures: set[tuple] = set()
+    with Path(cache_path).open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                signatures.add(_filter_signature(json.loads(line)))
+    if signatures and signatures != {expected}:
+        raise CorpusCacheModeError(
+            f"El cache {cache_path} tiene (min_events_per_piece, extractor_version) "
+            f"{sorted(signatures, key=repr)} y la corrida pide {expected}; usa un cache "
+            "propio de esa configuracion."
+        )
+
+
+def check_corpus_cache(
+    cache_path: str | Path | None,
+    config: ExperimentConfig,
+    representation: str | None = None,
+) -> None:
+    """Toda la firma del cache: extraccion, representacion, filtros y version."""
+
+    check_corpus_cache_mode(cache_path, config.preprocessing)
+    check_corpus_cache_representation(cache_path, config.representation, representation)
+    check_corpus_cache_filters(cache_path, config.corpus)
 
 
 def _duration_to_bin_index(duration: float, duration_bins: tuple[float, ...]) -> int:
@@ -448,13 +511,23 @@ def _encode_cache_entry(
 def _decode_cache_entry(
     payload: dict[str, object],
     vocabulary: list[str],
+    root_dir: str,
 ) -> PreparedPiece | ExclusionRecord:
     kind = payload.pop("kind")
-    for key in (*CACHE_SIGNATURE_KEYS, *TOKEN_PARAMETER_KEYS):  # ya validados
+    for key in (*CACHE_SIGNATURE_KEYS, *TOKEN_PARAMETER_KEYS, *CORPUS_FILTER_KEYS):  # ya validados
         payload.pop(key, None)
+    # El piece_id es relativo a la raiz del corpus: se rehace con la raiz de ESTA corrida
+    # para que coincida con el de una corrida limpia.
     if kind == "exclusion":
         payload.pop(REPRESENTATION_KEY, None)
+        payload["piece_id"] = build_piece_id(Path(str(payload["path"])), root_dir)
         return ExclusionRecord(**payload)  # type: ignore[arg-type]
+    piece_id = build_piece_id(Path(str(payload["source_path"])), root_dir)
+    payload["piece_id"] = piece_id
+    metadata = dict(payload.get("metadata") or {})  # type: ignore[arg-type]
+    if "relative_path" in metadata:
+        metadata["relative_path"] = piece_id
+    payload["metadata"] = metadata
     # Las cachés anteriores al 2026-10-26 guardan la obra canónica truncada
     # por Path().stem (auditoría C3); se recalcula con la regla vigente.
     canonical_work_id = canonicalize_work_label(f"{payload['composer']} {payload['title']}")
@@ -506,9 +579,8 @@ def prepare_corpus(
     selected = {str(path) for path in score_paths}
 
     signature = extraction_signature(config.preprocessing)
-    check_corpus_cache_mode(cache_path, config.preprocessing)
-    tokens = token_fields(config.representation, representation)
-    check_corpus_cache_representation(cache_path, config.representation, representation)
+    check_corpus_cache(cache_path, config, representation)
+    tokens = {**token_fields(config.representation, representation), **corpus_filter_fields(config.corpus)}
 
     entries: list[PreparedPiece | ExclusionRecord] = []
     cache_file = Path(cache_path) if cache_path is not None else None
@@ -516,7 +588,9 @@ def prepare_corpus(
         with cache_file.open("r", encoding="utf-8") as handle:
             for line in handle:
                 if line.strip():
-                    entry = _decode_cache_entry(json.loads(line), vocabulary)
+                    entry = _decode_cache_entry(
+                        json.loads(line), vocabulary, config.corpus.root_dir
+                    )
                     if _entry_source_path(entry) in selected:
                         entries.append(entry)
 

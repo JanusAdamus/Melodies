@@ -86,6 +86,20 @@ Hallazgo nuevo, posterior a las cinco revisiones; se registró en el handoff
   `corpus_cache_3000_melody.jsonl`; el de agosto conserva
   `corpus_cache_3000.jsonl`.  Comprobado en modo lectura: el caché de agosto de
   esta máquina sólo contiene `legacy_all_parts` y se rechaza para `melody`.
+- **Firma completa del caché (revisión adversarial).** La firma no incluía
+  `min_events_per_piece`: un caché hecho con umbral 1 y reutilizado con 32
+  devolvía una pieza donde una corrida limpia da una exclusión `too_short`, sin
+  error (`tests/test_d1b_cache_firma_filtros.py`).  Ahora cada fila guarda
+  `extraction_mode` (y `prefer_treble`, `include_rests` en legacy),
+  `representation` (y `duration_bins`, `metrical_levels` según la
+  representación), `min_events_per_piece` y `extractor_version`;
+  `check_corpus_cache` rechaza cualquier diferencia, y `--resume` también
+  compara el umbral.  Las filas sin umbral cuentan como 32: en modo lectura,
+  todas las exclusiones `too_short` de los cachés de `artifacts/` dicen
+  `min_events_per_piece=32` y ninguna pieza tiene menos de 32 eventos.  El
+  `piece_id` de una fila se rehace con la raíz del corpus de la corrida.
+  `transpose_to_canonical_key` e `include_metadata_features` no entran en la
+  firma porque el preprocesamiento no los lee (sólo `protocol.py` los valida).
 - **Pendiente.** Las cifras PDMX del capítulo 4 siguen siendo las de la
   extracción antigua hasta la corrida de la Fase 2 con `melody` y caché nuevo.
 
