@@ -53,6 +53,20 @@ def _is_piece_work(record: Mapping[str, object]) -> bool:
     return str(record["canonical_work_id"]).startswith(PIECE_WORK_PREFIX)
 
 
+def _label_identifies(record: Mapping[str, object]) -> bool:
+    return not (record["is_empty"] or record["is_generic"] or record["is_short"])
+
+
+def _isolated_without_label(record: Mapping[str, object]) -> bool:
+    """Pieza sin etiqueta útil que quedó en su propia obra «pieza:<ruta>».
+
+    Una pieza con buena etiqueta puede acabar en una obra «pieza:» porque el
+    contenido la unió con una pieza sin metadatos; su etiqueta sigue contando.
+    """
+
+    return _is_piece_work(record) and not _label_identifies(record)
+
+
 def build_canonicalization_audit(
     pieces: Iterable[Mapping[str, object] | object],
 ) -> dict[str, object]:
@@ -144,7 +158,7 @@ def build_canonicalization_audit(
     by_aggressive_key: dict[str, set[str]] = {}
     for record in records:
         key = str(record["aggressive_key"])
-        if not key or _is_piece_work(record):
+        if not key or _isolated_without_label(record):
             continue
         by_aggressive_key.setdefault(key, set()).add(str(record["canonical_work_id"]))
     near_miss_groups = [
