@@ -85,3 +85,18 @@ evaluación y memoria, con el dispositivo de cada uno. Ninguna conclusión de
 
 - La corrida `tesis_3000_gpu_20260823_1941` y `multicorpus_full` se conservan sin
   tocar y se citan como versión anterior cuando el texto lo necesite.
+
+## Enmienda 1, 2026-10-27 (antes de ver resultados de las corridas corregidas)
+
+Decisión de Adrián. Agrega a la sección B una regla que el texto original no
+fijaba; no cambia ninguna de las anteriores.
+
+**Frontera de Pareto (NLL contra costo).** En el eje de NLL, un modelo domina a
+otro sólo si su diferencia pareada por obra (NLL ponderada por tokens) tiene IC
+tras Holm, por pasos, que excluye 0 a su favor; un par que Holm no rechaza es
+empate en ese eje. Un par de modelos con menos de 10 obras de prueba en común no
+decide dominancia en NLL con la diferencia pareada y se compara con los
+marginales; el reporte lista esos pares. En el eje de costo se usa la
+incertidumbre de cada medición de costo, sin el tiempo de evaluación. Esta regla
+está implementada en `Comparacion/runner.py` (`PARETO_MIN_PAIRED_WORKS = 10`)
+de la rama `fix/auditoria-comparacion`.
