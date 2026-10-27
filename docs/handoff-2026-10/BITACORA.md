@@ -66,3 +66,16 @@ Una entrada por tarea cerrada (ver PROMPT_CLAUDE.md, «Bitácora»).
 
 - El integrador mezcla sólo las ramas con `clean=true`. Las tres ramas (hdp, comparacion, d1b) tienen `clean=false` por los hallazgos anteriores, así que no se mezcló ninguna. `fix/auditoria-tesis` sigue en de5d5d9 más esta entrada.
 - Siguiente paso: corregir con TDD los hallazgos de cada rama, repetir la revisión y mezclar en el orden hdp → comparacion → d1b.
+## 2026-10-27, estado para retomar (sesión cortada o sin uso)
+
+- Insumos completos en esta computadora (`external/` no se versiona):
+  - MuseTrainer: `external/library`, clon de https://github.com/musetrainer/library en 9128876 (69 partituras en `scores/`). Es el mismo commit que la copia de la USB (`backup-pendrive-temporal/Melodies_preclone_backup_20260814/external/library`).
+  - SymbTr: `external/SymbTr`, clon de https://github.com/MTG/SymbTr en 246bbe3 (2025-04-18), 2200 archivos `.xml`. Decisión de Adrián: usar el público; puede no ser la versión de la laptop.
+  - Falta anotar el hash agregado de MuseTrainer y SymbTr (mismo método que PDMX, tarea 0.3).
+- Preregistro: Enmienda 1 del 2026-10-27 (cd8338b), regla de la frontera de Pareto con mínimo 10 obras en común, aprobada por Adrián antes de correr.
+- Ramas (todas en origin, sin cambios sin commit al escribir esta entrada):
+  - `fix/auditoria-hdp` a183bd2: criterio (b) en 4 bloques de 50 semillas (400/200) con r = 0.025, −0.034, 0.152, 0.177 (simulada) y −0.109, −0.162, −0.117, 0.087 (PDMX obra 200); salidas `scripts/auditoria_2026_10_26/hdp/s8_criterio_b_bloques_*_salida_20261026.txt`. La revisión adversarial confirmó que la regla «cada bloque pasa TOST» no tiene potencia (≈ 1.8 % bajo independencia) y que con el criterio escrito (|r| < 0.3) y las 200 semillas juntas la equivalencia sí se demuestra (cifras del revisor, sin verificar por el implementador: simulada r = 0.069, TOST p = 0.0004; PDMX r = −0.100, TOST p = 0.0016). Un agente estaba reescribiendo la decisión con el criterio escrito y quitando el xfail; si no hay commit posterior a a183bd2, repetir esa tarea.
+  - `fix/auditoria-comparacion` 7282d1f: familia de Holm fija en las comparaciones del diseño (prueba sin datos = p 1, «no evaluable», `holm_family` en el JSON); suite 331 pasadas + 3 saltadas. Pendiente: revisión adversarial (estaba en curso) y `scripts/figuras_tesis.py:513`, que falla con `p_value_holm` None.
+  - `fix/auditoria-d1b` a2a8ddc: firma del caché con `min_events_per_piece` y `extractor_version`; suite 271 pasadas + 3 saltadas. Pendiente: revisión adversarial (estaba en curso).
+- Siguiente: terminar revisiones → mezclar hdp → comparacion → d1b con suite en verde tras cada una → 1.4 → 1.5 → Parada 1.
+- Entorno de Claude Code en esta máquina (no es del repo): se repararon `C:\Program Files\Git\etc\fstab` (estaba en blanco), el PATH de usuario (`Git\bin`) y los hooks de ECC (`~/.claude/ecc-windows-fix.js`, volver a correrlo si ECC se actualiza). Bash todavía reduce `\` a `\` en comandos; escribir scripts con la herramienta de archivos.
