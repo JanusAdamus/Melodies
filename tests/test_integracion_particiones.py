@@ -480,6 +480,33 @@ class EvidencePackageContentsTests(unittest.TestCase):
             self.assertTrue((packaged / "headline_estimates.json").is_file())
             self.assertTrue((packaged / "vomm_order_grid_audit.json").is_file())
 
+    def test_hdp_traces_execution_plan_and_resume_inputs_are_packaged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = _build_run(root)
+            # El nombre que escribe write_cell_traces, no el viejo hdp_chain_trace_seed*.csv.
+            (run_dir / "hdp_traces.csv").write_text(
+                "split_seed,data_seed,model_seed,frac,iteration,log_likelihood,active_states,in_burn_in\n"
+                "7,1,1,1.0,1,-1.0,3,True\n",
+                encoding="utf-8",
+            )
+            (run_dir / "execution_plan.json").write_text(json.dumps({"split_sha256": "ab" * 32}), encoding="utf-8")
+            (run_dir / runner.RESUME_INPUTS_FILENAME).write_text(
+                json.dumps({"split_sha256": "ab" * 32, "corpus_sha256": "cd" * 32, "config_sha256": "ef" * 32}),
+                encoding="utf-8",
+            )
+            registry = root / "registry.json"
+            registry.write_text(
+                json.dumps({"runs": [{"name": "main", "path": str(run_dir), "role": "primary", "cost_usable": True}]}),
+                encoding="utf-8",
+            )
+            export_evidence_package(registry, root / "public")
+            packaged = root / "public" / "runs" / "main"
+            self.assertTrue((packaged / "hdp_traces.csv").is_file())
+            self.assertTrue((packaged / runner.RESUME_INPUTS_FILENAME).is_file())
+            plan = json.loads((packaged / "execution_plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(plan["split_sha256"], "ab" * 32)
+
 
 if __name__ == "__main__":
     unittest.main()

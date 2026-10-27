@@ -22,9 +22,14 @@ _EXTRA_FILES = (
     "denominator_audit.json",
     "finite_hmm_grid_audit.json",
     "hdp_chain_diagnostics.json",
+    # Trazas largas del HDP que escribe hdp_diagnostics.write_cell_traces (H7).
+    "hdp_traces.csv",
     "headline_estimates.json",
     "training_exposure_audit.json",
     "vomm_order_grid_audit.json",
+    # split_sha256 y el plan de la corrida; los hashes con que --resume la validó.
+    "execution_plan.json",
+    "checkpoint_inputs.json",
 )
 _TEXT_EXTENSIONS = {".csv", ".json", ".jsonl", ".md", ".txt"}
 _SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -146,6 +151,7 @@ def _candidate_files(run_dir: Path) -> Iterable[Path]:
                 raise ValueError(f"symbolic links are not allowed in evidence: {path}")
             seen.add(path)
             yield path
+    # hdp_chain_trace_seed*.csv: nombre de las corridas anteriores a H7.
     for pattern in ("splits/*.json", "hdp_chain_trace_seed*.csv"):
         for path in sorted(run_dir.glob(pattern)):
             if path.is_file() and path not in seen:
