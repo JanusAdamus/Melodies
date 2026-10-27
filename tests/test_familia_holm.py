@@ -184,9 +184,10 @@ class RunnerFamilyModelsTests(unittest.TestCase):
             _comparison_family_models(SimpleNamespace(include_vomm_control=True)),
             ["finite_hmm", "hdp_hmm", "transformer", "vomm"],
         )
+        # Aclaración 2: sin VOMM la familia no se encoge; la corrida es exploratoria.
         self.assertEqual(
             _comparison_family_models(SimpleNamespace(include_vomm_control=False)),
-            ["finite_hmm", "hdp_hmm", "transformer"],
+            ["finite_hmm", "hdp_hmm", "transformer", "vomm"],
         )
 
 

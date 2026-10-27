@@ -397,8 +397,24 @@ def audit_run(run_dir: str | Path) -> dict[str, object]:
         "status": _worst(
             str(check["status"]) for check in checks if not check.get("advisory", False)
         ),
+        "analysis_status": _analysis_status_of(config),
         "checks": checks,
         "counts": _counts(root, checks),
+    }
+
+
+def _analysis_status_of(config: Mapping[str, object] | None) -> dict[str, object]:
+    """Aclaración 2: una corrida sin VOMM es exploratoria y no evalúa la regla de B."""
+
+    include_vomm = None if config is None else config.get("include_vomm_control")
+    if include_vomm is None:
+        return {"status": "unknown", "evaluates_preregistered_rule_B": None, "reason": "config_without_include_vomm_control"}
+    if include_vomm:
+        return {"status": "preregistered", "evaluates_preregistered_rule_B": True, "reason": None}
+    return {
+        "status": "exploratory",
+        "evaluates_preregistered_rule_B": False,
+        "reason": "run_without_vomm: the six preregistered comparisons of B include the vomm",
     }
 
 

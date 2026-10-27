@@ -497,6 +497,7 @@ def _build_execution_plan(
         "status": "planned_no_evidence",
         "claims_evidence": False,
         "mode": "plan_only" if plan_only else "full_run",
+        "analysis_status": _analysis_status(config),
         # Hash de splits/manifest.json: identifica la partición sin depender del SO.
         "split_sha256": split_sha256,
         "splits": {
@@ -617,14 +618,35 @@ def _load_structural_annotations(path_value: str | None) -> dict[str, object] | 
     return {"path": str(path), "records": records}
 
 
-def _comparison_family_models(config) -> list[str]:
-    """Modelos que forman la familia de Holm: los que el diseño corre, no los que
-    dejaron filas.  Con el VOMM son cuatro modelos y seis pares (preregistro B)."""
+#: Familia preregistrada (sección B y Aclaración 2): cuatro modelos, seis pares.
+PREREGISTERED_FAMILY_MODELS = ("finite_hmm", "hdp_hmm", "transformer", "vomm")
 
-    models = ["finite_hmm", "hdp_hmm", "transformer"]
+
+def _comparison_family_models(config) -> list[str]:
+    """Modelos que forman la familia de Holm: los del preregistro, no los que
+    dejaron filas ni los que esta corrida activó.  Sin VOMM la familia no se
+    encoge: sus tres pares quedan no evaluables y la corrida es exploratoria."""
+
+    return sorted(PREREGISTERED_FAMILY_MODELS)
+
+
+def _analysis_status(config) -> dict[str, object]:
+    """Si la corrida evalúa la regla preregistrada de B o es exploratoria (Aclaración 2)."""
+
     if config.include_vomm_control:
-        models.append("vomm")
-    return sorted(models)
+        return {
+            "status": "preregistered",
+            "evaluates_preregistered_rule_B": True,
+            "reason": None,
+            "holm_family_models": sorted(PREREGISTERED_FAMILY_MODELS),
+        }
+    return {
+        "status": "exploratory",
+        "evaluates_preregistered_rule_B": False,
+        "reason": "run_without_vomm: the six preregistered comparisons of B include the vomm; "
+        "its pairs are not evaluable and this run does not evaluate the rule of B",
+        "holm_family_models": sorted(PREREGISTERED_FAMILY_MODELS),
+    }
 
 
 def _build_piece_metric_rows(
@@ -2058,11 +2080,15 @@ def run_learning_curve_experiment(
                 flush=True,
             )
 
-    headline_payload = headline_estimates(
-        piece_metric_rows,
-        bootstrap_samples=config.bootstrap_samples,
-        seed=config.bootstrap_seed,
-    )
+    analysis_status = _analysis_status(config)
+    headline_payload = {
+        "analysis_status": analysis_status,
+        **headline_estimates(
+            piece_metric_rows,
+            bootstrap_samples=config.bootstrap_samples,
+            seed=config.bootstrap_seed,
+        ),
+    }
     _write_json(output_root / "headline_estimates.json", headline_payload)
     summary_rows = _aggregate_summary(raw_rows, headline_payload)
     write_csv(output_root / "results_raw.csv", raw_rows)
@@ -2108,6 +2134,7 @@ def run_learning_curve_experiment(
         seed=config.bootstrap_seed,
         expected_models=_comparison_family_models(config),
     )
+    pairwise_payload = {"analysis_status": analysis_status, **pairwise_payload}
     _write_json(output_root / "pairwise_comparisons.json", pairwise_payload)
     # Los dos denominadores del reporte (archivos evaluados y obras comparadas)
     # se explican con evidencia en lugar de conciliarse a mano.
@@ -2135,9 +2162,10 @@ def run_learning_curve_experiment(
         tolerance=config.boundary_tolerance,
     )
     _write_json(output_root / "structural_evaluation.json", structural_payload)
-    pareto_payload = _build_pareto_summary(
-        raw_rows, structural_payload, headline_payload, pairwise_payload
-    )
+    pareto_payload = {
+        "analysis_status": analysis_status,
+        **_build_pareto_summary(raw_rows, structural_payload, headline_payload, pairwise_payload),
+    }
     _write_json(output_root / "pareto_summary.json", pareto_payload)
     _write_json(
         protocol_path,
@@ -2162,6 +2190,8 @@ def run_learning_curve_experiment(
     }
     summary = {
         "status": "completed",
+        # Aclaración 2: sin VOMM la corrida no evalúa la regla de B.
+        "analysis_status": analysis_status,
         "output_root": str(output_root),
         "n_prepared_pieces": len(preparation.pieces),
         "n_exclusions": len(preparation.exclusions),
