@@ -29,18 +29,18 @@ def _piece(
 
 
 class CanonicalizationDetailsTests(unittest.TestCase):
-    def test_label_normalization_is_unchanged(self) -> None:
-        # Comportamiento vigente de la corrida original: Path().stem borra el
-        # último sufijo con punto, así que "No.2" pierde el número.
+    def test_label_normalization_keeps_dotted_numbers(self) -> None:
+        # Corregido el 2026-10-26 (auditoría C3): antes Path().stem borraba
+        # el último sufijo con punto y "No.2" perdía el número.
         self.assertEqual(
-            canonicalize_work_label("Chopin Nocturne_Op.9 No.2"), "chopin nocturne op 9 no"
+            canonicalize_work_label("Chopin Nocturne_Op.9 No.2"), "chopin nocturne op 9 no 2"
         )
 
-    def test_details_flag_the_stripped_trailing_suffix(self) -> None:
+    def test_details_no_longer_drop_a_trailing_suffix(self) -> None:
         details = canonicalization_details("Beethoven Sonata No.1")
 
-        self.assertTrue(details["dropped_suffix"])
-        self.assertEqual(details["dropped_suffix_text"], ".1")
+        self.assertFalse(details["dropped_suffix"])
+        self.assertEqual(details["canonical_work_id"], "beethoven sonata no 1")
 
     def test_details_do_not_flag_labels_without_a_trailing_suffix(self) -> None:
         details = canonicalization_details("Beethoven Sonata No 1")
@@ -140,19 +140,15 @@ class CanonicalizationAuditTests(unittest.TestCase):
         self.assertEqual(audit["n_canonical_works"], 2)
         self.assertEqual(audit["near_miss_groups"], [])
 
-    def test_movement_numbers_lost_to_the_stem_are_reported(self) -> None:
+    def test_movement_numbers_after_a_dot_stay_distinct(self) -> None:
         pieces = [
             _piece("a", "Sonata No.1", "Beethoven", tokens=[60, 62, 64]),
             _piece("b", "Sonata No.2", "Beethoven", tokens=[71, 60, 55]),
         ]
         audit = build_canonicalization_audit(pieces)
 
-        # Las dos sonatas caen en el mismo identificador: es exactamente el
-        # riesgo que la revisión humana debe resolver, no un acierto.
-        self.assertEqual(audit["n_canonical_works"], 1)
-        reasons = {item["reason"] for item in audit["suspicious_collisions"]}
-        self.assertIn("dropped_suffix", reasons)
-        self.assertEqual([item["piece_id"] for item in audit["dropped_suffixes"]], ["a", "b"])
+        self.assertEqual(audit["n_canonical_works"], 2)
+        self.assertEqual(audit["dropped_suffixes"], [])
 
     def test_group_with_disagreeing_fingerprints_is_suspicious(self) -> None:
         pieces = [

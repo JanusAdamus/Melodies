@@ -85,6 +85,13 @@ def build_observation_sequence(
         raise ValueError("La secuencia de eventos esta vacia.")
 
     if observation_type == "pitch_class":
+        missing = [event for event in events if event.representative_pitch_class is None]
+        if missing:
+            first = missing[0]
+            raise ValueError(
+                f"No se puede construir pitch_class: {len(missing)} eventos sin pitch representativo "
+                f"(primero: {first.label!r}, compas {first.measure})."
+            )
         vocabulary = PITCH_CLASS_NAMES.copy()
         tokens = np.array(
             [event.representative_pitch_class for event in events],

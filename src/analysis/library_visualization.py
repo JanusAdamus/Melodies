@@ -255,6 +255,15 @@ def build_analysis_explanation(analysis: pd.DataFrame) -> str:
         "",
     ]
 
+    if "error" in analysis.columns:
+        failed = analysis[analysis["error"].fillna("").astype(str) != ""]
+        stages = failed["error_stage"].fillna("sin etapa") if "error_stage" in failed.columns else pd.Series("sin etapa", index=failed.index)
+        counts = stages.value_counts()
+        detail = ", ".join(f"{stage}: {int(counts.get(stage, 0))}" for stage in ("catalogo", "extraccion", "analisis"))
+        if "sin etapa" in counts:
+            detail += f", sin etapa: {int(counts['sin etapa'])}"
+        lines.extend(["## Obras fuera del analisis", "", f"- Obras con error: {len(failed)} ({detail}).", ""])
+
     if {"finite_log_likelihood", "hdp_log_likelihood"}.issubset(analysis.columns):
         comparable = analysis.dropna(subset=["finite_log_likelihood", "hdp_log_likelihood"]).copy()
         if not comparable.empty:

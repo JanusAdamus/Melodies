@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
+import re
 from typing import Iterable
 import warnings
 
@@ -34,10 +35,150 @@ class MusicalEvent:
     beat: float | None
 
 
-def parse_score(path: str | Path) -> music21.stream.Score:
-    """Carga una partitura MusicXML o MIDI con music21."""
+EXTRACTION_MODES = ("melody", "legacy_all_parts")
 
-    return music21.converter.parse(str(path))
+_STEP_SEMITONES = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+
+# Regla unica de microtonos: cada altura se lleva al semitono temperado mas cercano de la
+# altura que el nombre de la alteracion denota en la notacion turca Arel-Ezgi-Uzdilek
+# (1 coma = 1/9 de tono ~ 22.6 cents), que es la que usa SymbTr. Verificado contra la
+# columna Koma53 de los .txt de SymbTr: koma (quarter/half) = +-1 coma -> natural escrito;
+# bakiye (slash-flat, sharp) = 4 comas y kucuk mucenneb (flat, slash-quarter-sharp) = 5
+# comas -> +-1 semitono; buyuk mucenneb (double-slash-flat, slash-sharp) = 8 -> +-2.
+# music21 da alter=0 a slash-flat y redondea half-sharp distinto en pitchClass y en midi;
+# por eso la clase de altura y el MIDI salen del mismo entero: pc == midi % 12 siempre.
+ACCIDENTAL_SEMITONES = {
+    "natural": 0,
+    "sharp": 1,
+    "flat": -1,
+    "double-sharp": 2,
+    "double-flat": -2,
+    "half-flat": 0,
+    "quarter-flat": 0,
+    "half-sharp": 0,
+    "quarter-sharp": 0,
+    "slash-flat": -1,
+    "double-slash-flat": -2,
+    "slash-quarter-sharp": 1,
+    "slash-sharp": 2,
+}
+
+
+def parse_score(path: str | Path) -> music21.stream.Score:
+    """Carga una partitura MusicXML o MIDI con music21.
+
+    music21 no acepta las armaduras no tradicionales de SymbTr (``key-accidental`` turco,
+    ``key-alter`` en comas, p. ej. +5) y falla en ~28 % de los archivos. En SymbTr cada nota
+    alterada lleva su ``<accidental>`` explicito (verificado contra los .txt), asi que la
+    armadura no aporta altura y se reintenta sin los ``<key>`` que tienen ``<key-step>``.
+    """
+
+    try:
+        return music21.converter.parse(str(path))
+    except music21.pitch.AccidentalException:
+        text = Path(path).read_text(encoding="utf-8")
+        cleaned = re.sub(r"<key>(?:(?!</key>).)*<key-step>.*?</key>", "", text, flags=re.DOTALL)
+        return music21.converter.parseData(cleaned, format="musicxml")
+
+
+def melody_midi(pitch: music21.pitch.Pitch) -> int:
+    """Altura MIDI entera de ``pitch`` segun la regla unica de microtonos (ver arriba)."""
+
+    accidental = pitch.accidental
+    offset = 0 if accidental is None else ACCIDENTAL_SEMITONES.get(accidental.name, int(accidental.alter))
+    return 12 * (pitch.implicitOctave + 1) + _STEP_SEMITONES[pitch.step] + offset
+
+
+def _first_clef_is_treble(part: music21.stream.Stream) -> bool:
+    first = part.recurse().getElementsByClass(music21.clef.Clef).first()
+    return first is not None and first.sign == "G"
+
+
+def _mean_midi(part: music21.stream.Stream) -> float:
+    values = [pitch.midi for element in part.recurse().notes for pitch in element.pitches]
+    return sum(values) / len(values) if values else float("-inf")
+
+
+def select_melody_part(score: music21.stream.Score | music21.stream.Stream) -> music21.stream.Stream:
+    """Elige la parte que lleva la melodia.
+
+    Criterio: la primera parte, en orden de partitura, cuya PRIMERA clave es de sol. Se mira
+    la clave inicial y no cualquier clave porque un pentagrama conserva su identidad: la mano
+    izquierda que pasa un momento a sol sigue siendo acompanamiento, y la derecha que baja a fa
+    sigue siendo la melodia. Con varias partes en sol (piano a cuatro manos, conjunto) gana la
+    primera, que por convencion de partitura es la voz superior. Si ninguna empieza en sol,
+    la de mayor altura media.
+    """
+
+    parts = list(score.parts) if isinstance(score, music21.stream.Score) else []
+    if not parts:
+        return score
+    treble = [part for part in parts if _first_clef_is_treble(part)]
+    if treble:
+        return treble[0]
+    return max(parts, key=_mean_midi)
+
+
+def extract_melody_events(score: music21.stream.Score | music21.stream.Stream) -> list[MusicalEvent]:
+    """Melodia = voz superior de la parte en clave de sol (decision 1 del preregistro).
+
+    Ligaduras unidas con ``stripTies``; sin notas de adorno (duracion 0) ni cifrados
+    (``harmony.Harmony``, que incluye ``ChordSymbol`` y ``NoChord``). En cada ataque se toma
+    la altura mas aguda entre voces y acordes (la nota superior del acorde, no su raiz).
+    """
+
+    part = select_melody_part(score).stripTies(inPlace=False)
+    top_by_offset: dict[float, tuple[int, music21.pitch.Pitch, music21.base.Music21Object]] = {}
+    # shortcut: un ataque grave bajo una nota aguda aun sonando se conserva (skyline por ataque).
+    for element in part.flatten().notes:
+        if isinstance(element, music21.harmony.Harmony) or element.duration.isGrace or element.quarterLength == 0:
+            continue
+        if not element.pitches:
+            continue
+        midi, pitch = max(((melody_midi(p), p) for p in element.pitches), key=lambda item: item[0])
+        offset = float(element.offset)
+        if offset not in top_by_offset or midi > top_by_offset[offset][0]:
+            top_by_offset[offset] = (midi, pitch, element)
+
+    events: list[MusicalEvent] = []
+    for offset in sorted(top_by_offset):
+        midi, pitch, element = top_by_offset[offset]
+        events.append(
+            MusicalEvent(
+                index=len(events),
+                offset=offset,
+                duration=float(element.quarterLength),
+                kind="note",
+                label=pitch.nameWithOctave,
+                pitch_classes=(midi % 12,),
+                midi_pitches=(midi,),
+                representative_pitch_class=midi % 12,
+                representative_midi=midi,
+                measure=element.measureNumber,
+                beat=float(element.beat) if element.beat is not None else None,
+            )
+        )
+    return events
+
+
+def extract_events_for_mode(
+    score: music21.stream.Score | music21.stream.Stream,
+    mode: str = "melody",
+    prefer_treble: bool = False,
+) -> list[MusicalEvent]:
+    """Extrae eventos con un modo explicito.
+
+    ``melody``: voz superior de la parte en sol (la definicion vigente).
+    ``legacy_all_parts``: la extraccion anterior al 2026-10-26 (todas las partes fusionadas,
+    acordes reducidos a su raiz, ligaduras y adornos como eventos); se conserva para citar
+    la version antigua. ``prefer_treble`` solo aplica a este modo.
+    """
+
+    if mode == "melody":
+        return extract_melody_events(score)
+    if mode == "legacy_all_parts":
+        return extract_events(score, prefer_treble=prefer_treble)
+    raise ValueError(f"Modo de extraccion no soportado: {mode!r}; usa uno de {EXTRACTION_MODES}.")
 
 
 def select_parts(score: music21.stream.Score, prefer_treble: bool = True) -> list[music21.stream.Part]:
