@@ -292,6 +292,63 @@ class ResumeGuardTests(unittest.TestCase):
         self.assertEqual(mocks["finite_constructor"].call_count, 0)
 
 
+class ConfigHashTests(unittest.TestCase):
+    """--resume compara contenido: mover el corpus de unidad no cambia la configuración."""
+
+    def test_moving_the_corpus_to_another_drive_keeps_the_hash(self) -> None:
+        base = _runner_config("C:/runs")
+        moved = replace(
+            base,
+            results_root="D:/runs",
+            reference_splits_path="D:/original",
+            experiment=replace(
+                base.experiment,
+                corpus=replace(base.experiment.corpus, root_dir="D:/otra/ruta/PDMX"),
+                storage=replace(base.experiment.storage, results_root="D:/otros"),
+            ),
+        )
+        self.assertEqual(runner._config_sha256(base), runner._config_sha256(moved))
+
+    def test_a_real_configuration_change_still_changes_the_hash(self) -> None:
+        base = _runner_config("C:/runs")
+        self.assertNotEqual(
+            runner._config_sha256(base), runner._config_sha256(replace(base, finite_hmm_max_iterations=7))
+        )
+
+    def test_structural_annotations_count_by_content_not_by_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "a.csv"
+            second = Path(directory) / "otra" / "b.csv"
+            second.parent.mkdir()
+            text = "piece_id,event_index,segment_label,boundary\np,0,A,1\n"
+            first.write_text(text, encoding="utf-8")
+            second.write_text(text, encoding="utf-8")
+            base = _runner_config(directory)
+            same = runner._config_sha256(replace(base, structural_annotations_path=str(first)))
+            moved = runner._config_sha256(replace(base, structural_annotations_path=str(second)))
+            second.write_text(text + "p,1,B,0\n", encoding="utf-8")
+            changed = runner._config_sha256(replace(base, structural_annotations_path=str(second)))
+        self.assertEqual(same, moved)
+        self.assertNotEqual(same, changed)
+
+    def test_the_partition_message_names_the_hash_it_compares(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "checkpoint.jsonl").write_text('{"cell": "x"}\n', encoding="utf-8")
+            (root / runner.RESUME_INPUTS_FILENAME).write_text(
+                json.dumps({"split_sha256": "a", "corpus_sha256": "c", "config_sha256": "k"}), encoding="utf-8"
+            )
+            with self.assertRaises(ValueError) as caught:
+                runner._guard_resume_inputs(
+                    root,
+                    root / "checkpoint.jsonl",
+                    {"split_sha256": "b", "corpus_sha256": "c", "config_sha256": "k"},
+                )
+        message = str(caught.exception)
+        self.assertIn("ids normalizados", message)
+        self.assertNotIn("sha256 de splits/manifest.json", message)
+
+
 class DistinctRunCountTests(unittest.TestCase):
     def _rows(self, subsets: dict[int, str]) -> list[dict[str, object]]:
         return [

@@ -109,10 +109,31 @@ def _corpus_sha256(pieces: Sequence[PreparedPiece]) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
-def _config_sha256(config: LearningCurveConfig) -> str:
-    """Hash de la configuración; ``results_root`` no cuenta (la corrida puede moverse)."""
+def _file_sha256(path_value: str | None) -> str | None:
+    if path_value is None:
+        return None
+    path = Path(path_value)
+    if not path.is_file():
+        return f"missing:{path.name}"
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
-    payload = {key: value for key, value in asdict(config).items() if key != "results_root"}
+
+def _config_sha256(config: LearningCurveConfig) -> str:
+    """Hash de la configuración que cambia resultados, sin rutas absolutas.
+
+    Las rutas no entran: mover la corrida o el corpus a otra unidad no es otra
+    configuración.  El contenido que importa ya se compara aparte (corpus y
+    partición por su propio hash) o entra aquí por su contenido (anotaciones
+    estructurales).  ``reference_splits_path`` sólo cambia el reporte.
+    """
+
+    payload = asdict(config)
+    payload.pop("results_root", None)
+    payload.pop("reference_splits_path", None)
+    payload["structural_annotations_sha256"] = _file_sha256(payload.pop("structural_annotations_path", None))
+    experiment = payload.get("experiment", {})
+    experiment.get("corpus", {}).pop("root_dir", None)
+    experiment.get("storage", {}).pop("results_root", None)
     encoded = json.dumps(_json_safe(payload), sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -135,8 +156,9 @@ def _guard_resume_inputs(
     recorded = json.loads(inputs_path.read_text(encoding="utf-8"))
     if recorded.get("split_sha256") != expected["split_sha256"]:
         raise ValueError(
-            "No puedo reanudar: la partición (sha256 de splits/manifest.json) no coincide "
-            "con la del checkpoint."
+            "No puedo reanudar: la partición (sha256 de los ids normalizados de cada "
+            "partición, guardado en el campo «sha256» del manifiesto; no es el hash del "
+            "archivo) no coincide con la del checkpoint."
         )
     if recorded.get("corpus_sha256") != expected["corpus_sha256"]:
         raise ValueError(
@@ -541,7 +563,8 @@ def _build_execution_plan(
         "claims_evidence": False,
         "mode": "plan_only" if plan_only else "full_run",
         "analysis_status": _analysis_status(config),
-        # Hash de splits/manifest.json: identifica la partición sin depender del SO.
+        # sha256 de los ids normalizados de cada partición (campo sha256 de
+        # splits/manifest.json, no el hash del archivo): no depende del SO.
         "split_sha256": split_sha256,
         "reference_split_comparison": dict(
             reference_split_comparison
