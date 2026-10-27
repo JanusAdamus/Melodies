@@ -449,6 +449,7 @@ def _empty_comparison(model_a: str, model_b: str) -> dict[str, object]:
         "wilcoxon_statistic": None,
         "p_value": None,
         "p_value_holm": None,
+        "wilcoxon_holm_status": "not_evaluable",
         "estimand": "mean_over_works_of_work_nll_difference",
         "token_weighted_estimand": "token_weighted_nll_difference",
         "token_weighted_difference": None,
@@ -496,7 +497,9 @@ def _holm_family_record(comparisons: list[dict[str, object]]) -> dict[str, objec
         "definition": "all_model_pairs_never_shrunk_not_evaluable_count_as_p_equal_1",
         "tests": tests,
         "ci_usage": _CI_USAGE,
-        "wilcoxon": _block(lambda item: item["p_value_holm"] is not None),
+        "wilcoxon": _block(
+            lambda item: item["wilcoxon_holm_status"] == "ok", min_paired_works=MIN_PAIRED_WORKS
+        ),
         "work_mean_ci": _block(
             lambda item: item["work_mean_holm_status"] == "ok", min_paired_works=MIN_PAIRED_WORKS
         ),
@@ -510,16 +513,26 @@ def _apply_holm_adjustment(comparisons: list[dict[str, object]]) -> int:
     """Holm sobre los p de Wilcoxon; devuelve cuántas pruebas fueron evaluables.
 
     El factor usa la familia completa (todas las comparaciones): una prueba no
-    evaluable cuenta como p = 1 y no reduce el factor de las demás.
+    evaluable cuenta como p = 1 y no reduce el factor de las demás.  Igual que en
+    el bootstrap (Enmienda 1), un par con menos de MIN_PAIRED_WORKS obras en común
+    no entra a los pasos: con 9 obras el p exacto bilateral (2/512) ya es menor que
+    α/6 y aflojaría el factor de las demás.  Conserva su ``p_value`` crudo, su
+    ``p_value_holm`` queda en None y su estado en «too_few_paired_works».
     """
 
-    valid_indices = [
-        index
-        for index, comparison in enumerate(comparisons)
-        if comparison["wilcoxon_status"] == "ok"
-        and comparison["p_value"] is not None
-        and math.isfinite(float(comparison["p_value"]))
-    ]
+    valid_indices = []
+    for index, comparison in enumerate(comparisons):
+        if not (
+            comparison["wilcoxon_status"] == "ok"
+            and comparison["p_value"] is not None
+            and math.isfinite(float(comparison["p_value"]))
+        ):
+            comparison["wilcoxon_holm_status"] = "not_evaluable"
+        elif comparison.get("n_pairs") is not None and int(comparison["n_pairs"]) < MIN_PAIRED_WORKS:
+            comparison["wilcoxon_holm_status"] = "too_few_paired_works"
+        else:
+            comparison["wilcoxon_holm_status"] = "ok"
+            valid_indices.append(index)
     valid_indices.sort(
         key=lambda index: (
             float(comparisons[index]["p_value"]),
@@ -723,6 +736,7 @@ def pairwise_model_comparisons(
             "wilcoxon_statistic": None,
             "p_value": None,
             "p_value_holm": None,
+            "wilcoxon_holm_status": "not_evaluable",
             # C7: el titular ponderado por token lleva el IC de su propio cociente.
             "estimand": "mean_over_works_of_work_nll_difference",
             "token_weighted_estimand": "token_weighted_nll_difference",

@@ -108,6 +108,13 @@ rechazaría al nivel más estricto y aflojaría el α de las demás pruebas. El 
 es el mismo de la frontera de Pareto (Enmienda 1) y queda escrito en
 `holm_family.work_mean_ci.min_paired_works`.
 
+El Holm de Wilcoxon (secundario) aplica el mismo mínimo: con 9 obras el p exacto
+bilateral ya es 2/512 < 0.05/6, así que un par con menos de 10 obras conserva su
+`p_value` crudo pero no entra a los pasos; su `p_value_holm` queda vacío y
+`wilcoxon_holm_status = too_few_paired_works` (o `not_evaluable` si Wilcoxon no
+se pudo calcular). `holm_family.wilcoxon` lo cuenta como no evaluable y registra
+`min_paired_works`.
+
 ### Frontera de Pareto (Enmienda 1)
 
 `pareto_summary.json` distingue dos alcances. Si faltan mediciones

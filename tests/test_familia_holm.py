@@ -95,17 +95,16 @@ class TokenWeightedHolmFamilyTests(unittest.TestCase):
 
 class WilcoxonHolmFamilyTests(unittest.TestCase):
     def test_an_untestable_pair_still_counts_in_the_wilcoxon_family(self) -> None:
-        # alpha-beta: una sola diferencia no nula -> Wilcoxon no evaluable.
+        # alpha-beta: una sola diferencia no nula -> Wilcoxon no evaluable.  Diez obras
+        # en común, para que los otros dos pares entren a los pasos (Enmienda 1).
         rows = [
-            {"model": "alpha", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 1.0},
-            {"model": "alpha", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 1.0},
-            {"model": "alpha", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 1.0},
-            {"model": "beta", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 1.0},
-            {"model": "beta", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 1.0},
-            {"model": "beta", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 2.0},
-            {"model": "gamma", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 4.0},
-            {"model": "gamma", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 6.0},
-            {"model": "gamma", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 8.0},
+            {"model": model, "canonical_work_id": f"w{index}", "frac": 1.0, "test_nll": nll(index)}
+            for index in range(1, 11)
+            for model, nll in (
+                ("alpha", lambda i: 1.0),
+                ("beta", lambda i: 2.0 if i == 10 else 1.0),
+                ("gamma", lambda i: 2.0 + 2.0 * i),
+            )
         ]
         scripted = [
             SimpleNamespace(statistic=1.0, pvalue=0.01),
@@ -116,6 +115,7 @@ class WilcoxonHolmFamilyTests(unittest.TestCase):
         by_pair = {(item["model_a"], item["model_b"]): item for item in payload["comparisons"]}
 
         self.assertIsNone(by_pair[("alpha", "beta")]["p_value_holm"])
+        self.assertEqual(by_pair[("alpha", "beta")]["wilcoxon_holm_status"], "not_evaluable")
         # m = 3 (la familia completa), no 2: 3 × 0.01 y luego max(0.03, 2 × 0.02).
         self.assertAlmostEqual(by_pair[("alpha", "gamma")]["p_value_holm"], 0.03)
         self.assertAlmostEqual(by_pair[("beta", "gamma")]["p_value_holm"], 0.04)
@@ -219,6 +219,33 @@ class DegeneratePairHolmTests(unittest.TestCase):
                         with_one[pair][f"{prefix}_holm_rejects_zero"], item[f"{prefix}_holm_rejects_zero"]
                     )
         block = payload["holm_family"]["work_mean_ci"]
+        self.assertEqual(block["family_size"], 6)
+        self.assertEqual(block["n_evaluable"], 3)
+        self.assertEqual(block["min_paired_works"], 10)
+        self.assertEqual(
+            block["not_evaluable"],
+            [["finite_hmm", "vomm"], ["hdp_hmm", "vomm"], ["transformer", "vomm"]],
+        )
+
+    def test_too_few_works_do_not_enter_the_wilcoxon_holm_steps(self) -> None:
+        # Ronda 3 (r3sw_holm.py): con 9 obras el p exacto bilateral es 2/512 < 0.05/6 y,
+        # si entrara a los pasos, aflojaría el p de Holm de las demás.
+        _, without = self._by_pair(vomm_works=0)
+        payload, with_nine = self._by_pair(vomm_works=9)
+        for pair in [("finite_hmm", "vomm"), ("hdp_hmm", "vomm"), ("transformer", "vomm")]:
+            with self.subTest(pair=pair):
+                item = with_nine[pair]
+                self.assertEqual(item["n_pairs"], 9)
+                self.assertAlmostEqual(item["p_value"], 2 / 512)
+                self.assertIsNone(item["p_value_holm"])
+                self.assertEqual(item["wilcoxon_holm_status"], "too_few_paired_works")
+        for pair, item in without.items():
+            if "vomm" in pair:
+                continue
+            with self.subTest(pair=pair):
+                self.assertEqual(with_nine[pair]["p_value_holm"], item["p_value_holm"])
+                self.assertEqual(with_nine[pair]["wilcoxon_holm_status"], "ok")
+        block = payload["holm_family"]["wilcoxon"]
         self.assertEqual(block["family_size"], 6)
         self.assertEqual(block["n_evaluable"], 3)
         self.assertEqual(block["min_paired_works"], 10)
