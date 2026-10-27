@@ -279,7 +279,8 @@ def figura_curva_aprendizaje() -> None:
 
     marcas = None
     dibujado = {}
-    for modelo in ORDEN:
+    # Una corrida sin VOMM (exploratoria) dibuja solo los modelos que trae.
+    for modelo in [m for m in ORDEN if datos.get(m)]:
         puntos = sorted(datos[modelo])
         dibujado[modelo] = puntos
         x = np.array([p[0] for p in puntos]) / 1000.0
@@ -315,13 +316,14 @@ def figura_curva_aprendizaje() -> None:
 
     # Recta, no en arco: el arco de la versión anterior cruzaba la curva del
     # transformer y parecía señalarla a ella.
-    ax.annotate(
-        "topado en K ≤ 48",
-        xy=(marcas[1], datos["finite_hmm"][1][1]),
-        xytext=(marcas[0] * 1.02, 6.85),
-        fontsize=6.5, color=GRIS_TEXTO, ha="left", va="center",
-        arrowprops=dict(arrowstyle="-", color=GRIS, linewidth=0.5),
-    )
+    if len(dibujado.get("finite_hmm", [])) > 1:
+        ax.annotate(
+            "topado en K ≤ 48",
+            xy=(marcas[1], dibujado["finite_hmm"][1][1]),
+            xytext=(marcas[0] * 1.02, 6.85),
+            fontsize=6.5, color=GRIS_TEXTO, ha="left", va="center",
+            arrowprops=dict(arrowstyle="-", color=GRIS, linewidth=0.5),
+        )
 
     titular(
         fig,
@@ -446,6 +448,9 @@ def figura_sensibilidades() -> None:
     rejilla = ppl_en_frac_1("sens_hmm_grid")
     split17 = ppl_en_frac_1("sens_split17")
     split29 = ppl_en_frac_1("sens_split29")
+    corridas = (original, stride, rejilla, split17, split29)
+    # Una corrida sin VOMM (exploratoria) dibuja solo los modelos de las cinco.
+    modelos = [m for m in ORDEN if all(m in c for c in corridas)]
 
     # Los tres paneles comparten forma, eje y escala: fila por modelo, el mismo
     # eje de perplejidad. Así el lector compara la magnitud de las tres
@@ -456,7 +461,7 @@ def figura_sensibilidades() -> None:
         gridspec_kw={"wspace": 0.14},
     )
     ax_a, ax_b, ax_c = axes
-    y = np.arange(len(ORDEN))
+    y = np.arange(len(modelos))
     # Vara de medir leída del artefacto: el semiancho del IC de C7 más ancho en
     # frac = 1.0. El 0.047 escrito a mano antes no salía de ninguna fila del resumen.
     std_intra = max(
@@ -466,7 +471,7 @@ def figura_sensibilidades() -> None:
     )
 
     def mancuerna(ax, antes, despues, titulo, nota):
-        for i, modelo in enumerate(ORDEN):
+        for i, modelo in enumerate(modelos):
             a, b = antes[modelo], despues[modelo]
             cambia = abs(b - a) > 1e-9
             color = COLORS[modelo] if cambia else GRIS
@@ -496,7 +501,7 @@ def figura_sensibilidades() -> None:
     # Panel C: la semilla es una etiqueta nominal, no un eje. La versión
     # anterior unía las tres semillas con una línea, que dibujaba una tendencia
     # donde solo hay tres réplicas de la misma partición.
-    for i, modelo in enumerate(ORDEN):
+    for i, modelo in enumerate(modelos):
         valores = [original[modelo], split17[modelo], split29[modelo]]
         color = COLORS[modelo]
         ax_c.plot([min(valores), max(valores)], [i, i], color=color,
@@ -510,9 +515,9 @@ def figura_sensibilidades() -> None:
                     "semillas 7, 17, 29;  cifra: recorrido", y=1.06)
 
     ax_a.set_yticks(y)
-    ax_a.set_yticklabels([ETIQUETAS[m] for m in ORDEN])
+    ax_a.set_yticklabels([ETIQUETAS[m] for m in modelos])
     ax_a.invert_yaxis()
-    ax_a.set_ylim(len(ORDEN) - 0.25, -0.75)
+    ax_a.set_ylim(len(modelos) - 0.25, -0.75)
     for ax in axes:
         ax.set_xlabel("Perplejidad de prueba")
         ax.spines["left"].set_visible(False)
@@ -521,9 +526,10 @@ def figura_sensibilidades() -> None:
     # Vara de medir: sin ella, el lector no sabe si 0.62 es mucho. Es el ruido
     # entre semillas de la Fig. 1, dibujado en la misma escala que los cambios.
     x0 = ax_a.get_xlim()[0] + 0.15
-    ax_a.plot([x0, x0 + 2 * std_intra], [3.42, 3.42], color="#222222",
+    y_vara = len(modelos) - 0.58
+    ax_a.plot([x0, x0 + 2 * std_intra], [y_vara, y_vara], color="#222222",
               linewidth=1.4, solid_capstyle="butt", clip_on=False)
-    ax_a.text(x0 + 2 * std_intra + 0.10, 3.42,
+    ax_a.text(x0 + 2 * std_intra + 0.10, y_vara,
               f"±{std_intra:.3f}: semiancho del IC 95 % más ancho",
               fontsize=6.0, color=GRIS_TEXTO, va="center", ha="left",
               clip_on=False)
@@ -539,6 +545,7 @@ def figura_sensibilidades() -> None:
         y=1.24,
     )
     guardar(fig, "fig3_sensibilidades")
+    return modelos
 
 
 def figura_comparaciones_pareadas() -> None:
@@ -766,6 +773,10 @@ def figura_unidad_de_analisis() -> None:
         h = statistics.mean(x[0] for x in por_modelo["hdp_hmm"])
         obras.append((statistics.mean(x[1] for x in por_modelo["vomm"]), h - v))
 
+    if len(obras) < 4:
+        # Sin VOMM (corrida exploratoria) no hay pares HDP-HMM − VOMM que mostrar.
+        print("  fig6_unidad_de_analisis omitida: no hay obras con VOMM y HDP-HMM")
+        return None
     obras.sort()
     n = len(obras)
     cortes = [0, n // 4, n // 2, 3 * n // 4, n]

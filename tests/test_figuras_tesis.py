@@ -206,5 +206,44 @@ class LearningCurveFigureTests(FigureTestCase):
             self.module.figura_curva_aprendizaje()
 
 
+SENSITIVITY_RUNS = ("sens_stride128", "sens_hmm_grid", "sens_split17", "sens_split29")
+
+
+class RunWithoutVommTests(FigureTestCase):
+    """Una corrida sin VOMM es exploratoria pero sus figuras no deben romperse."""
+
+    def _without_vomm(self) -> list[dict]:
+        return [row for row in _summary_rows() if row["model"] != "vomm"]
+
+    def test_the_learning_curve_draws_only_the_models_present(self) -> None:
+        _write_summary(self.original, self._without_vomm())
+
+        drawn = self.module.figura_curva_aprendizaje()
+
+        self.assertEqual(set(drawn), {"transformer", "finite_hmm", "hdp_hmm"})
+        self.assertTrue((self.module.OUTPUT_DIR / "fig1_curva_aprendizaje.png").is_file())
+
+    def test_the_sensitivity_figure_draws_only_the_models_present(self) -> None:
+        for run in (self.module.ORIGINAL, *SENSITIVITY_RUNS):
+            _write_summary(self.module.COMPARACION / run, self._without_vomm())
+
+        drawn = self.module.figura_sensibilidades()
+
+        self.assertEqual(drawn, ["transformer", "finite_hmm", "hdp_hmm"])
+        self.assertTrue((self.module.OUTPUT_DIR / "fig3_sensibilidades.png").is_file())
+
+    def test_the_unit_of_analysis_figure_is_skipped_without_vomm(self) -> None:
+        self.original.mkdir(parents=True)
+        with (self.original / "piece_metrics_raw.csv").open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["frac", "canonical_work_id", "model", "nll_per_token", "n_tokens"])
+            writer.writeheader()
+            for work in range(8):
+                writer.writerow({"frac": "1.0", "canonical_work_id": f"w{work}", "model": "hdp_hmm",
+                                 "nll_per_token": 2.0, "n_tokens": 10 + work})
+
+        self.assertIsNone(self.module.figura_unidad_de_analisis())
+        self.assertFalse((self.module.OUTPUT_DIR / "fig6_unidad_de_analisis.png").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
