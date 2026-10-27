@@ -312,7 +312,15 @@ definición del error y las unidades. Se leen sin el reporte.
 | `fig3_sensibilidades` | cada parámetro mueve a un modelo; la partición los mueve a todos | §5, §6, §7 |
 | `fig4_comparaciones_pareadas` | ninguna de las 30 comparaciones cruza el cero | §3 |
 | `fig5_pareto_prediccion_costo` | el transformer domina a los dos HMM | §8 |
-| `fig6_unidad_de_analisis` | `vomm` gana por obra y pierde por evento | §4 |
+| `fig6_unidad_de_analisis` | por obra gana `vomm`; por evento, empate tras Holm (ver nota) | §4 |
+
+Nota sobre `fig6` (revisión de la ronda 2): el título anterior, «VOMM gana por obra y pierde
+por evento», estaba escrito en el código y la mitad «pierde por evento» no la sostiene el IC
+de Holm del estimando secundario. Recalculado con el código corregido sobre
+`piece_metrics_raw.csv` de la corrida original (10 000 réplicas): HDP-HMM − VOMM por obra
+0.033552, IC de Holm [0.01348, 0.053], rechaza; ponderada por token −0.006794, IC de Holm
+[−0.03137, 0.0195], no rechaza. La figura ahora toma título, rótulos, n y eje de
+`pairwise_comparisons.json`, así que la corrida corregida de la Fase 1 decide qué dice.
 
 Cada título es una sola afirmación de nueve palabras o menos, y la línea de método lleva
 únicamente n, la definición del error y las unidades. Lo demás —por qué la meseta era el

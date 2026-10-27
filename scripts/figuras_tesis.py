@@ -27,6 +27,7 @@ from __future__ import annotations
 import csv
 import json
 import statistics
+import sys
 import textwrap
 from collections import defaultdict
 from pathlib import Path
@@ -39,6 +40,11 @@ import numpy as np
 from matplotlib.lines import Line2D
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+# La NLL por obra del panel A es la misma función que usa la comparación pareada.
+from Comparacion.statistics import MIN_PAIRED_WORKS, _work_nll_means, _work_totals  # noqa: E402
+
 ARTIFACTS = REPO_ROOT / "artifacts"
 COMPARACION = ARTIFACTS / "Comparacion"
 OUTPUT_DIR = ARTIFACTS / "figuras"
@@ -754,30 +760,91 @@ def figura_pareto() -> dict:
     return {"frontera": [m for m in modelos if m in en_frontera_json], "pares_sin_decidir": sin_decidir}
 
 
-def figura_unidad_de_analisis() -> None:
-    """Why the two estimands order the same pair oppositely."""
-    agregado = defaultdict(lambda: defaultdict(list))
-    with open(COMPARACION / ORIGINAL / "piece_metrics_raw.csv", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            if row["frac"] != "1.0":
-                continue
-            agregado[row["canonical_work_id"]][row["model"]].append(
-                (float(row["nll_per_token"]), int(row["n_tokens"]))
-            )
+#: Campos de pairwise_comparisons.json que fig6 dibuja (Aclaración 2: decide la
+#: media por obra; la ponderada por token es secundaria; ambas con su IC de Holm).
+CAMPOS_FIG6 = (
+    "mean_difference",
+    "work_mean_holm_decision_ci",
+    "work_mean_holm_rejects_zero",
+    "token_weighted_difference",
+    "token_weighted_holm_decision_ci",
+    "token_weighted_holm_rejects_zero",
+)
 
-    obras = []
-    for por_modelo in agregado.values():
-        if not {"vomm", "hdp_hmm"} <= set(por_modelo):
-            continue
-        v = statistics.mean(x[0] for x in por_modelo["vomm"])
-        h = statistics.mean(x[0] for x in por_modelo["hdp_hmm"])
-        obras.append((statistics.mean(x[1] for x in por_modelo["vomm"]), h - v))
 
-    if len(obras) < 4:
-        # Sin VOMM (corrida exploratoria) no hay pares HDP-HMM − VOMM que mostrar.
-        print("  fig6_unidad_de_analisis omitida: no hay obras con VOMM y HDP-HMM")
+def _ganador_hdp_menos_vomm(diferencia: float, rechaza: bool) -> str:
+    """HDP − VOMM > 0 favorece al VOMM; sin rechazo de Holm es empate."""
+    if not rechaza:
+        return "empate"
+    return "VOMM" if diferencia > 0 else "HDP-HMM"
+
+
+def figura_unidad_de_analisis() -> dict | None:
+    """Los dos estimandos de HDP-HMM − VOMM, tal como los dejó la comparación pareada.
+
+    Panel B dibuja la media por obra (decide) y la ponderada por token
+    (secundaria) con sus IC de Holm por pasos, leídos de
+    ``pairwise_comparisons.json``; el título y los rótulos salen de los rechazos
+    de Holm, no de un texto fijo.  Panel A es descriptivo: la misma diferencia por
+    obra (Σll/Σn de cada obra, media de corridas) por cuartil de longitud.
+    """
+    with open(COMPARACION / ORIGINAL / "pairwise_comparisons.json", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    comparacion, signo = None, 1.0
+    for c in payload["comparisons"]:
+        if (c["model_a"], c["model_b"]) in {("hdp_hmm", "vomm"), ("vomm", "hdp_hmm")}:
+            faltan = [k for k in CAMPOS_FIG6 if k not in c]
+            if faltan:
+                raise ValueError(
+                    f"{ORIGINAL}: pairwise_comparisons.json no trae {', '.join(faltan)}; "
+                    "regenérala con el runner corregido (Aclaración 2)."
+                )
+            comparacion = c
+            signo = 1.0 if c["model_a"] == "hdp_hmm" else -1.0
+    if (
+        comparacion is not None
+        and comparacion.get("status") == "ok"
+        and int(comparacion.get("n_pairs") or 0) < MIN_PAIRED_WORKS
+    ):
+        # Enmienda 1: con menos obras en común el par no decide, aunque un
+        # pairwise_comparisons.json anterior le haya dado IC de Holm.
+        motivo = f"too_few_paired_works, n = {int(comparacion.get('n_pairs') or 0)}"
+        comparacion = None
+    elif comparacion is None:
+        motivo = "el par no está en pairwise_comparisons.json"
+    elif any(comparacion[k] is None for k in CAMPOS_FIG6):
+        motivo = (
+            comparacion.get("reason")
+            or comparacion.get("work_mean_holm_status")
+            or comparacion.get("status")
+        )
+    if comparacion is None or any(comparacion[k] is None for k in CAMPOS_FIG6):
+        print(f"  fig6_unidad_de_analisis omitida: HDP-HMM − VOMM no evaluable ({motivo})")
         return None
-    obras.sort()
+
+    def orientado(intervalo) -> list[float]:
+        bajo, alto = (signo * float(v) for v in intervalo)
+        return [min(bajo, alto), max(bajo, alto)]
+
+    por_obra = signo * float(comparacion["mean_difference"])
+    por_evento = signo * float(comparacion["token_weighted_difference"])
+    ic_obra = orientado(comparacion["work_mean_holm_decision_ci"])
+    ic_evento = orientado(comparacion["token_weighted_holm_decision_ci"])
+    ganadores = [
+        _ganador_hdp_menos_vomm(por_obra, bool(comparacion["work_mean_holm_rejects_zero"])),
+        _ganador_hdp_menos_vomm(por_evento, bool(comparacion["token_weighted_holm_rejects_zero"])),
+    ]
+    n_obras = int(comparacion["n_pairs"])
+
+    # Panel A: la misma NLL por obra que la comparación, sobre sus mismas obras.
+    with open(COMPARACION / ORIGINAL / "piece_metrics_raw.csv", encoding="utf-8") as handle:
+        filas = [row for row in csv.DictReader(handle) if float(row["frac"]) == 1.0]
+    nll = _work_nll_means(filas)
+    longitud = _work_totals(filas)[0].get(("vomm", 1.0), {})
+    obras = sorted(
+        (longitud[w][1], nll[("hdp_hmm", 1.0)][w] - nll[("vomm", 1.0)][w])
+        for w in comparacion["canonical_work_ids"]
+    )
     n = len(obras)
     cortes = [0, n // 4, n // 2, 3 * n // 4, n]
     medias, etiquetas, ics, tamanos = [], [], [], []
@@ -785,22 +852,15 @@ def figura_unidad_de_analisis() -> None:
         trozo = obras[cortes[i] : cortes[i + 1]]
         diferencias = [d for _, d in trozo]
         medias.append(statistics.mean(diferencias))
-        # El hallazgo del panel es un cambio de signo en el último cuartil. Sin
-        # incertidumbre, el lector no puede saber si ese signo se sostiene.
         ics.append(ic_bootstrap(diferencias))
         tamanos.append(len(trozo))
-        # Bordes semiabiertos: rotular cada trozo con su propio mínimo y máximo
-        # repetía el valor de corte en dos barras y abría un hueco falso entre
-        # el tercer cuartil y el cuarto.
+        # Bordes semiabiertos: el valor de corte no se repite en dos barras.
         inferior = int(min(t for t, _ in trozo))
         if i < 3:
             superior = int(min(t for t, _ in obras[cortes[i + 1] : cortes[i + 2]]))
             etiquetas.append(f"{inferior}–{superior}")
         else:
             etiquetas.append(f"{inferior}–{int(max(t for t, _ in trozo))}")
-
-    por_obra = statistics.mean(d for _, d in obras)
-    por_token = sum(d * t for t, d in obras) / sum(t for t, _ in obras)
 
     fig, (ax, ax2) = plt.subplots(
         1, 2, figsize=(ANCHO_DOBLE * 0.90, 2.7),
@@ -815,49 +875,78 @@ def figura_unidad_de_analisis() -> None:
                       [hi - m for m, (_, hi) in zip(medias, ics)]],
                 fmt="none", ecolor="#222222", elinewidth=0.8, capsize=2, zorder=5)
     ax.axhline(0, color="#000000", linewidth=0.7)
-    piso = min(lo for lo, _ in ics)
-    techo = max(hi for _, hi in ics)
-    ax.set_ylim(piso - 0.016, techo + 0.016)
+    piso = min(0.0, min(lo for lo, _ in ics))
+    techo = max(0.0, max(hi for _, hi in ics))
+    margen = 0.12 * (techo - piso or 1.0)
+    ax.set_ylim(piso - margen, techo + margen)
     ax.set_xticks(x)
     ax.set_xticklabels([f"{e}\nn = {t}" for e, t in zip(etiquetas, tamanos)])
     ax.set_xlabel("Longitud de la obra (tokens; cuartiles de igual número de obras)")
     ax.set_ylabel("NLL, HDP-HMM − VOMM")
-    ax.text(0.5, techo + 0.010, "gana VOMM", fontsize=6.5,
-            color=COLORS["vomm"], ha="center", va="center")
-    ax.text(3.0, piso - 0.010, "gana HDP-HMM", fontsize=6.5,
-            color=COLORS["hdp_hmm"], ha="center", va="center")
-    # El IC del primer cuartil y el del cuarto cruzan el cero, así que el título
-    # dice "se desvanece" y no "se invierte": el signo del cuarto cuartil no
-    # está resuelto y las barras de error dejan verlo sin necesidad de glosa.
-    subtitulo_panel(ax, "La ventaja de VOMM se desvanece en las obras largas")
+    ax.text(0.02, 0.97, "↑ favorece a VOMM", transform=ax.transAxes, fontsize=6.5,
+            color=COLORS["vomm"], ha="left", va="top")
+    ax.text(0.02, 0.03, "↓ favorece a HDP-HMM", transform=ax.transAxes, fontsize=6.5,
+            color=COLORS["hdp_hmm"], ha="left", va="bottom")
+    subtitulo_panel(ax, "Diferencia por obra según su longitud",
+                    "descriptivo: IC 95 % bootstrap por cuartil, sin ajuste de Holm")
     etiqueta_panel(ax, "A", dy=1.22)
 
-    ax2.barh([0, 1], [por_obra, por_token], 0.42,
-             color=[COLORS["vomm"], COLORS["hdp_hmm"]], edgecolor="white", linewidth=0.5)
+    color_de = {"VOMM": COLORS["vomm"], "HDP-HMM": COLORS["hdp_hmm"], "empate": GRIS}
+    valores = [por_obra, por_evento]
+    intervalos = [ic_obra, ic_evento]
+    ax2.barh([0, 1], valores, 0.42, color=[color_de[g] for g in ganadores],
+             edgecolor="white", linewidth=0.5)
+    ax2.errorbar(valores, [0, 1],
+                 xerr=[[v - lo for v, (lo, _) in zip(valores, intervalos)],
+                       [hi - v for v, (_, hi) in zip(valores, intervalos)]],
+                 fmt="none", ecolor="#222222", elinewidth=0.8, capsize=2, zorder=5)
     ax2.axvline(0, color="#000000", linewidth=0.7)
     ax2.set_yticks([0, 1])
-    ax2.set_yticklabels(["Unidad:\nla obra", "Unidad:\nel evento"])
+    ax2.set_yticklabels(["Unidad:\nla obra\n(decide)", "Unidad:\nel evento\n(secundaria)"])
     ax2.invert_yaxis()
     ax2.set_xlabel("NLL, HDP-HMM − VOMM")
-    ax2.set_xlim(-0.020, 0.075)
+    izquierda = min(0.0, *(lo for lo, _ in intervalos))
+    derecha = max(0.0, *(hi for _, hi in intervalos))
+    ancho = derecha - izquierda or 1.0
+    # Margen a la derecha para los rótulos, que arrancan tras el extremo del IC.
+    xlim = (izquierda - 0.08 * ancho, derecha + 0.60 * ancho)
+    ax2.set_xlim(*xlim)
     ax2.tick_params(axis="y", length=0)
     ax2.spines["left"].set_visible(False)
-    # Ambas etiquetas arrancan a la derecha del cero: a la izquierda chocarían
-    # con los rótulos del eje.
-    for yi, (valor, ganador) in enumerate([(por_obra, "VOMM"), (por_token, "HDP-HMM")]):
-        ax2.text(max(valor, 0.0) + 0.004, yi,
-                 f"{valor:+.4f}\ngana {ganador}", va="center",
-                 ha="left", fontsize=6.5, linespacing=1.4)
-    subtitulo_panel(ax2, "y con ella, la respuesta")
+    for yi, (valor, (_, alto), ganador) in enumerate(zip(valores, intervalos, ganadores)):
+        texto = "empate tras Holm" if ganador == "empate" else f"gana {ganador}"
+        ax2.text(max(alto, 0.0) + 0.04 * ancho, yi, f"{valor:+.4f}\n{texto}",
+                 va="center", ha="left", fontsize=6.5, linespacing=1.4)
+    subtitulo_panel(ax2, "Los dos estimandos, con IC de Holm")
     etiqueta_panel(ax2, "B", dx=-0.30, dy=1.22)
 
-    titular(
-        fig,
-        "VOMM gana por obra y pierde por evento",
-        "414 obras, frac = 1.0. IC 95 % por bootstrap.",
-        y=1.18,
+    def veredicto(ganador: str) -> str:
+        return "empate tras Holm" if ganador == "empate" else f"gana {ganador}"
+
+    exploratoria = payload.get("analysis_status", {}).get("status") == "exploratory"
+    titulo = (
+        f"Por obra: {veredicto(ganadores[0])}; por evento: {veredicto(ganadores[1])}"
+        + (" (corrida exploratoria)" if exploratoria else "")
     )
+    metodo = (
+        f"{n_obras} obras en común, frac = 1.0. Media por obra (decide) y NLL ponderada por "
+        "token (secundaria) de pairwise_comparisons.json, con IC bootstrap por obra ajustado "
+        "por Holm por pasos sobre la familia preregistrada."
+    )
+    titular(fig, titulo, metodo, y=1.18)
     guardar(fig, "fig6_unidad_de_analisis")
+    return {
+        "por_obra": por_obra,
+        "por_evento": por_evento,
+        "ic_por_obra": ic_obra,
+        "ic_por_evento": ic_evento,
+        "ganadores": ganadores,
+        "n_obras": n_obras,
+        "media_panel_a": statistics.mean(d for _, d in obras),
+        "xlim": xlim,
+        "titulo": titulo,
+        "metodo": metodo,
+    }
 
 
 def main() -> None:

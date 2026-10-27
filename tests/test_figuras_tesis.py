@@ -233,16 +233,143 @@ class RunWithoutVommTests(FigureTestCase):
         self.assertTrue((self.module.OUTPUT_DIR / "fig3_sensibilidades.png").is_file())
 
     def test_the_unit_of_analysis_figure_is_skipped_without_vomm(self) -> None:
-        self.original.mkdir(parents=True)
-        with (self.original / "piece_metrics_raw.csv").open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=["frac", "canonical_work_id", "model", "nll_per_token", "n_tokens"])
-            writer.writeheader()
-            for work in range(8):
-                writer.writerow({"frac": "1.0", "canonical_work_id": f"w{work}", "model": "hdp_hmm",
-                                 "nll_per_token": 2.0, "n_tokens": 10 + work})
+        rows = [row for row in _unit_rows(n_works=12, vomm_effect=0.05) if row["model"] != "vomm"]
+        _write_unit_run(self.original, rows)
 
         self.assertIsNone(self.module.figura_unidad_de_analisis())
         self.assertFalse((self.module.OUTPUT_DIR / "fig6_unidad_de_analisis.png").exists())
+
+
+PIECE_FIELDS = ["piece_id", "frac", "canonical_work_id", "model", "data_seed", "model_seed",
+                "n_tokens", "log_likelihood", "nll_per_token"]
+
+
+def _unit_rows(*, n_works: int, vomm_effect: float, long_penalty: float = 0.0) -> list[dict]:
+    """Obras de longitud creciente; la primera tiene dos archivos de distinta longitud.
+
+    vomm_effect > 0 hace al VOMM mejor (HDP − VOMM > 0); long_penalty le resta esa
+    ventaja en proporción a la longitud, para que lo ponderado por token difiera.
+    """
+
+    import numpy as np
+
+    rng = np.random.default_rng(4)
+    rows = []
+    for index in range(n_works):
+        files = [(f"w{index}a.xml", 20 + 15 * index)]
+        if index == 0:
+            files.append(("w0b.xml", 400))
+        for model_seed in (1, 2):
+            for piece_id, tokens in files:
+                base = 2.0 + 0.2 * rng.standard_normal()
+                for model, nll in (
+                    ("hdp_hmm", base),
+                    ("vomm", base - vomm_effect + long_penalty * tokens / 100.0 + 0.01 * rng.standard_normal()),
+                ):
+                    rows.append({
+                        "piece_id": piece_id, "frac": "1.0", "canonical_work_id": f"w{index}",
+                        "model": model, "data_seed": 1, "model_seed": model_seed,
+                        "n_tokens": tokens, "log_likelihood": -nll * tokens, "nll_per_token": nll,
+                    })
+    return rows
+
+
+def _write_unit_run(run_dir: Path, rows: list[dict]) -> dict:
+    """Escribe piece_metrics_raw.csv y el pairwise_comparisons.json que el runner sacaría de él."""
+
+    from Comparacion.statistics import pairwise_model_comparisons
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with (run_dir / "piece_metrics_raw.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=PIECE_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    payload = pairwise_model_comparisons(
+        rows, bootstrap_samples=400, seed=0,
+        expected_models=["finite_hmm", "hdp_hmm", "transformer", "vomm"],
+    )
+    (run_dir / "pairwise_comparisons.json").write_text(json.dumps(payload), encoding="utf-8")
+    return next(c for c in payload["comparisons"] if (c["model_a"], c["model_b"]) == ("hdp_hmm", "vomm"))
+
+
+class UnitOfAnalysisFigureTests(FigureTestCase):
+    """fig6 lee los dos estimandos y sus IC de Holm de pairwise_comparisons.json (ronda 2)."""
+
+    def test_both_estimands_and_their_holm_intervals_come_from_the_artifact(self) -> None:
+        comparison = _write_unit_run(self.original, _unit_rows(n_works=16, vomm_effect=0.05))
+
+        drawn = self.module.figura_unidad_de_analisis()
+
+        self.assertEqual(drawn["por_obra"], comparison["mean_difference"])
+        self.assertEqual(drawn["por_evento"], comparison["token_weighted_difference"])
+        self.assertEqual(drawn["ic_por_obra"], comparison["work_mean_holm_decision_ci"])
+        self.assertEqual(drawn["ic_por_evento"], comparison["token_weighted_holm_decision_ci"])
+        self.assertEqual(drawn["n_obras"], comparison["n_pairs"])
+        # El panel A usa la misma NLL por obra que decide: su media es la del artefacto.
+        self.assertAlmostEqual(drawn["media_panel_a"], comparison["mean_difference"], places=12)
+        self.assertTrue((self.module.OUTPUT_DIR / "fig6_unidad_de_analisis.png").is_file())
+
+    def test_the_title_and_labels_follow_the_holm_verdicts(self) -> None:
+        # r2sw_runs/A: el VOMM gana en los dos estimandos; el título no puede decir que pierde.
+        comparison = _write_unit_run(self.original, _unit_rows(n_works=16, vomm_effect=0.08))
+        self.assertTrue(comparison["work_mean_holm_rejects_zero"])
+        self.assertTrue(comparison["token_weighted_holm_rejects_zero"])
+
+        drawn = self.module.figura_unidad_de_analisis()
+
+        self.assertEqual(drawn["ganadores"], ["VOMM", "VOMM"])
+        self.assertNotIn("pierde", drawn["titulo"])
+        self.assertIn("16 obras", drawn["metodo"])
+        self.assertNotIn("414", drawn["metodo"])
+
+    def test_a_difference_holm_does_not_reject_is_a_tie(self) -> None:
+        comparison = _write_unit_run(self.original, _unit_rows(n_works=16, vomm_effect=0.0))
+        self.assertFalse(comparison["work_mean_holm_rejects_zero"])
+
+        drawn = self.module.figura_unidad_de_analisis()
+
+        self.assertEqual(drawn["ganadores"][0], "empate")
+        self.assertNotIn("gana", drawn["titulo"].split(";")[0])
+
+    def test_the_axis_covers_the_intervals_it_draws(self) -> None:
+        _write_unit_run(self.original, _unit_rows(n_works=16, vomm_effect=0.6))
+
+        drawn = self.module.figura_unidad_de_analisis()
+
+        low, high = drawn["xlim"]
+        for interval in (drawn["ic_por_obra"], drawn["ic_por_evento"]):
+            self.assertLessEqual(low, min(interval[0], 0.0))
+            self.assertGreaterEqual(high, max(interval[1], 0.0))
+
+    def test_a_pair_with_too_few_works_is_skipped_with_its_reason(self) -> None:
+        _write_unit_run(self.original, _unit_rows(n_works=3, vomm_effect=0.05))
+
+        self.assertIsNone(self.module.figura_unidad_de_analisis())
+        self.assertFalse((self.module.OUTPUT_DIR / "fig6_unidad_de_analisis.png").exists())
+
+    def test_too_few_works_are_skipped_even_if_the_file_carries_an_interval(self) -> None:
+        # r2sw_runs/C: un pairwise de antes del mínimo de Holm trae IC con 3 obras.
+        _write_unit_run(self.original, _unit_rows(n_works=3, vomm_effect=0.05))
+        payload = json.loads((self.original / "pairwise_comparisons.json").read_text(encoding="utf-8"))
+        for item in payload["comparisons"]:
+            if (item["model_a"], item["model_b"]) == ("hdp_hmm", "vomm"):
+                for prefix in ("work_mean", "token_weighted"):
+                    item[f"{prefix}_holm_decision_ci"] = [0.01, 0.09]
+                    item[f"{prefix}_holm_rejects_zero"] = True
+        (self.original / "pairwise_comparisons.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        self.assertIsNone(self.module.figura_unidad_de_analisis())
+        self.assertFalse((self.module.OUTPUT_DIR / "fig6_unidad_de_analisis.png").exists())
+
+    def test_an_old_pairwise_file_is_rejected(self) -> None:
+        _write_unit_run(self.original, _unit_rows(n_works=16, vomm_effect=0.05))
+        payload = json.loads((self.original / "pairwise_comparisons.json").read_text(encoding="utf-8"))
+        for item in payload["comparisons"]:
+            item.pop("token_weighted_holm_decision_ci", None)
+        (self.original / "pairwise_comparisons.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "pairwise_comparisons"):
+            self.module.figura_unidad_de_analisis()
 
 
 if __name__ == "__main__":
