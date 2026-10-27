@@ -123,6 +123,73 @@ class SplitManifestTests(unittest.TestCase):
             self.assertGreater(manifest["comparison"][name]["n_shared"], 0)
 
 
+class OriginalRunReferenceTests(unittest.TestCase):
+    """La corrida original (tesis_3000_gpu_20260823_1941) no tiene execution_plan.json:
+    sus particiones son splits/test_pieces.json y splits/val_pieces.json, cada una
+    {n_pieces, piece_ids}.  Preregistro B: el conjunto de prueba nuevo se reporta
+    junto con su diferencia respecto del anterior."""
+
+    def _original_layout(self, directory: str) -> Path:
+        _run(directory, "original", plan_only=True)
+        original = Path(directory) / "original"
+        (original / "execution_plan.json").unlink()
+        (original / "splits" / "manifest.json").unlink()
+        return original
+
+    def test_the_original_run_directory_is_a_valid_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            original = self._original_layout(directory)
+            reference = runner._load_reference_splits(str(original))
+            test_ids = json.loads((original / "splits" / "test_pieces.json").read_text(encoding="utf-8"))["piece_ids"]
+        self.assertEqual(sorted(reference), ["test", "validation"])
+        self.assertEqual(reference["test"], test_ids)
+
+    def test_a_single_split_file_of_the_original_run_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            original = self._original_layout(directory)
+            reference = runner._load_reference_splits(str(original / "splits" / "test_pieces.json"))
+            validation = runner._load_reference_splits(str(original / "splits" / "val_pieces.json"))
+        self.assertEqual(list(reference), ["test"])
+        self.assertEqual(list(validation), ["validation"])
+
+    def test_the_difference_is_reported_in_the_plan_and_the_run_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            original = self._original_layout(directory)
+            config = replace(_runner_config(directory), reference_splits_path=str(original))
+            _run(directory, "nueva", config=config)
+            root = Path(directory) / "nueva"
+            plan = json.loads((root / "execution_plan.json").read_text(encoding="utf-8"))
+            summary = json.loads((root / "run_summary.json").read_text(encoding="utf-8"))
+        for payload in (plan, summary):
+            comparison = payload["reference_split_comparison"]
+            self.assertEqual(comparison["status"], "reported")
+            self.assertEqual(comparison["splits"]["test"]["n_only_new"], 0)
+            self.assertGreater(comparison["splits"]["test"]["n_shared"], 0)
+
+    def test_without_a_reference_the_gap_is_declared(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _run(directory, "sin-ref")
+            root = Path(directory) / "sin-ref"
+            plan = json.loads((root / "execution_plan.json").read_text(encoding="utf-8"))
+            manifest = json.loads((root / "splits" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(plan["reference_split_comparison"]["status"], "not_reported_no_reference_given")
+        self.assertIn("preregistro", plan["reference_split_comparison"]["required_by"])
+        self.assertEqual(manifest["comparison_status"], "not_reported_no_reference_given")
+        self.assertIn(
+            "test_split_difference_vs_original_run_not_reported",
+            plan["analysis_status"]["preregistration_gaps"],
+        )
+
+    def test_the_reference_is_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            original = self._original_layout(directory)
+            before = {path.name: path.stat().st_mtime_ns for path in original.rglob("*") if path.is_file()}
+            config = replace(_runner_config(directory), reference_splits_path=str(original))
+            _run(directory, "nueva", config=config, plan_only=True)
+            after = {path.name: path.stat().st_mtime_ns for path in original.rglob("*") if path.is_file()}
+        self.assertEqual(before, after)
+
+
 class ReferenceSplitsCliTests(unittest.TestCase):
     def test_cli_accepts_the_reference_partition(self) -> None:
         from Comparacion.cli import build_parser

@@ -356,4 +356,9 @@ def split_manifest(
                 "n_only_reference": len(old_ids - new_ids),
             }
         manifest["comparison"] = comparison
+        manifest["comparison_status"] = "reported"
+    else:
+        # Preregistro B pide la diferencia con el conjunto de prueba anterior: si
+        # falta la referencia, el manifiesto lo dice en vez de callarlo.
+        manifest["comparison_status"] = "not_reported_no_reference_given"
     return manifest

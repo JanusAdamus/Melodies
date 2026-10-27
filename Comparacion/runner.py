@@ -149,12 +149,54 @@ def _guard_resume_inputs(
         )
 
 
+#: Archivos de partición de la corrida original (sin execution_plan.json), cada uno
+#: ``{n_pieces, piece_ids}``.
+_ORIGINAL_SPLIT_FILES = {"test_pieces.json": "test", "val_pieces.json": "validation"}
+
+#: Preregistro B: el conjunto de prueba nuevo se reporta con su diferencia respecto del anterior.
+_REFERENCE_REQUIRED_BY = "preregistro 2026-10-26, sección B, Corpus y partición"
+
+
+def _split_ids(path: Path, payload: object) -> list[str]:
+    ids = payload.get("piece_ids") if isinstance(payload, Mapping) else payload
+    if not isinstance(ids, list):
+        raise ValueError(f"{path} no trae piece_ids.")
+    return [str(item) for item in ids]
+
+
+def _load_original_split_files(directory: Path) -> dict[str, list[str]]:
+    reference: dict[str, list[str]] = {}
+    for filename, name in _ORIGINAL_SPLIT_FILES.items():
+        path = directory / filename
+        if path.is_file():
+            reference[name] = _split_ids(path, json.loads(path.read_text(encoding="utf-8")))
+    if not reference:
+        raise ValueError(f"{directory} no contiene test_pieces.json ni val_pieces.json.")
+    return reference
+
+
 def _load_reference_splits(path_value: str | None) -> dict[str, list[str]] | None:
-    """Ids por partición de la corrida original (``execution_plan.json`` o ``{nombre: [ids]}``)."""
+    """Ids por partición de la corrida de referencia; sólo lee, nunca escribe.
+
+    Acepta ``execution_plan.json``, ``{nombre: [ids]}``, el directorio de una
+    corrida (su ``execution_plan.json`` o, si no lo tiene, como la corrida
+    original, ``splits/test_pieces.json`` y ``splits/val_pieces.json``), su
+    directorio ``splits/`` o uno de esos dos archivos.
+    """
 
     if path_value is None:
         return None
-    payload = json.loads(Path(path_value).read_text(encoding="utf-8"))
+    path = Path(path_value)
+    if path.is_dir():
+        if (path / "execution_plan.json").is_file():
+            path = path / "execution_plan.json"
+        elif (path / "splits").is_dir():
+            return _load_original_split_files(path / "splits")
+        else:
+            return _load_original_split_files(path)
+    if path.name in _ORIGINAL_SPLIT_FILES:
+        return {_ORIGINAL_SPLIT_FILES[path.name]: _split_ids(path, json.loads(path.read_text(encoding="utf-8")))}
+    payload = json.loads(path.read_text(encoding="utf-8"))
     splits = payload.get("splits", payload) if isinstance(payload, Mapping) else None
     if not isinstance(splits, Mapping):
         raise ValueError(f"{path_value} no contiene particiones de referencia.")
@@ -432,6 +474,7 @@ def _build_execution_plan(
     *,
     split_sha256: str,
     plan_only: bool = True,
+    reference_split_comparison: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     tokenizer = build_tokenizer(config.experiment.representation)
     run_rows = sum(len(subsets) for subsets in nested_by_seed.values()) * len(config.model_seeds)
@@ -500,6 +543,10 @@ def _build_execution_plan(
         "analysis_status": _analysis_status(config),
         # Hash de splits/manifest.json: identifica la partición sin depender del SO.
         "split_sha256": split_sha256,
+        "reference_split_comparison": dict(
+            reference_split_comparison
+            or {"status": "not_reported_no_reference_given", "required_by": _REFERENCE_REQUIRED_BY}
+        ),
         "splits": {
             "train_pool": _split_payload(fixed_splits.train_pool_pieces),
             "validation": _split_payload(fixed_splits.validation_pieces),
@@ -633,12 +680,16 @@ def _comparison_family_models(config) -> list[str]:
 def _analysis_status(config) -> dict[str, object]:
     """Si la corrida evalúa la regla preregistrada de B o es exploratoria (Aclaración 2)."""
 
+    gaps = []
+    if getattr(config, "reference_splits_path", None) is None:
+        gaps.append("test_split_difference_vs_original_run_not_reported")
     if config.include_vomm_control:
         return {
             "status": "preregistered",
             "evaluates_preregistered_rule_B": True,
             "reason": None,
             "holm_family_models": sorted(PREREGISTERED_FAMILY_MODELS),
+            "preregistration_gaps": gaps,
         }
     return {
         "status": "exploratory",
@@ -646,7 +697,21 @@ def _analysis_status(config) -> dict[str, object]:
         "reason": "run_without_vomm: the six preregistered comparisons of B include the vomm; "
         "its pairs are not evaluable and this run does not evaluate the rule of B",
         "holm_family_models": sorted(PREREGISTERED_FAMILY_MODELS),
+        "preregistration_gaps": gaps,
     }
+
+
+def _reference_split_comparison(manifest: Mapping[str, object], path_value: str | None) -> dict[str, object]:
+    """Diferencia de la partición nueva con la de referencia, o su ausencia declarada."""
+
+    if manifest.get("comparison_status") == "reported":
+        return {
+            "status": "reported",
+            "reference": Path(str(path_value)).name,
+            "splits": manifest["comparison"],
+            "required_by": _REFERENCE_REQUIRED_BY,
+        }
+    return {"status": "not_reported_no_reference_given", "required_by": _REFERENCE_REQUIRED_BY}
 
 
 def _build_piece_metric_rows(
@@ -1585,12 +1650,21 @@ def run_learning_curve_experiment(
     write_csv(output_root / "exclusions.csv", [item.__dict__ for item in preparation.exclusions])
     _write_split_artifacts(output_root, fixed_splits, nested_by_seed)
     _write_json(output_root / "splits" / "manifest.json", manifest)
+    reference_comparison = _reference_split_comparison(manifest, config.reference_splits_path)
+    if reference_comparison["status"] != "reported":
+        print(
+            "[runner] aviso: sin --reference-splits no se reporta la diferencia con el "
+            f"conjunto de prueba anterior que pide el {_REFERENCE_REQUIRED_BY}",
+            file=sys.stderr,
+            flush=True,
+        )
     execution_plan = _build_execution_plan(
         config,
         fixed_splits,
         nested_by_seed,
         split_sha256=str(manifest["sha256"]),
         plan_only=plan_only,
+        reference_split_comparison=reference_comparison,
     )
     _write_json(output_root / "execution_plan.json", execution_plan)
     # La exposición depende sólo de la partición y de los desplazamientos, así
@@ -2192,6 +2266,7 @@ def run_learning_curve_experiment(
         "status": "completed",
         # Aclaración 2: sin VOMM la corrida no evalúa la regla de B.
         "analysis_status": analysis_status,
+        "reference_split_comparison": reference_comparison,
         "output_root": str(output_root),
         "n_prepared_pieces": len(preparation.pieces),
         "n_exclusions": len(preparation.exclusions),
