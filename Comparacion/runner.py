@@ -557,6 +557,17 @@ def _build_execution_plan(
         "structural_evaluation.json",
         "pareto_summary.json",
         "learning_curve.png",
+        RESUME_INPUTS_FILENAME,
+        "checkpoint.jsonl",
+        "training_exposure_audit.json",
+        "hdp_traces.csv",
+        "hdp_chain_diagnostics.json",
+        "finite_hmm_grid_audit.json",
+        *(("vomm_order_grid_audit.json",) if config.include_vomm_control else ()),
+        "hardware_manifest.json",
+        DENOMINATOR_AUDIT_FILENAME,
+        CANONICALIZATION_AUDIT_FILENAME,
+        "run_summary.json",
     )
     return {
         "status": "planned_no_evidence",
@@ -613,10 +624,12 @@ def _build_execution_plan(
                 "path": name,
                 "plan_only_status": "written" if name in {
                     "config.json",
+                    RESUME_INPUTS_FILENAME,
                     "preprocessing_report.json",
                     "exclusions.csv",
                     "splits/*.json",
                     "execution_plan.json",
+                    "training_exposure_audit.json",
                 } else "not_written_until_execution",
             }
             for name in artifact_names

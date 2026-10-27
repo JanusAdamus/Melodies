@@ -292,6 +292,38 @@ class ResumeGuardTests(unittest.TestCase):
         self.assertEqual(mocks["finite_constructor"].call_count, 0)
 
 
+class ArtifactPlanTests(unittest.TestCase):
+    def test_every_file_a_full_run_writes_is_in_the_artifact_plan(self) -> None:
+        import fnmatch
+
+        with tempfile.TemporaryDirectory() as directory:
+            _run(directory, "run")
+            root = Path(directory) / "run"
+            written = sorted(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file())
+            plan = json.loads((root / "execution_plan.json").read_text(encoding="utf-8"))
+        planned = [item["path"] for item in plan["artifact_plan"]]
+        for name in ("vomm_order_grid_audit.json", "hdp_traces.csv"):
+            self.assertIn(name, planned)
+        unlisted = [name for name in written if not any(fnmatch.fnmatch(name, pattern) for pattern in planned)]
+        self.assertEqual(unlisted, [])
+
+    def test_without_vomm_its_grid_audit_is_not_planned(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(_runner_config(directory, include_vomm_control=False))
+            _run(directory, "plan", config=config, plan_only=True)
+            root = Path(directory) / "plan"
+            plan = json.loads((root / "execution_plan.json").read_text(encoding="utf-8"))
+            written = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
+        self.assertNotIn("vomm_order_grid_audit.json", [item["path"] for item in plan["artifact_plan"]])
+        # plan_only_status dice la verdad sobre lo que el modo plan escribe.
+        for item in plan["artifact_plan"]:
+            if "*" in item["path"]:
+                continue
+            with self.subTest(path=item["path"]):
+                expected = "written" if item["path"] in written else "not_written_until_execution"
+                self.assertEqual(item["plan_only_status"], expected)
+
+
 class ConfigHashTests(unittest.TestCase):
     """--resume compara contenido: mover el corpus de unidad no cambia la configuración."""
 
