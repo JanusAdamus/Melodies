@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 import numpy as np
+from scipy.special import gammaln
 from scipy.stats import spearmanr
 
 from src.data.observations import ObservationSequence
@@ -99,6 +100,55 @@ class BetaSamplingTests(unittest.TestCase):
         self.assertLessEqual(np.mean(occupied), 3.8, occupied)
 
 
+def _log_beta_posterior(beta: np.ndarray, state_sequences, model: TruncatedHDPHMM) -> np.ndarray:
+    """log p(β | z) sin constante, con π_j y π_0 integrados (límite débil, Fox et al. 2011).
+
+    p(β | z) ∝ Dir(β; γ/L) Π_j Π_k Γ(c_jk + n_jk)/Γ(c_jk) · Π_k Γ(α0 β_k + n0_k)/Γ(α0 β_k),
+    con c_jk = α β_k + κ [j = k]; los factores Γ(Σ_k c_jk) no dependen de β.
+    """
+
+    counts = hdp_hmm_module._count_segmented_transitions(state_sequences, model.n_states)
+    initial = model._initial_counts(state_sequences)
+    total = (model.gamma / model.n_states - 1.0) * np.log(beta).sum(axis=1)
+    eye = np.eye(model.n_states)
+    for row in range(model.n_states):
+        concentration = model.alpha * beta + model.kappa * eye[row]
+        total += (gammaln(concentration + counts[row]) - gammaln(concentration)).sum(axis=1)
+    concentration = model.alpha0 * beta
+    total += (gammaln(concentration + initial) - gammaln(concentration)).sum(axis=1)
+    return total
+
+
+class FoxBetaUpdateTests(unittest.TestCase):
+    """β | z de las mesas CRT (con corrección w por κ) coincide con la posterior exacta."""
+
+    def _check_against_importance_sampling(self, kappa: float) -> None:
+        model = TruncatedHDPHMM(n_states=3, alpha=2.0, alpha0=1.5, gamma=3.0, kappa=kappa, n_iters=2, burn_in=0)
+        state_sequences = [np.array([0, 0, 0, 0, 1, 1, 0, 2, 2, 2, 2, 2, 0, 1, 1]), np.array([1, 1, 2, 2])]
+        model.rng = np.random.default_rng(0)
+        beta = np.full(3, 1.0 / 3.0)
+        draws = []
+        for iteration in range(42_000):
+            beta, _ = model._update_beta(beta, state_sequences)
+            if iteration >= 2_000:
+                draws.append(beta)
+        gibbs_mean = np.mean(draws, axis=0)
+
+        # γ/L = 1: la previa es uniforme en el simplex y sirve de propuesta.
+        proposals = np.random.default_rng(1).dirichlet(np.ones(3), size=400_000)
+        log_weights = _log_beta_posterior(proposals, state_sequences, model)
+        weights = np.exp(log_weights - log_weights.max())
+        exact_mean = weights @ proposals / weights.sum()
+
+        np.testing.assert_allclose(gibbs_mean, exact_mean, atol=0.01)
+
+    def test_beta_update_targets_the_posterior_without_stickiness(self) -> None:
+        self._check_against_importance_sampling(kappa=0.0)
+
+    def test_beta_update_targets_the_posterior_with_sticky_override(self) -> None:
+        self._check_against_importance_sampling(kappa=6.0)
+
+
 class SeedTests(unittest.TestCase):
     def test_two_fits_with_the_same_seed_are_identical(self) -> None:
         observations = _observations(three_state_tokens(120))
@@ -108,6 +158,19 @@ class SeedTests(unittest.TestCase):
 
         self.assertEqual(first.diagnostics.log_likelihood_history, second.diagnostics.log_likelihood_history)
         self.assertEqual(first.log_likelihood, second.log_likelihood)
+
+    def test_two_instances_with_the_same_seed_give_the_same_posterior(self) -> None:
+        observations = _observations(three_state_tokens(120))
+        make = lambda seed: TruncatedHDPHMM(n_states=6, n_iters=15, burn_in=5, seed=seed)
+
+        first, second, other = make(7).fit(observations), make(7).fit(observations), make(8).fit(observations)
+
+        np.testing.assert_array_equal(first.latent_states, second.latent_states)
+        np.testing.assert_array_equal(first.posterior_transition_mean, second.posterior_transition_mean)
+        np.testing.assert_array_equal(first.posterior_emission_mean, second.posterior_emission_mean)
+        np.testing.assert_array_equal(first.diagnostics.initial_beta, second.diagnostics.initial_beta)
+        self.assertEqual(first.effective_states, second.effective_states)
+        self.assertNotEqual(first.diagnostics.log_likelihood_history, other.diagnostics.log_likelihood_history)
 
 
 if __name__ == "__main__":
