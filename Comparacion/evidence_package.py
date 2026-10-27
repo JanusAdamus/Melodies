@@ -22,7 +22,9 @@ _EXTRA_FILES = (
     "denominator_audit.json",
     "finite_hmm_grid_audit.json",
     "hdp_chain_diagnostics.json",
+    "headline_estimates.json",
     "training_exposure_audit.json",
+    "vomm_order_grid_audit.json",
 )
 _TEXT_EXTENSIONS = {".csv", ".json", ".jsonl", ".md", ".txt"}
 _SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")

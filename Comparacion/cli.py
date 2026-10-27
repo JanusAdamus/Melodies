@@ -29,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plan-only", action="store_true", help="Write an execution plan without constructing or fitting models.")
     parser.add_argument("--without-vomm", action="store_true", help="Disable the optional PPM-inspired VOMM diagnostic control.")
     parser.add_argument("--structural-annotations", default=None, help="Optional CSV with piece_id,event_index,segment_label,boundary columns.")
+    parser.add_argument("--reference-splits", default=None, help="execution_plan.json of the original run; splits/manifest.json then reports how many pieces the new partition shares with it.")
     parser.add_argument("--split-seed", type=int, default=None, help="Seed of the fixed train/validation/test partition. Repeat the run with different values to measure sensitivity to the partition.")
     parser.add_argument("--finite-hmm-states", default=None, help="Comma-separated candidate state counts for the finite HMM, for example 48,72,96. Must be increasing, unique and at least 2.")
     parser.add_argument("--transformer-search-wall-clock-s", type=float, default=None, help="Wall-clock seconds of the Transformer architecture/hyperparameter search done outside this run. Without it the search cost is recorded as not measured.")
@@ -203,6 +204,7 @@ def main() -> None:
         "experiment": experiment,
         "include_vomm_control": not args.without_vomm,
         "structural_annotations_path": args.structural_annotations,
+        "reference_splits_path": args.reference_splits,
     }
     parsed_data_seeds = _parse_int_tuple(args.data_seeds)
     if parsed_data_seeds is not None:

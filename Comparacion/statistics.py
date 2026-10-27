@@ -85,6 +85,42 @@ def _row_log_likelihood_and_tokens(row: Mapping[str, object]) -> tuple[float, in
     return log_likelihood, int(n_tokens)
 
 
+def _nominal_run_key(row: Mapping[str, object]) -> tuple[str, ...]:
+    return tuple(str(row.get(key)) for key in ("split_seed", "data_seed", "model_seed"))
+
+
+def _distinct_run_key(row: Mapping[str, object]) -> tuple[str, ...]:
+    """Corrida real: conjunto de entrenamiento × model_seed (auditoría C4).
+
+    Dos data_seed que producen el mismo conjunto de entrenamiento no son corridas
+    distintas. Sin ``train_subset_sha256`` se usa data_seed como antes.
+    """
+
+    subset = row.get("train_subset_sha256")
+    training = str(subset) if isinstance(subset, str) and subset else f"data_seed={row.get('data_seed')}"
+    return (str(row.get("split_seed")), training, str(row.get("model_seed")))
+
+
+def run_counts_by_model_and_fraction(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[tuple[str, float], dict[str, int]]:
+    """Por (modelo, frac): corridas nominales (semillas) y distintas (datos × modelo)."""
+
+    nominal: dict[tuple[str, float], set[tuple[str, ...]]] = {}
+    distinct: dict[tuple[str, float], set[tuple[str, ...]]] = {}
+    for row in rows:
+        model = row.get("model")
+        fraction = _finite_float(row.get("frac"))
+        if not isinstance(model, str) or fraction is None:
+            continue
+        nominal.setdefault((model, fraction), set()).add(_nominal_run_key(row))
+        distinct.setdefault((model, fraction), set()).add(_distinct_run_key(row))
+    return {
+        key: {"n_distinct_runs": len(distinct[key]), "n_nominal_runs": len(nominal[key])}
+        for key in nominal
+    }
+
+
 def _work_totals(
     rows: Iterable[Mapping[str, object]],
 ) -> tuple[dict[tuple[str, float], dict[str, tuple[float, float]]], dict[tuple[str, float], int]]:
@@ -149,7 +185,9 @@ def headline_estimates(
 
     samples = _positive_integer(bootstrap_samples, name="bootstrap_samples")
     generator = np.random.default_rng(_nonnegative_integer(seed, name="seed"))
+    rows = list(rows)
     totals, run_counts = _work_totals(rows)
+    run_accounting = run_counts_by_model_and_fraction(rows)
     estimates: list[dict[str, object]] = []
     for (model, fraction), works in sorted(totals.items()):
         log_likelihoods = np.asarray([value[0] for value in works.values()], dtype=float)
@@ -164,7 +202,10 @@ def headline_estimates(
             "model": model,
             "frac": fraction,
             "n_works": len(works),
-            "n_runs": run_counts[(model, fraction)],
+            # n_runs: corridas distintas (conjunto de entrenamiento × model_seed);
+            # n_nominal_runs: combinaciones de semillas, que pueden repetir datos.
+            "n_runs": run_accounting[(model, fraction)]["n_distinct_runs"],
+            "n_nominal_runs": run_counts[(model, fraction)],
             "n_tokens": float(n_tokens.sum()),
         }
         estimates.extend(
@@ -510,8 +551,18 @@ def pairwise_model_comparisons(
         },
         "n_works_any_model": len({work for works in works_by_model.values() for work in works}),
     }
+    full_fraction_runs = {
+        model: counts
+        for (model, fraction), counts in sorted(
+            run_counts_by_model_and_fraction(
+                row for row in materialized_rows if _full_fraction(row)
+            ).items()
+        )
+    }
     return {
         "denominators": denominators,
+        # C4/(e): n real de corridas en frac = 1.0, aparte del número de semillas.
+        "full_fraction_runs": full_fraction_runs,
         "split_seeds": split_seeds,
         "pooling": (
             "per_split_seed_never_pooled_across_splits"

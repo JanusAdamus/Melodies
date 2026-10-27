@@ -17,6 +17,8 @@ from pathlib import Path
 
 from next_token_experiment.experiment.splits import canonicalization_details
 
+from .splits import PIECE_WORK_PREFIX
+
 AUDIT_FILENAME = "canonicalization_audit.json"
 
 FINGERPRINT_POLICY = "diagnostic_only_never_automatic_identity_proof"
@@ -45,6 +47,10 @@ def _field(piece: Mapping[str, object] | object, name: str) -> object:
 
 def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _is_piece_work(record: Mapping[str, object]) -> bool:
+    return str(record["canonical_work_id"]).startswith(PIECE_WORK_PREFIX)
 
 
 def build_canonicalization_audit(
@@ -118,10 +124,11 @@ def build_canonicalization_audit(
         for record in records
         if record["is_empty"] or not record["title"] or not record["composer"]
     ]
+    # Una obra «pieza:<ruta>» ya aísla la pieza de etiqueta genérica: no es ambigua.
     generic_labels = [
         {"piece_id": record["piece_id"], "canonical_work_id": record["canonical_work_id"]}
         for record in records
-        if record["is_generic"] or record["is_short"]
+        if (record["is_generic"] or record["is_short"]) and not _is_piece_work(record)
     ]
 
     dropped_suffixes = [
@@ -137,7 +144,7 @@ def build_canonicalization_audit(
     by_aggressive_key: dict[str, set[str]] = {}
     for record in records:
         key = str(record["aggressive_key"])
-        if not key:
+        if not key or _is_piece_work(record):
             continue
         by_aggressive_key.setdefault(key, set()).add(str(record["canonical_work_id"]))
     near_miss_groups = [

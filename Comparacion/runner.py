@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict
+import hashlib
 import json
 import math
 from numbers import Integral
@@ -27,6 +28,7 @@ from next_token_experiment.data.dataset import (
     WindowedSequenceDataset,
     build_dataloaders,
     build_training_exposure_audit,
+    dataloader_seed,
 )
 from next_token_experiment.data.preprocess import build_preprocessing_report, prepare_corpus
 from next_token_experiment.data.tokenizer import build_tokenizer
@@ -50,7 +52,13 @@ from .resource_monitor import (
     ResourceMonitor,
     protocol_resource_fields,
 )
-from .splits import FixedSplits, build_fixed_splits, build_nested_training_subsets
+from .splits import (
+    FixedSplits,
+    build_grouped_fixed_splits,
+    build_nested_training_subsets,
+    normalized_piece_key,
+    split_manifest,
+)
 from .statistics import headline_estimates, pairwise_model_comparisons
 from .structural_metrics import adjusted_rand_index, boundary_f1, normalized_mutual_information
 from .vomm import select_vomm_by_validation
@@ -77,6 +85,72 @@ def _guard_fresh_run_directory(run_directory: Path) -> None:
             f"Run directory {run_directory} already exists and is not empty; "
             "choose a different run_name to avoid mixing artifacts from separate runs."
         )
+
+
+RESUME_INPUTS_FILENAME = "checkpoint_inputs.json"
+
+
+def _train_subset_sha256(pieces: Sequence[PreparedPiece]) -> str:
+    keys = sorted(normalized_piece_key(piece.piece_id) for piece in pieces)
+    return hashlib.sha256(json.dumps(keys, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _config_sha256(config: LearningCurveConfig) -> str:
+    """Hash de la configuración; ``results_root`` no cuenta (la corrida puede moverse)."""
+
+    payload = {key: value for key, value in asdict(config).items() if key != "results_root"}
+    encoded = json.dumps(_json_safe(payload), sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _guard_resume_inputs(
+    output_root: Path,
+    checkpoint_path: Path,
+    expected: Mapping[str, str],
+) -> None:
+    """``--resume`` sólo continúa celdas hechas con la misma partición y configuración."""
+
+    if not checkpoint_path.exists() or not checkpoint_path.read_text(encoding="utf-8").strip():
+        return
+    inputs_path = output_root / RESUME_INPUTS_FILENAME
+    if not inputs_path.is_file():
+        raise ValueError(
+            f"No puedo reanudar: falta {RESUME_INPUTS_FILENAME} junto al checkpoint, así que "
+            "no se puede comprobar que la partición y la configuración sean las mismas."
+        )
+    recorded = json.loads(inputs_path.read_text(encoding="utf-8"))
+    if recorded.get("split_sha256") != expected["split_sha256"]:
+        raise ValueError(
+            "No puedo reanudar: la partición (sha256 de splits/manifest.json) no coincide "
+            "con la del checkpoint."
+        )
+    if recorded.get("config_sha256") != expected["config_sha256"]:
+        raise ValueError(
+            "No puedo reanudar: la configuración no coincide con la del checkpoint."
+        )
+
+
+def _load_reference_splits(path_value: str | None) -> dict[str, list[str]] | None:
+    """Ids por partición de la corrida original (``execution_plan.json`` o ``{nombre: [ids]}``)."""
+
+    if path_value is None:
+        return None
+    payload = json.loads(Path(path_value).read_text(encoding="utf-8"))
+    splits = payload.get("splits", payload) if isinstance(payload, Mapping) else None
+    if not isinstance(splits, Mapping):
+        raise ValueError(f"{path_value} no contiene particiones de referencia.")
+    reference: dict[str, list[str]] = {}
+    for name in ("train_pool", "validation", "test"):
+        if name not in splits:
+            continue
+        entry = splits[name]
+        ids = entry.get("piece_ids") if isinstance(entry, Mapping) else entry
+        if not isinstance(ids, list):
+            raise ValueError(f"{path_value}: la partición {name} no trae piece_ids.")
+        reference[name] = [str(item) for item in ids]
+    if not reference:
+        raise ValueError(f"{path_value} no contiene train_pool, validation ni test.")
+    return reference
 
 
 def _json_safe(value: object) -> object:
@@ -204,6 +278,9 @@ def _build_transformer_dataloaders(
     train_pieces,
     validation_pieces,
     test_pieces,
+    *,
+    model_seed: int,
+    data_seed: int,
 ):
     tokenizer = build_tokenizer(config.experiment.representation)
     train_dataset = WindowedSequenceDataset(
@@ -236,6 +313,8 @@ def _build_transformer_dataloaders(
         train_dataset=train_dataset,
         validation_dataset=validation_dataset,
         test_dataset=test_dataset,
+        # C4: el barajado de lotes cambia con model_seed y con data_seed.
+        shuffle_seed=dataloader_seed(model_seed=model_seed, data_seed=data_seed),
     )
 
 
@@ -304,57 +383,6 @@ def _transformer_summary_row(fit_result: dict, eval_result: dict) -> dict[str, o
     }
 
 
-def _require_canonical_work_ids(pieces: list[PreparedPiece]) -> None:
-    missing = [
-        piece.piece_id
-        for piece in pieces
-        if not isinstance(piece.canonical_work_id, str) or not piece.canonical_work_id.strip()
-    ]
-    if missing:
-        raise ValueError(f"Prepared pieces require nonempty canonical_work_id values: {missing}")
-
-
-def _build_grouped_fixed_splits(
-    pieces: list[PreparedPiece],
-    *,
-    test_fraction: float,
-    validation_fraction: float,
-    seed: int,
-) -> FixedSplits:
-    _require_canonical_work_ids(pieces)
-    groups: dict[str, list[PreparedPiece]] = {}
-    for piece in sorted(pieces, key=lambda item: item.piece_id):
-        groups.setdefault(piece.canonical_work_id, []).append(piece)
-    representatives = [members[0] for _, members in sorted(groups.items())]
-    representative_splits = build_fixed_splits(
-        representatives,
-        test_fraction=test_fraction,
-        validation_fraction=validation_fraction,
-        seed=seed,
-    )
-
-    def expand(selected: list[PreparedPiece]) -> list[PreparedPiece]:
-        selected_groups = {piece.canonical_work_id for piece in selected}
-        return sorted(
-            [piece for group_id in selected_groups for piece in groups[group_id]],
-            key=lambda item: item.piece_id,
-        )
-
-    fixed_splits = FixedSplits(
-        test_pieces=expand(representative_splits.test_pieces),
-        validation_pieces=expand(representative_splits.validation_pieces),
-        train_pool_pieces=expand(representative_splits.train_pool_pieces),
-    )
-    group_sets = [
-        {piece.canonical_work_id for piece in fixed_splits.train_pool_pieces},
-        {piece.canonical_work_id for piece in fixed_splits.validation_pieces},
-        {piece.canonical_work_id for piece in fixed_splits.test_pieces},
-    ]
-    if any(left & right for index, left in enumerate(group_sets) for right in group_sets[index + 1 :]):
-        raise ValueError("Canonical work groups must not cross split boundaries.")
-    return fixed_splits
-
-
 def _split_payload(pieces: list[PreparedPiece]) -> dict[str, object]:
     canonical_work_ids = sorted({piece.canonical_work_id for piece in pieces})
     return {
@@ -382,6 +410,9 @@ def _build_execution_plan(
     config: LearningCurveConfig,
     fixed_splits: FixedSplits,
     nested_by_seed: dict[int, list[tuple[float, list[PreparedPiece]]]],
+    *,
+    split_sha256: str,
+    plan_only: bool = True,
 ) -> dict[str, object]:
     tokenizer = build_tokenizer(config.experiment.representation)
     run_rows = sum(len(subsets) for subsets in nested_by_seed.values()) * len(config.model_seeds)
@@ -446,7 +477,9 @@ def _build_execution_plan(
     return {
         "status": "planned_no_evidence",
         "claims_evidence": False,
-        "mode": "plan_only",
+        "mode": "plan_only" if plan_only else "full_run",
+        # Hash de splits/manifest.json: identifica la partición sin depender del SO.
+        "split_sha256": split_sha256,
         "splits": {
             "train_pool": _split_payload(fixed_splits.train_pool_pieces),
             "validation": _split_payload(fixed_splits.validation_pieces),
@@ -574,6 +607,7 @@ def _build_piece_metric_rows(
     evaluated_pieces: list[PreparedPiece],
     *,
     split_seed: int,
+    train_subset_sha256: str | None = None,
 ) -> list[dict[str, object]]:
     pieces_by_id = {piece.piece_id: piece for piece in evaluated_pieces}
     rows = []
@@ -589,6 +623,8 @@ def _build_piece_metric_rows(
         row["canonical_work_id"] = piece.canonical_work_id
         row["model"] = model_name
         row["split_seed"] = split_seed
+        if train_subset_sha256 is not None:
+            row["train_subset_sha256"] = train_subset_sha256
         row["frac"] = fraction
         row["data_seed"] = data_seed
         row["model_seed"] = model_seed
@@ -735,6 +771,12 @@ def _aggregate_summary(
                 "mean_test_nll": mean(nlls),
                 "std_test_nll": pstdev(nlls) if len(nlls) > 1 else 0.0,
                 "runs": len(rows),
+                "n_distinct_runs": len(
+                    {
+                        (row.get("split_seed"), row.get("train_subset_sha256"), row.get("model_seed"))
+                        for row in rows
+                    }
+                ),
                 "test_nll_estimand": "token_weighted_nll",
                 "test_nll_ci95_low": nll_interval[0] if nll_interval else None,
                 "test_nll_ci95_high": nll_interval[1] if nll_interval else None,
@@ -1356,7 +1398,7 @@ def run_learning_curve_experiment(
         cache_path=corpus_cache_path,
         sample_seed=corpus_sample_seed,
     )
-    fixed_splits = _build_grouped_fixed_splits(
+    fixed_splits = build_grouped_fixed_splits(
         preparation.pieces,
         test_fraction=config.test_fraction,
         validation_fraction=config.validation_fraction,
@@ -1371,10 +1413,34 @@ def run_learning_curve_experiment(
         for data_seed in config.data_seeds
     }
 
+    manifest = split_manifest(
+        fixed_splits,
+        reference=_load_reference_splits(config.reference_splits_path),
+    )
+    resume_inputs = {
+        "split_sha256": manifest["sha256"],
+        "config_sha256": _config_sha256(config),
+    }
+    checkpoint_path = output_root / "checkpoint.jsonl"
+    if resume:
+        # Se valida antes de escribir nada: un --resume rechazado deja la
+        # corrida tal como estaba.
+        _guard_resume_inputs(output_root, checkpoint_path, resume_inputs)
+
     _write_json(output_root / "config.json", asdict(config))
+    _write_json(output_root / RESUME_INPUTS_FILENAME, resume_inputs)
     _write_json(output_root / "preprocessing_report.json", build_preprocessing_report(preparation))
     write_csv(output_root / "exclusions.csv", [item.__dict__ for item in preparation.exclusions])
     _write_split_artifacts(output_root, fixed_splits, nested_by_seed)
+    _write_json(output_root / "splits" / "manifest.json", manifest)
+    execution_plan = _build_execution_plan(
+        config,
+        fixed_splits,
+        nested_by_seed,
+        split_sha256=str(manifest["sha256"]),
+        plan_only=plan_only,
+    )
+    _write_json(output_root / "execution_plan.json", execution_plan)
     # La exposición depende sólo de la partición y de los desplazamientos, así
     # que se mide una vez por corrida con el pozo de entrenamiento completo.
     _write_json(
@@ -1389,8 +1455,6 @@ def run_learning_curve_experiment(
     structural_reference = _load_structural_annotations(config.structural_annotations_path)
 
     if plan_only:
-        execution_plan = _build_execution_plan(config, fixed_splits, nested_by_seed)
-        _write_json(output_root / "execution_plan.json", execution_plan)
         return {
             "status": "planned_no_evidence",
             "output_root": str(output_root),
@@ -1413,7 +1477,6 @@ def run_learning_curve_experiment(
         for piece in fixed_splits.test_pieces
     }
 
-    checkpoint_path = output_root / "checkpoint.jsonl"
     completed_cells, restored = _load_checkpoint(checkpoint_path) if resume else (set(), None)
     raw_rows: list[dict[str, object]] = list(restored["raw_rows"]) if restored else []
     piece_metric_rows: list[dict[str, object]] = list(restored["piece_metric_rows"]) if restored else []
@@ -1444,6 +1507,9 @@ def run_learning_curve_experiment(
             }
             n_train_tokens = sum(len(piece.tokens) for piece in train_pieces)
             n_train_pieces = len(train_pieces)
+            # C4/(e): identifica el conjunto de entrenamiento; dos data_seed con el
+            # mismo conjunto no son corridas distintas.
+            train_subset_sha256 = _train_subset_sha256(train_pieces)
 
             if config.include_vomm_control:
                 with ResourceMonitor() as vomm_selection_resources:
@@ -1483,6 +1549,7 @@ def run_learning_curve_experiment(
                     {
                         "model": "vomm",
                         "split_seed": config.split_seed,
+                        "train_subset_sha256": train_subset_sha256,
                         "data_seed": data_seed,
                         "model_seed": _VOMM_DETERMINISTIC_SEED,
                         "frac": fraction,
@@ -1532,6 +1599,7 @@ def run_learning_curve_experiment(
                         vomm_eval["piece_metrics"],
                         fixed_splits.test_pieces,
                         split_seed=config.split_seed,
+                        train_subset_sha256=train_subset_sha256,
                     )
                 )
 
@@ -1584,6 +1652,7 @@ def run_learning_curve_experiment(
                     {
                         "model": "finite_hmm",
                         "split_seed": config.split_seed,
+                        "train_subset_sha256": train_subset_sha256,
                         "data_seed": data_seed,
                         "model_seed": model_seed,
                         "frac": fraction,
@@ -1629,6 +1698,7 @@ def run_learning_curve_experiment(
                         finite_eval["piece_metrics"],
                         fixed_splits.test_pieces,
                         split_seed=config.split_seed,
+                        train_subset_sha256=train_subset_sha256,
                     )
                 )
 
@@ -1690,6 +1760,7 @@ def run_learning_curve_experiment(
                     {
                         "model": "hdp_hmm",
                         "split_seed": config.split_seed,
+                        "train_subset_sha256": train_subset_sha256,
                         "data_seed": data_seed,
                         "model_seed": model_seed,
                         "frac": fraction,
@@ -1733,6 +1804,7 @@ def run_learning_curve_experiment(
                         hdp_eval["piece_metrics"],
                         fixed_splits.test_pieces,
                         split_seed=config.split_seed,
+                        train_subset_sha256=train_subset_sha256,
                     )
                 )
 
@@ -1746,6 +1818,8 @@ def run_learning_curve_experiment(
                     train_pieces=train_pieces,
                     validation_pieces=fixed_splits.validation_pieces,
                     test_pieces=fixed_splits.test_pieces,
+                    model_seed=model_seed,
+                    data_seed=data_seed,
                 )
                 with ResourceMonitor(measure_cuda=True) as transformer_selection_resources:
                     transformer_fit_start = time.perf_counter()
@@ -1781,6 +1855,7 @@ def run_learning_curve_experiment(
                     {
                         "model": "transformer",
                         "split_seed": config.split_seed,
+                        "train_subset_sha256": train_subset_sha256,
                         "data_seed": data_seed,
                         "model_seed": model_seed,
                         "frac": fraction,
@@ -1829,6 +1904,7 @@ def run_learning_curve_experiment(
                         transformer_eval["piece_metrics"],
                         fixed_splits.test_pieces,
                         split_seed=config.split_seed,
+                        train_subset_sha256=train_subset_sha256,
                     )
                 )
 
@@ -1912,7 +1988,14 @@ def run_learning_curve_experiment(
     # Informe de riesgo del agrupamiento por obra: no cambia ninguna asignación.
     _write_json(
         output_root / CANONICALIZATION_AUDIT_FILENAME,
-        build_canonicalization_audit(preparation.pieces),
+        # La agrupación que se usó (metadatos + contenido), no las etiquetas crudas.
+        build_canonicalization_audit(
+            [
+                *fixed_splits.train_pool_pieces,
+                *fixed_splits.validation_pieces,
+                *fixed_splits.test_pieces,
+            ]
+        ),
     )
     structural_payload = _build_structural_evaluation(
         structural_reference,

@@ -637,7 +637,7 @@ class ComparisonRunnerTests(unittest.TestCase):
                 ) as transformer_constructor,
                 patch(
                     "Comparacion.runner._build_transformer_dataloaders",
-                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces: {
+                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces, **_: {
                         "train": train_pieces,
                         "validation": validation_pieces,
                         "test": test_pieces,
@@ -808,7 +808,7 @@ class ComparisonRunnerTests(unittest.TestCase):
                 patch("Comparacion.runner.SmallTransformerNextTokenModel", return_value=mocks["transformer"]),
                 patch(
                     "Comparacion.runner._build_transformer_dataloaders",
-                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces: {
+                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces, **_: {
                         "train": train_pieces,
                         "validation": validation_pieces,
                         "test": test_pieces,
@@ -857,7 +857,7 @@ class ComparisonRunnerTests(unittest.TestCase):
                 patch("Comparacion.runner.SmallTransformerNextTokenModel", return_value=mocks["transformer"]),
                 patch(
                     "Comparacion.runner._build_transformer_dataloaders",
-                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces: {
+                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces, **_: {
                         "train": train_pieces,
                         "validation": validation_pieces,
                         "test": test_pieces,
@@ -897,7 +897,7 @@ class ComparisonRunnerTests(unittest.TestCase):
                 patch("Comparacion.runner.SmallTransformerNextTokenModel", return_value=mocks["transformer"]),
                 patch(
                     "Comparacion.runner._build_transformer_dataloaders",
-                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces: {
+                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces, **_: {
                         "train": train_pieces,
                         "validation": validation_pieces,
                         "test": test_pieces,

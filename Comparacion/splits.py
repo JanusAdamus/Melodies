@@ -23,6 +23,8 @@ CONTENT_CONTAINMENT_THRESHOLD = 0.25
 CONTENT_MIN_SHARED_NGRAMS = 8
 # Preregistro B: en frac = 1.0 cada data_seed entrena con un 90 % del pool.
 FULL_FRACTION_SUBSAMPLE = 0.9
+# Prefijo de la obra de una pieza cuyos metadatos no identifican obra.
+PIECE_WORK_PREFIX = "pieza:"
 
 
 @dataclass(frozen=True)
@@ -170,7 +172,7 @@ def _label_group(piece: PreparedPiece) -> str:
     # Etiquetas vacías, genéricas o de una palabra («anon», «j», «2») no
     # identifican una obra: la pieza queda sola salvo que el contenido la una.
     if not label or label in GENERIC_LABELS or len(label.split()) < 2:
-        return f"pieza:{_key(piece)}"
+        return f"{PIECE_WORK_PREFIX}{_key(piece)}"
     return label
 
 

@@ -51,6 +51,9 @@ class LearningCurveConfig:
     bootstrap_seed: int = 17
     boundary_tolerance: int = 1
     structural_annotations_path: str | None = None
+    #: execution_plan.json (o {partición: [ids]}) de la corrida original; si se da,
+    #: splits/manifest.json declara cuántas piezas comparte la partición nueva.
+    reference_splits_path: str | None = None
     #: C1: búsqueda de arquitectura/hiperparámetros del transformador hecha fuera
     #: de esta corrida. Sin declararla, su costo queda como no medido.
     transformer_search_wall_clock_s: float | None = None
@@ -115,6 +118,10 @@ class LearningCurveConfig:
                 raise ValueError("transformer_search_wall_clock_s must be a finite nonnegative number.")
             if not isinstance(self.transformer_search_device, str) or not self.transformer_search_device.strip():
                 raise ValueError("transformer_search_wall_clock_s requires transformer_search_device.")
+        if self.reference_splits_path is not None and (
+            not isinstance(self.reference_splits_path, str) or not self.reference_splits_path.strip()
+        ):
+            raise ValueError("reference_splits_path must be a nonblank string or None.")
         if self.structural_annotations_path is not None:
             if not isinstance(self.structural_annotations_path, str):
                 raise TypeError("structural_annotations_path must be a string or None.")
