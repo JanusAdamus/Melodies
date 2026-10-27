@@ -63,13 +63,26 @@ def _bootstrap_mean_interval(
     bootstrap_samples: int,
     generator: np.random.Generator,
 ) -> list[float]:
+    return _bootstrap_mean_draws(
+        differences, bootstrap_samples=bootstrap_samples, generator=generator
+    )[0]
+
+
+def _bootstrap_mean_draws(
+    differences: np.ndarray,
+    *,
+    bootstrap_samples: int,
+    generator: np.random.Generator,
+) -> tuple[list[float], np.ndarray]:
+    """IC percentil del 95 % de la media por obra y las réplicas que lo producen."""
+
     n_pairs = differences.size
     bootstrap_means = np.empty(bootstrap_samples, dtype=float)
     for sample_index in range(bootstrap_samples):
         sampled_indices = generator.integers(0, n_pairs, size=n_pairs)
         bootstrap_means[sample_index] = float(np.mean(differences[sampled_indices]))
     lower, upper = np.percentile(bootstrap_means, [2.5, 97.5])
-    return [float(lower), float(upper)]
+    return [float(lower), float(upper)], bootstrap_means
 
 
 def _row_log_likelihood_and_tokens(row: Mapping[str, object]) -> tuple[float, int] | None:
@@ -213,6 +226,7 @@ def headline_estimates(
                 {
                     **common,
                     "estimand": "token_weighted_nll",
+                    "role": "secondary",
                     "point_estimate": token_point,
                     "bootstrap_95_ci": token_interval,
                     "ci_method": "work_cluster_bootstrap_of_ratio_sum_ll_over_sum_n",
@@ -220,6 +234,7 @@ def headline_estimates(
                 {
                     **common,
                     "estimand": "token_weighted_perplexity",
+                    "role": "secondary",
                     "point_estimate": math.exp(token_point),
                     "bootstrap_95_ci": [math.exp(bound) for bound in token_interval],
                     "ci_method": "exp_of_token_weighted_nll_interval",
@@ -227,6 +242,7 @@ def headline_estimates(
                 {
                     **common,
                     "estimand": "work_mean_nll",
+                    "role": "decides",
                     "point_estimate": float(work_nll.mean()),
                     "bootstrap_95_ci": _percentile_interval(work_draws),
                     "ci_method": "work_bootstrap_of_mean_work_nll",
@@ -235,6 +251,8 @@ def headline_estimates(
         )
     return {
         "unit": "canonical_work",
+        # Aclaración 2: cada obra pesa lo mismo; lo ponderado por token es secundario.
+        "decision_estimand": "work_mean_nll",
         "runs_averaged_within_work": True,
         "bootstrap_samples": samples,
         "seed": seed,
@@ -276,17 +294,35 @@ def _bootstrap_two_sided_p_value(draws: np.ndarray) -> float:
     return min(1.0, 2.0 * min(below, above))
 
 
-def _apply_token_weighted_holm(
+def _empty_holm(prefix: str) -> dict[str, object]:
+    return {
+        f"{prefix}_bootstrap_p_value": None,
+        f"{prefix}_holm_alpha": None,
+        f"{prefix}_holm_ci": None,
+        f"{prefix}_holm_decision_ci": None,
+        f"{prefix}_holm_rejects_zero": None,
+        f"{prefix}_holm_status": "not_evaluable",
+    }
+
+
+def _apply_bootstrap_holm(
     comparisons: list[dict[str, object]],
     draws_by_index: Mapping[int, np.ndarray],
     *,
+    prefix: str,
     family_alpha: float = HOLM_FAMILY_ALPHA,
 ) -> None:
-    """IC de Holm por pasos para la diferencia ponderada por token (preregistro B).
+    """IC de Holm por pasos sobre réplicas bootstrap por obra (preregistro A y B).
 
-    Se ordenan las comparaciones por su p bilateral del bootstrap; la de rango r
-    (desde 0) lleva el IC percentil al nivel 1 − α/(m − r).  Se rechaza mientras el
-    IC excluya 0; tras el primer no rechazo, ninguna posterior se rechaza.
+    ``prefix`` es ``work_mean`` (la media por obra, que decide según la
+    Aclaración 2) o ``token_weighted`` (secundaria).  Se ordenan las
+    comparaciones por su p bilateral del bootstrap; la de rango r (desde 0) lleva
+    el IC percentil al nivel 1 − α/(m − r).  Se rechaza mientras el IC excluya 0;
+    tras el primer no rechazo, ninguna posterior se rechaza.
+
+    ``*_holm_ci`` es ese IC tal cual: tras el primer no rechazo puede excluir 0
+    sin que la prueba se rechace.  ``*_holm_decision_ci`` es el que decide: igual
+    al anterior si Holm rechaza, ensanchado hasta incluir 0 si no.
 
     m es la familia completa (todas las comparaciones), no las que tienen datos:
     una prueba sin datos cuenta en la familia como si su p fuera 1 (va al final y
@@ -296,7 +332,7 @@ def _apply_token_weighted_holm(
 
     for index, comparison in enumerate(comparisons):
         if index not in draws_by_index:
-            comparison.update(_EMPTY_TOKEN_WEIGHTED_HOLM)
+            comparison.update(_empty_holm(prefix))
     ordered = sorted(
         draws_by_index,
         key=lambda index: (
@@ -313,11 +349,15 @@ def _apply_token_weighted_holm(
         low, high = np.percentile(draws, [100.0 * alpha / 2.0, 100.0 * (1.0 - alpha / 2.0)])
         excludes_zero = bool(low > 0.0 or high < 0.0)
         still_rejecting = still_rejecting and excludes_zero
-        comparisons[index]["token_weighted_bootstrap_p_value"] = _bootstrap_two_sided_p_value(draws)
-        comparisons[index]["token_weighted_holm_alpha"] = alpha
-        comparisons[index]["token_weighted_holm_ci"] = [float(low), float(high)]
-        comparisons[index]["token_weighted_holm_rejects_zero"] = still_rejecting
-        comparisons[index]["token_weighted_holm_status"] = "ok"
+        interval = [float(low), float(high)]
+        comparisons[index][f"{prefix}_bootstrap_p_value"] = _bootstrap_two_sided_p_value(draws)
+        comparisons[index][f"{prefix}_holm_alpha"] = alpha
+        comparisons[index][f"{prefix}_holm_ci"] = interval
+        comparisons[index][f"{prefix}_holm_decision_ci"] = (
+            interval if still_rejecting else [min(interval[0], 0.0), max(interval[1], 0.0)]
+        )
+        comparisons[index][f"{prefix}_holm_rejects_zero"] = still_rejecting
+        comparisons[index][f"{prefix}_holm_status"] = "ok"
 
 
 def _empty_comparison(model_a: str, model_b: str) -> dict[str, object]:
@@ -343,17 +383,28 @@ def _empty_comparison(model_a: str, model_b: str) -> dict[str, object]:
         "token_weighted_estimand": "token_weighted_nll_difference",
         "token_weighted_difference": None,
         "token_weighted_bootstrap_95_ci": None,
-        **_EMPTY_TOKEN_WEIGHTED_HOLM,
+        **_empty_holm("work_mean"),
+        **_empty_holm("token_weighted"),
     }
 
 
-_EMPTY_TOKEN_WEIGHTED_HOLM: dict[str, object] = {
-    "token_weighted_bootstrap_p_value": None,
-    "token_weighted_holm_alpha": None,
-    "token_weighted_holm_ci": None,
-    "token_weighted_holm_rejects_zero": None,
-    "token_weighted_holm_status": "not_evaluable",
+#: Aclaración 2 al preregistro: qué estimando decide y qué campos leer.
+DECISION_RULE: dict[str, object] = {
+    "estimand": "mean_over_works_of_work_nll_difference",
+    "point": "mean_difference",
+    "interval": "work_mean_holm_decision_ci",
+    "rejects_zero": "work_mean_holm_rejects_zero",
+    "ci_method": "work_bootstrap_holm_step_down_over_the_preregistered_family",
+    "secondary_estimand": "token_weighted_nll_difference",
+    "secondary_interval": "token_weighted_holm_decision_ci",
+    "source": "docs/preregistro-2026-10-26.md, Aclaración 2",
 }
+
+_CI_USAGE = (
+    "*_holm_decision_ci decides: equal to *_holm_ci when Holm rejects, widened to include 0 "
+    "when it does not. *_holm_ci is the percentile CI at alpha/(m - rank) and, after the first "
+    "non-rejection, may exclude 0 although the test is not rejected; do not read it alone."
+)
 
 
 def _holm_family_record(comparisons: list[dict[str, object]]) -> dict[str, object]:
@@ -373,7 +424,9 @@ def _holm_family_record(comparisons: list[dict[str, object]]) -> dict[str, objec
         "family_alpha": HOLM_FAMILY_ALPHA,
         "definition": "all_model_pairs_never_shrunk_not_evaluable_count_as_p_equal_1",
         "tests": tests,
+        "ci_usage": _CI_USAGE,
         "wilcoxon": _block(lambda item: item["p_value_holm"] is not None),
+        "work_mean_ci": _block(lambda item: item["work_mean_holm_status"] == "ok"),
         "token_weighted_ci": _block(lambda item: item["token_weighted_holm_status"] == "ok"),
     }
 
@@ -563,6 +616,7 @@ def pairwise_model_comparisons(
     generator = np.random.default_rng(validated_seed)
     comparisons_payload: list[dict[str, object]] = []
     token_weighted_draws: dict[int, np.ndarray] = {}
+    work_mean_draws: dict[int, np.ndarray] = {}
     for model_a, model_b in combinations(sorted(model_names), 2):
         canonical_work_ids = sorted(works_by_model[model_a] & works_by_model[model_b])
         if not canonical_work_ids:
@@ -577,6 +631,11 @@ def pairwise_model_comparisons(
             ],
             dtype=float,
         )
+        work_mean_interval, work_mean_draws[len(comparisons_payload)] = _bootstrap_mean_draws(
+            differences,
+            bootstrap_samples=validated_bootstrap_samples,
+            generator=generator,
+        )
         comparison: dict[str, object] = {
             "model_a": model_a,
             "model_b": model_b,
@@ -589,11 +648,8 @@ def pairwise_model_comparisons(
             "canonical_work_ids": canonical_work_ids,
             "mean_difference": float(np.mean(differences)),
             "median_difference": float(np.median(differences)),
-            "bootstrap_95_ci": _bootstrap_mean_interval(
-                differences,
-                bootstrap_samples=validated_bootstrap_samples,
-                generator=generator,
-            ),
+            # Aclaración 2: esta media por obra es el estimando que decide.
+            "bootstrap_95_ci": work_mean_interval,
             "wilcoxon_status": "unavailable",
             "wilcoxon_reason": "fewer_than_two_nonzero_differences",
             "wilcoxon_statistic": None,
@@ -604,7 +660,8 @@ def pairwise_model_comparisons(
             "token_weighted_estimand": "token_weighted_nll_difference",
             "token_weighted_difference": None,
             "token_weighted_bootstrap_95_ci": None,
-            **_EMPTY_TOKEN_WEIGHTED_HOLM,
+            **_empty_holm("work_mean"),
+            **_empty_holm("token_weighted"),
         }
         token_weighted = _token_weighted_difference(
             full_fraction_totals.get(model_a, {}),
@@ -635,7 +692,8 @@ def pairwise_model_comparisons(
         comparisons_payload.append(comparison)
 
     n_valid_tests = _apply_holm_adjustment(comparisons_payload)
-    _apply_token_weighted_holm(comparisons_payload, token_weighted_draws)
+    _apply_bootstrap_holm(comparisons_payload, work_mean_draws, prefix="work_mean")
+    _apply_bootstrap_holm(comparisons_payload, token_weighted_draws, prefix="token_weighted")
     holm_family = {
         "expected_models": sorted(model_names),
         **_holm_family_record(comparisons_payload),
@@ -693,6 +751,7 @@ def pairwise_model_comparisons(
         "holm_family_by_split_seed": holm_family_by_split_seed,
         "split_variation": summarize_split_variation(materialized_rows),
         "metric": "test_nll",
+        "decision": dict(DECISION_RULE),
         "difference_orientation": "model_a_minus_model_b",
         "interpretation": "negative_favors_model_a",
         "bootstrap_samples": validated_bootstrap_samples,
