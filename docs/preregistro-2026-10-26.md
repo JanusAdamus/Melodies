@@ -128,3 +128,14 @@ evalúa la NLL predictiva en el último 20 % de ese 80 %, se elige el η de meno
 NLL y se reajusta con el 80 % completo. Se reporta el η elegido por obra.
 Motivo, registrado en la auditoría (H10): con datos simulados de 3 estados y
 emisiones con ruido moderado, η = 1 da 4.90 estados ocupados y η = 6 da ≈ 3.3.
+
+## Enmienda 4, 2026-10-27 (antes de ver resultados de las corridas corregidas)
+
+Decisión de Adrián. Precisa el eje de costo de la Enmienda 1.
+
+**Incertidumbre del tiempo en la frontera de Pareto.** Para cada modelo, el
+intervalo de tiempo es `[mínimo × 0.9, máximo × 1.1]` del tiempo del ajuste
+seleccionado entre sus corridas en frac = 1.0 (tolerancia relativa de 10 %).
+Dos modelos cuyos intervalos se traslapan empatan en costo. El tiempo de
+evaluación se reporta y no decide. Implementado como
+`PARETO_TIME_RELATIVE_TOLERANCE = 0.10` en `Comparacion/runner.py`.
