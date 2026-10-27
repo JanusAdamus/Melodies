@@ -27,10 +27,19 @@ def _raw(model: str, nll: float, selected_fit: float, evaluation: float, device:
 
 
 def _headline(intervals: dict[str, tuple[float, float]]) -> dict:
+    """Mismos intervalos para la media por obra (decide) y la ponderada (secundaria)."""
+
     return {
         "estimates": [
-            {"model": model, "frac": 1.0, "estimand": "token_weighted_nll", "bootstrap_95_ci": list(bounds)}
+            {
+                "model": model,
+                "frac": 1.0,
+                "estimand": estimand,
+                "point_estimate": (bounds[0] + bounds[1]) / 2,
+                "bootstrap_95_ci": list(bounds),
+            }
             for model, bounds in intervals.items()
+            for estimand in ("work_mean_nll", "token_weighted_nll")
         ]
     }
 
@@ -128,7 +137,7 @@ class RunnerParetoTests(unittest.TestCase):
             "predictive_cost_partial_frontier"
         ]
 
-        self.assertEqual(partial["axes"], ["mean_test_nll", "mean_selected_fit_wall_clock_s"])
+        self.assertEqual(partial["axes"], ["work_mean_test_nll", "mean_selected_fit_wall_clock_s"])
         self.assertIn("mean_evaluation_wall_clock_s", partial["reported_not_dominance_axes"])
         # hdp_hmm era «óptimo» sólo por 0.1 s de evaluación; ahora lo domina el transformador.
         self.assertEqual(sorted(row["model"] for row in partial["frontier"]), ["transformer", "vomm"])
@@ -148,10 +157,11 @@ class RunnerParetoTests(unittest.TestCase):
                     "model_b": "good",
                     "status": "ok",
                     "n_pairs": 40,
-                    "token_weighted_difference": 0.030,
-                    "token_weighted_bootstrap_95_ci": [0.030, 0.030],
-                    "token_weighted_holm_ci": [0.030, 0.030],
-                    "token_weighted_holm_rejects_zero": True,
+                    "mean_difference": 0.030,
+                    "bootstrap_95_ci": [0.030, 0.030],
+                    "work_mean_holm_ci": [0.030, 0.030],
+                    "work_mean_holm_decision_ci": [0.030, 0.030],
+                    "work_mean_holm_rejects_zero": True,
                 }
             ]
         }
@@ -192,10 +202,12 @@ def _paired(model_a: str, model_b: str, *, raw, holm, rejects: bool, n_pairs: in
         "model_b": model_b,
         "status": "ok",
         "n_pairs": n_pairs,
-        "token_weighted_difference": (raw[0] + raw[1]) / 2,
-        "token_weighted_bootstrap_95_ci": list(raw),
-        "token_weighted_holm_ci": list(holm),
-        "token_weighted_holm_rejects_zero": rejects,
+        "mean_difference": (raw[0] + raw[1]) / 2,
+        "bootstrap_95_ci": list(raw),
+        # Holm tal cual: las pruebas de abajo comprueban que el runner lo ensancha si no rechaza.
+        "work_mean_holm_ci": list(holm),
+        "work_mean_holm_decision_ci": list(holm),
+        "work_mean_holm_rejects_zero": rejects,
     }
 
 
@@ -314,6 +326,109 @@ class PreregisteredParetoRuleTests(unittest.TestCase):
 
         self.assertEqual(sorted(row["model"] for row in partial["frontier"]), ["A", "B", "C"])
         self.assertEqual(partial["dominance_cycles"], [["A", "B", "C"]])
+
+
+class WorkMeanParetoTests(unittest.TestCase):
+    """Aclaración 2: en la frontera también decide la media por obra, no la ponderada."""
+
+    def test_the_work_mean_decision_interval_decides_not_the_token_weighted_one(self) -> None:
+        raw = [
+            _raw("cheap", 2.04, selected_fit=1.0, evaluation=1.0),
+            _raw("good", 2.01, selected_fit=10.0, evaluation=1.0),
+        ]
+        headline = _headline({"cheap": (1.9, 2.2), "good": (1.85, 2.15)})
+        pairwise = {
+            "comparisons": [
+                {
+                    "model_a": "cheap",
+                    "model_b": "good",
+                    "status": "ok",
+                    "n_pairs": 40,
+                    # Ponderada: «cheap» es peor; por obra, empate.
+                    "token_weighted_holm_ci": [0.02, 0.04],
+                    "token_weighted_holm_decision_ci": [0.02, 0.04],
+                    "token_weighted_holm_rejects_zero": True,
+                    "work_mean_holm_ci": [-0.01, 0.03],
+                    "work_mean_holm_decision_ci": [-0.01, 0.03],
+                    "work_mean_holm_rejects_zero": False,
+                }
+            ]
+        }
+
+        partial = _build_pareto_summary(raw, {"status": "not_evaluated"}, headline, pairwise)[
+            "predictive_cost_partial_frontier"
+        ]
+
+        self.assertEqual([row["model"] for row in partial["frontier"]], ["cheap"])
+        self.assertIn("work_mean", partial["nll_paired_interval"])
+
+    def test_marginals_use_the_work_mean_estimate(self) -> None:
+        raw = [
+            _raw("cheap", 2.04, selected_fit=1.0, evaluation=1.0),
+            _raw("good", 2.01, selected_fit=10.0, evaluation=1.0),
+        ]
+        headline = {
+            "estimates": [
+                # Ponderada separa a «good»; por obra los intervalos se traslapan.
+                {"model": "cheap", "frac": 1.0, "estimand": "token_weighted_nll", "point_estimate": 2.04, "bootstrap_95_ci": [2.03, 2.05]},
+                {"model": "good", "frac": 1.0, "estimand": "token_weighted_nll", "point_estimate": 2.01, "bootstrap_95_ci": [2.00, 2.02]},
+                {"model": "cheap", "frac": 1.0, "estimand": "work_mean_nll", "point_estimate": 2.10, "bootstrap_95_ci": [1.9, 2.3]},
+                {"model": "good", "frac": 1.0, "estimand": "work_mean_nll", "point_estimate": 2.08, "bootstrap_95_ci": [1.9, 2.3]},
+            ]
+        }
+
+        partial = _build_pareto_summary(raw, {"status": "not_evaluated"}, headline)[
+            "predictive_cost_partial_frontier"
+        ]
+
+        self.assertEqual([row["model"] for row in partial["frontier"]], ["cheap"])
+        self.assertEqual(partial["axes"][0], "work_mean_test_nll")
+        cheap = next(row for row in partial["candidates"] if row["model"] == "cheap")
+        self.assertAlmostEqual(cheap["work_mean_test_nll"], 2.10)
+        self.assertEqual(cheap["work_mean_test_nll_interval"], [1.9, 2.3])
+
+    def test_pairs_without_paired_works_are_listed_as_not_deciding(self) -> None:
+        raw = [_raw("a", 2.0, selected_fit=10.0, evaluation=1.0), _raw("b", 2.0, selected_fit=10.0, evaluation=1.0)]
+        headline = _headline({"a": (1.9, 2.1), "b": (1.9, 2.1)})
+        pairwise = {
+            "comparisons": [
+                {
+                    "model_a": "a",
+                    "model_b": "b",
+                    "status": "unavailable",
+                    "reason": "no_paired_finite_works",
+                    "n_pairs": 0,
+                    "work_mean_holm_decision_ci": None,
+                    "work_mean_holm_rejects_zero": None,
+                }
+            ]
+        }
+
+        partial = _build_pareto_summary(raw, {"status": "not_evaluated"}, headline, pairwise)[
+            "predictive_cost_partial_frontier"
+        ]
+
+        self.assertEqual(
+            partial["nll_paired_pairs_skipped"],
+            [{"pair": ["a", "b"], "reason": "no_paired_finite_works", "n_pairs": 0}],
+        )
+
+    def test_the_time_tolerance_band_is_declared_in_the_output(self) -> None:
+        raw = [_raw("a", 2.0, selected_fit=100.0, evaluation=1.0)]
+        partial = _build_pareto_summary(raw, {"status": "not_evaluated"}, _headline({"a": (1.9, 2.1)}))[
+            "predictive_cost_partial_frontier"
+        ]
+
+        band = partial["time_interval"]
+        self.assertEqual(band["relative_tolerance"], 0.10)
+        self.assertIn("min", band["definition"])
+        self.assertIn("max", band["definition"])
+        # El preregistro sólo dice «la incertidumbre de cada medición de costo»: el
+        # 10 % es una decisión de diseño y la salida no debe hacerla pasar por preregistrada.
+        self.assertIn("not_in_preregistration", band["status"])
+        candidate = partial["candidates"][0]
+        self.assertAlmostEqual(candidate["mean_selected_fit_wall_clock_s_interval"][0], 90.0)
+        self.assertAlmostEqual(candidate["mean_selected_fit_wall_clock_s_interval"][1], 110.0)
 
 
 if __name__ == "__main__":

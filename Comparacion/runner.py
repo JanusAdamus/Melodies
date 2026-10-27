@@ -760,13 +760,20 @@ def _append_protocol_evidence(
         raise ValueError(f"protocol coverage violation for model {model_name}")
 
 
+def _headline_item(
+    estimates: Mapping[str, object] | None, model: str, fraction: float, estimand: str
+) -> Mapping[str, object] | None:
+    for item in (estimates or {}).get("estimates", []):
+        if item["model"] == model and float(item["frac"]) == fraction and item["estimand"] == estimand:
+            return item
+    return None
+
+
 def _headline_interval(
     estimates: Mapping[str, object] | None, model: str, fraction: float, estimand: str
 ) -> list[float] | None:
-    for item in (estimates or {}).get("estimates", []):
-        if item["model"] == model and float(item["frac"]) == fraction and item["estimand"] == estimand:
-            return list(item["bootstrap_95_ci"])
-    return None
+    item = _headline_item(estimates, model, fraction, estimand)
+    return None if item is None else list(item["bootstrap_95_ci"])
 
 
 def _aggregate_summary(
@@ -1268,7 +1275,17 @@ def _build_structural_evaluation(
 
 #: Diseño (C5): diferencias de tiempo menores al 10 % se leen como empate. Protege
 #: contra que el ruido de medición decida la frontera; se fijó antes de ver la corrida.
+#: El preregistro no fija este número (sólo «la incertidumbre de cada medición de
+#: costo»), así que la salida lo declara como decisión de diseño.
 PARETO_TIME_RELATIVE_TOLERANCE = 0.10
+
+_PARETO_TIME_INTERVAL = {
+    "definition": "[min(selected_fit_wall_clock_s) * (1 - relative_tolerance), "
+    "max(selected_fit_wall_clock_s) * (1 + relative_tolerance)] over the runs at frac = 1.0",
+    "relative_tolerance": PARETO_TIME_RELATIVE_TOLERANCE,
+    "status": "design_choice_fixed_before_the_corrected_runs_not_in_preregistration",
+    "documented_in": "docs/comparacion-pareto.md",
+}
 
 #: Diseño (revisión de C5): un IC pareado sobre menos obras en común no decide la
 #: NLL; con una sola obra el bootstrap colapsa a un punto.  Se fijó antes de ver la
@@ -1300,14 +1317,18 @@ def _build_pareto_summary(
     for model_name, rows in sorted(grouped.items()):
         devices[model_name] = sorted({str(row.get("device")) for row in rows})
         fits = [_finite_seconds(row.get("selected_fit_wall_clock_s")) for row in rows]
-        nll_interval = _headline_interval(headline, model_name, 1.0, "token_weighted_nll")
-        if any(value is None for value in fits) or nll_interval is None:
+        # Aclaración 2: el marginal es la media por obra, el mismo estimando que decide.
+        work_mean = _headline_item(headline, model_name, 1.0, "work_mean_nll")
+        if any(value is None for value in fits) or work_mean is None:
             excluded_models.append(model_name)
             continue
         values = {
             "model": model_name,
+            "work_mean_test_nll": float(work_mean["point_estimate"]),
+            "work_mean_test_nll_interval": list(work_mean["bootstrap_95_ci"]),
+            # Reportado, no decide: media entre corridas de la NLL ponderada por token.
             "mean_test_nll": mean(float(row["test_nll"]) for row in rows),
-            "mean_test_nll_interval": nll_interval,
+            "mean_test_nll_interval": _headline_interval(headline, model_name, 1.0, "token_weighted_nll"),
             "mean_selected_fit_wall_clock_s": mean(fits),
             "mean_selected_fit_wall_clock_s_interval": [
                 min(fits) * (1.0 - PARETO_TIME_RELATIVE_TOLERANCE),
@@ -1319,26 +1340,44 @@ def _build_pareto_summary(
             "devices": devices[model_name],
             "runs": len(rows),
         }
-        if all(math.isfinite(float(value)) for key, value in values.items() if key.startswith("mean_") and not key.endswith("_interval")):
+        if all(
+            math.isfinite(float(values[key]))
+            for key in (
+                "work_mean_test_nll",
+                "mean_test_nll",
+                "mean_selected_fit_wall_clock_s",
+                "mean_evaluation_wall_clock_s",
+            )
+        ):
             predictive_cost_rows.append(values)
         else:
             excluded_models.append(model_name)
-    partial_axes = ("mean_test_nll", "mean_selected_fit_wall_clock_s")
-    # Regla preregistrada (sección B, «la misma de A»): en NLL decide la diferencia
-    # pareada por obra (NLL ponderada por tokens) con su IC «tras Holm».  Un par que
-    # Holm no rechaza es empate aunque su IC excluya 0 (Holm por pasos); un par con
-    # menos de PARETO_MIN_PAIRED_WORKS obras en común no decide y se usan los marginales.
+    partial_axes = ("work_mean_test_nll", "mean_selected_fit_wall_clock_s")
+    # Regla preregistrada (sección B, «la misma de A», Enmienda 1 y Aclaración 2): en
+    # NLL decide la media por obra de la diferencia pareada con su IC «tras Holm».  Un
+    # par que Holm no rechaza es empate aunque su IC excluya 0 (Holm por pasos); un par
+    # con menos de PARETO_MIN_PAIRED_WORKS obras en común, o sin obras en común, no
+    # decide, se usan los marginales y queda listado en nll_paired_pairs_skipped.
     paired_nll: dict[tuple[str, str], tuple[float, float]] = {}
     paired_skipped: list[dict[str, object]] = []
     for comparison in (pairwise or {}).get("comparisons", []):
-        if comparison.get("status") != "ok":
-            continue
         pair = (str(comparison["model_a"]), str(comparison["model_b"]))
-        interval = comparison.get("token_weighted_holm_ci")
-        rejects = comparison.get("token_weighted_holm_rejects_zero")
         n_pairs = int(comparison.get("n_pairs") or 0)
+        if comparison.get("status") != "ok":
+            paired_skipped.append(
+                {
+                    "pair": list(pair),
+                    "reason": str(comparison.get("reason") or comparison.get("status")),
+                    "n_pairs": n_pairs,
+                }
+            )
+            continue
+        interval = comparison.get("work_mean_holm_decision_ci")
+        rejects = comparison.get("work_mean_holm_rejects_zero")
         if interval is None or rejects is None:
-            paired_skipped.append({"pair": list(pair), "reason": "no_holm_adjusted_interval"})
+            paired_skipped.append(
+                {"pair": list(pair), "reason": "no_holm_adjusted_interval", "n_pairs": n_pairs}
+            )
             continue
         if n_pairs < PARETO_MIN_PAIRED_WORKS:
             paired_skipped.append({"pair": list(pair), "reason": "too_few_paired_works", "n_pairs": n_pairs})
@@ -1347,19 +1386,22 @@ def _build_pareto_summary(
         if not rejects:
             low, high = min(low, 0.0), max(high, 0.0)
         paired_nll[pair] = (low, high)
-    paired_intervals = {"mean_test_nll": paired_nll} if paired_nll else None
+    paired_intervals = {"work_mean_test_nll": paired_nll} if paired_nll else None
     partial_payload = {
         "status": "ok" if predictive_cost_rows else "not_evaluated",
         "scope": "predictive_cost_partial_frontier",
         "axes": list(partial_axes),
         "reported_not_dominance_axes": ["mean_evaluation_wall_clock_s"],
         "dominance": (
-            "nll: paired work-bootstrap Holm-adjusted CI of the token-weighted difference "
-            "decides (worse if Holm rejects and it excludes 0 on the worse side); marginal "
-            "intervals only when no usable paired comparison exists; time: strictly better "
-            "only when intervals do not overlap; rows tied by a dominance cycle stay on the frontier"
+            "nll: paired work-bootstrap Holm-adjusted CI of the mean over works of the "
+            "per-work NLL difference decides (worse if Holm rejects and it excludes 0 on the "
+            "worse side); marginal work-mean intervals only when no usable paired comparison "
+            "exists; time: strictly better only when intervals do not overlap; rows tied by a "
+            "dominance cycle stay on the frontier"
         ),
-        "nll_paired_interval": "token_weighted_holm_step_down_ci_of_model_a_minus_model_b",
+        "nll_estimand": "mean_over_works_of_work_nll_difference",
+        "nll_paired_interval": "work_mean_holm_decision_ci_of_model_a_minus_model_b",
+        "nll_secondary_reported_not_deciding": "token_weighted_nll_difference",
         "nll_paired_pairs": len(paired_nll),
         "nll_paired_min_works": PARETO_MIN_PAIRED_WORKS,
         "nll_paired_pairs_skipped": paired_skipped,
@@ -1369,8 +1411,9 @@ def _build_pareto_summary(
             (),
             paired_intervals=paired_intervals,
         ),
-        "nll_interval": "work_cluster_bootstrap_95_ci_of_token_weighted_nll",
+        "nll_interval": "work_bootstrap_95_ci_of_work_mean_nll",
         "time_relative_tolerance": PARETO_TIME_RELATIVE_TOLERANCE,
+        "time_interval": dict(_PARETO_TIME_INTERVAL),
         "devices": devices,
         # Ninguna lectura de «más barato» cruza CPU y GPU sin declararlo.
         "devices_differ": len({device for values in devices.values() for device in values}) > 1,
