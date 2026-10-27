@@ -30,3 +30,39 @@ Una entrada por tarea cerrada (ver PROMPT_CLAUDE.md, «Bitácora»).
 - Criterio (b): r = −0.40 (umbral |r| < 0.3 NO cumplido), pendiente −0.05, rango de K medio 5.28–6.08 contra 4.07–11.71 antes. Ver `scripts/auditoria_2026_10_26/hdp/s5_beta_seed_v2_salida_20261026.txt`. Repetir con ≥ 50 semillas y decidir con la pendiente y su IC.
 - Sin verificar: criterios (c) (recuperar 3 estados de un HMM simulado) y (h) (dos `fit` con la misma semilla), y revisión adversarial. Lo último que el desarrollador anunció antes de detenerse fue reescribir el muestreador; el commit 0dc8dc5 ya trae una versión CRT: revisar que sea correcta (Fox et al. 2011) antes de mezclar.
 - Ningún agente queda trabajando en la laptop.
+
+## 2026-10-26, tarea 0 (computadora con GPU, Windows 11)
+
+- Entorno: venv Python 3.12.10, torch 2.11.0+cu128, `cuda_avail True` en RTX 4060 8 GB.
+- Suite antes de la Fase 1: 237 pasadas + 3 saltadas en 83.66 s (`python -m pytest -q`).
+- PDMX: `C:\Melodies\external\PDMX\mxl`, 254035 archivos. Hash agregado (sha256 de la lista ordenada «ruta relativa POSIX + espacio + tamaño en bytes», unida con `\n`): `5f83b4c45b7f15b4dbae7b31738b6d26203d7c6719e8b247687fc0acbef8eb26`. Salida de `python -I pdmx_hash.py` (os.walk + getsize): `254035 5f83b4c4...eb26`.
+- `artifacts/corpus_cache_3000.jsonl` existe (7561926 bytes).
+- MuseTrainer y SymbTr NO están en esta computadora: parada pendiente con Adrián (bloquea 1.4/1.5 con MuseTrainer).
+
+## 2026-10-26, tarea 1.1: `fix/auditoria-hdp` NO mezclada (revisión adversarial con hallazgos confirmados)
+
+- Qué se hizo en la rama (último commit 409adfd, en origin): β por CRT (0dc8dc5), Dirichlet sin ceros (988cf41), reporte posterior y predictiva held-out (2968a83, d2ea2b2 renormalizada con BOS fuera), β | z contra la posterior exacta de Fox et al. 2011 (fd80291, d01227e), criterio (b) con IC de Fisher y TOST (3e98620, ff4ad7a, 66c5fda, 8be093c), `s5_beta_seed_v3` con la cadena del preregistro 400/200 (ad9048c, 409adfd).
+- Evidencia: en PDMX (obra 200, 50 semillas, 400/200) r = −0.118, IC de Fisher [−0.383, 0.166], TOST p = 0.095. Lo honesto es «sin evidencia de dependencia», no «K no depende del primer β»; la equivalencia sólo se demuestra con datos simulados (r = 0.025, IC 90 % [−0.212, 0.259], por poco).
+- Hallazgos confirmados de la revisión (bloquean el merge):
+  1. (alta) `tests/test_hdp_sampler.py:124` `test_criterion_b_detects_the_short_chain_dependence` fija un falso positivo: con 80/40 y bloques de 50 semillas, r = 0.318, 0.040, 0.076, −0.364, 0.054 (el signo cambia; Spearman en 0..49 rho = 0.251, p = 0.078). No mide potencia.
+  2. (alta) `tests/test_hdp_sampler.py:114` `test_occupied_states_do_not_follow_the_first_beta_draw` depende de las semillas 0..49: con 400/200, semillas 100..149 (r = 0.152, TOST p = 0.142) y 150..199 (r = 0.177, p = 0.184) no dan «equivalencia».
+  3. (media) La afirmación «80/40 sí muestra dependencia (r = 0.318, p = 0.025)» está en el docstring de `s5_beta_seed_v3.py`, en `s5_beta_seed_v3_salida_20261026.txt` y en dos comentarios de la prueba; no se reproduce. La razón para descartar 80/40 es que no es la cadena preregistrada.
+- Abierto: corregir 1–3 (pruebas robustas a la semilla o con más semillas/obras); las 15 obras de PDMX con 400/200 (unos 750 ajustes largos) no se corrieron; las pruebas de CI de (b) tardan unos 35 s y 10 s.
+
+## 2026-10-26, tarea 1.2: `fix/auditoria-comparacion` NO mezclada (revisión con hallazgo confirmado)
+
+- Qué se hizo en la rama (último commit 8e26294, en origin): además de F3, T1, T2, H7, C7, C5, C2, C1 (ver entrada anterior), partición por contenido verificable (4a64c48), diagnóstico del HDP sólo entre cadenas de la misma posterior (a642ff7), Pareto por diferencia pareada por obra con IC de Holm, mínimo de obras y robustez a ciclos (4c2d086, 3e43f44), `--resume` exige el mismo contenido (88e1777), canonicalización sin casi-choques ocultos (937fdd9), celdas HDP con hiperparámetros mixtos (8e26294).
+- Notas: el contraejemplo de Holm de la revisión no era válido (comparaba contra un Bonferroni de primer paso). Con el código corregido, `fast slow p_boot 0.0404 alpha 0.05 ... rejects True`; el cambio de frontera sólo aparece cuando Holm no rechaza, y eso está cubierto por pruebas. `PARETO_MIN_PAIRED_WORKS = 10` es una constante nueva que el preregistro no fija: Adrián debe confirmarla o registrarla como enmienda. Los `pareto_summary.json` viejos sin campos `token_weighted_holm_*` vuelven a los marginales (`no_holm_adjusted_interval`); hay que regenerarlos.
+- Hallazgo confirmado (media, bloquea): `Comparacion/statistics.py:283` `_apply_token_weighted_holm` usa `n_tests = len(token_weighted_draws)`. Si falta `n_tokens` en una obra de un modelo, la familia baja de 6 a 3 (α del primer paso 0.00833 → 0.01667) sin dejar registro. Fijar la familia en las 6 comparaciones preregistradas y registrar su tamaño.
+- Abierto: el hallazgo anterior; la integración con la API nueva del HDP (notas 1 y 2: `burn_in` en `build_cell_chain_diagnostics` y renormalización de la predictiva) se revisa al mezclar después de 1.1.
+
+## 2026-10-26, tarea 1.3: `fix/auditoria-d1b` NO mezclada (revisión con hallazgo confirmado)
+
+- Qué se hizo en la rama (último commit 66a19b9, en origin): el preprocesamiento de PDMX extrae la melodía y el caché guarda el modo (e5d31d8), D1b documentado en la auditoría (7b4da5f), el caché guarda los parámetros legacy y `--resume` valida la extracción (5ff431f), el caché firma la representación y sus parámetros (66a19b9). El error usa la clase `CorpusCacheModeError` que ya existía.
+- Hallazgo confirmado (media, bloquea): `next_token_experiment/data/preprocess.py:538`, la firma del caché no incluye `corpus.min_events_per_piece`. Evidencia (probe_r3.py): `min_events=99 from cache: pieces 1 excl 0` contra `min_events=99 no cache: pieces 0 excl ['too_short']`, sin `CorpusCacheModeError`. Impacto práctico bajo: ningún perfil ni CLI cambia el valor por omisión (32).
+- Abierto: agregar el umbral a la firma (con prueba); caso límite de un caché viejo sólo con exclusiones (sin firma de tokens, se acepta).
+
+## 2026-10-26, integración de la Fase 1
+
+- El integrador mezcla sólo las ramas con `clean=true`. Las tres ramas (hdp, comparacion, d1b) tienen `clean=false` por los hallazgos anteriores, así que no se mezcló ninguna. `fix/auditoria-tesis` sigue en de5d5d9 más esta entrada.
+- Siguiente paso: corregir con TDD los hallazgos de cada rama, repetir la revisión y mezclar en el orden hdp → comparacion → d1b.
