@@ -70,5 +70,75 @@ class CorrelationEquivalenceTests(unittest.TestCase):
         self.assertNotIn('warnings.filterwarnings("ignore")', SCRIPT.read_text(encoding="utf8"))
 
 
+class ChainTests(unittest.TestCase):
+    """El criterio (b) se evalúa con la cadena del preregistro (400 iteraciones, burn-in 200)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.script = _load_script()
+
+    def _run_main(self, argv, cache=None):
+        import contextlib
+        import io
+        import json
+        import sys
+        import tempfile
+
+        calls = []
+
+        class Recorder:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+                self.seed = kwargs["seed"]
+
+            def fit(self, observation):
+                initial_beta = np.where(np.arange(20) <= self.seed % 5, 0.05, 0.0)
+                diagnostics = type("D", (), {"initial_beta": initial_beta})()
+                return type("R", (), {"diagnostics": diagnostics, "effective_states": 3 + self.seed % 3})()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cache.jsonl"
+            path.write_text("\n".join(json.dumps({"tokens": [0, 1, 2, 3] * 5}) for _ in range(2)), encoding="utf8")
+            original, self.script.TruncatedHDPHMM = self.script.TruncatedHDPHMM, Recorder
+            old_argv, out = sys.argv, io.StringIO()
+            try:
+                sys.argv = ["s5_beta_seed_v3.py", str(path), "--n-seeds", "4", *argv]
+                with contextlib.redirect_stdout(out), warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    self.script.main()
+            finally:
+                self.script.TruncatedHDPHMM, sys.argv = original, old_argv
+        return calls, out.getvalue()
+
+    def test_default_chain_is_the_preregistered_one(self) -> None:
+        calls, text = self._run_main([])
+        self.assertTrue(calls)
+        for kwargs in calls:
+            self.assertEqual((kwargs["n_iters"], kwargs["burn_in"]), (400, 200), kwargs)
+        self.assertIn("cadena: K=20, 400 iteraciones, burn-in 200", text)
+
+    def test_chain_can_be_changed_and_is_reported(self) -> None:
+        calls, text = self._run_main(["--n-iters", "80", "--burn-in", "40"])
+        self.assertEqual({(kwargs["n_iters"], kwargs["burn_in"]) for kwargs in calls}, {(80, 40)})
+        self.assertIn("cadena: K=20, 80 iteraciones, burn-in 40", text)
+        self.assertIn("no es la cadena del preregistro", text)
+
+    def test_saved_short_chain_output_is_not_presented_as_criterion_b(self) -> None:
+        # La salida guardada se corrió con 80/40; el resumen debe decir que no evalúa (b).
+        import contextlib
+        import io
+        import sys
+
+        old_argv, out = sys.argv, io.StringIO()
+        try:
+            sys.argv = ["s5_beta_seed_v3.py", "--resumen", str(OUTPUT)]
+            with contextlib.redirect_stdout(out):
+                self.script.main()
+        finally:
+            sys.argv = old_argv
+        self.assertIn("cadena: K=20, 80 iteraciones, burn-in 40", out.getvalue())
+        self.assertIn("no es la cadena del preregistro", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

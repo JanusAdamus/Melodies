@@ -3,12 +3,17 @@
 Uso:
     python s5_beta_seed_v3.py CACHE.jsonl [--n-seeds 50] [--first-seed 7] [--every 200]
                               [--n-works 15] [--single-work INDICE]
+                              [--n-iters 400] [--burn-in 200]
     python s5_beta_seed_v3.py --resumen SALIDA.txt
 
 CACHE.jsonl es un caché de corpus del runner (una obra por línea con `tokens` en
 clases de altura 0..11), p. ej. artifacts/corpus_cache_3000.jsonl. Se toman las obras
 0, every, 2*every, ... (n_works de ellas) o, con --single-work, una sola obra.
-Mismo modelo que s5_beta_seed_v2.py: K=20, 80 iteraciones, burn-in 40.
+Truncamiento K=20 y, por omisión, la cadena del preregistro (400 iteraciones, burn-in 200;
+docs/preregistro-2026-10-26.md).  s5_beta_seed_v2.py y la salida del 2026-10-26 usaron
+80/40, una cadena corta en la que hay dependencia con datos simulados (r = 0.318, p = 0.025,
+50 semillas); la salida avisa cuando la cadena no es la del preregistro, porque entonces no
+evalúa el criterio (b).
 Reporta Pearson, Spearman, IC 95 % de Fisher para r, prueba de equivalencia TOST para
 |ρ| < 0.3 (z de Fisher), pendiente por mínimos cuadrados con IC 95 % (t) e IC 95 % bootstrap
 por semilla (10 000 remuestreos, semilla 0).  Con --resumen recalcula todo desde las filas
@@ -30,6 +35,8 @@ from src.models.hdp_hmm import TruncatedHDPHMM
 
 VOCABULARY = [str(index) for index in range(12)]
 EQUIVALENCE_BOUND = 0.3
+PREREGISTERED_CHAIN = (400, 200)
+CHAIN = re.compile(r"K=(\d+), (\d+) iteraciones, burn-in (\d+)")
 ROW = re.compile(r"^seed (\d+): #beta_k>0\.01=\s*(\d+)\s+K medio=([0-9.]+)\s*$")
 
 
@@ -75,6 +82,18 @@ def parse_rows(text):
             for values, value in zip(sections[-1], (int(match[1]), int(match[2]), float(match[3]))):
                 values.append(value)
     return [section for section in sections if section[0]]
+
+
+def chain_lines(n_states, n_iters, burn_in):
+    """Cadena usada y, si no es la del preregistro, aviso de que no evalúa el criterio (b)."""
+
+    lines = [f"cadena: K={n_states}, {n_iters} iteraciones, burn-in {burn_in}"]
+    if (n_iters, burn_in) != PREREGISTERED_CHAIN:
+        lines.append(
+            f"AVISO: {n_iters}/{burn_in} no es la cadena del preregistro "
+            f"({PREREGISTERED_CHAIN[0]}/{PREREGISTERED_CHAIN[1]}); esta corrida no evalúa el criterio (b)"
+        )
+    return lines
 
 
 def summary(x, y):
@@ -127,10 +146,18 @@ def main():
     parser.add_argument("--every", type=int, default=200)
     parser.add_argument("--n-works", type=int, default=15)
     parser.add_argument("--single-work", type=int, default=None)
+    parser.add_argument("--n-iters", type=int, default=PREREGISTERED_CHAIN[0])
+    parser.add_argument("--burn-in", type=int, default=PREREGISTERED_CHAIN[1])
     args = parser.parse_args()
 
     if args.resumen is not None:
-        for seeds, n_large, mean_k in parse_rows(Path(args.resumen).read_text(encoding="utf8")):
+        text = Path(args.resumen).read_text(encoding="utf8")
+        chain = CHAIN.search(text)
+        if chain is None:
+            print("AVISO: la salida no declara la cadena; no evalúa el criterio (b)")
+        else:
+            print("\n".join(chain_lines(*(int(value) for value in chain.groups()))))
+        for seeds, n_large, mean_k in parse_rows(text):
             print(f"== semillas {seeds[0]}..{seeds[-1]} ==")
             print("\n".join(summary(np.asarray(n_large, float), np.asarray(mean_k, float))))
         return
@@ -138,11 +165,12 @@ def main():
         parser.error("falta CACHE.jsonl (o --resumen SALIDA.txt)")
 
     indices, works = load_works(args.cache, args.every, args.n_works, args.single_work)
+    print("\n".join(chain_lines(20, args.n_iters, args.burn_in)), flush=True)
     print(f"obras (índice en el caché): {indices}; eventos: {[int(w.size) for w in works]}", flush=True)
     seeds = list(range(args.first_seed, args.first_seed + args.n_seeds))
     n_large, mean_k = [], []
     for seed in seeds:
-        fits = [TruncatedHDPHMM(n_states=20, n_iters=80, burn_in=40, seed=seed).fit(observation(w)) for w in works]
+        fits = [TruncatedHDPHMM(n_states=20, n_iters=args.n_iters, burn_in=args.burn_in, seed=seed).fit(observation(w)) for w in works]
         n_large.append(int((fits[0].diagnostics.initial_beta > 0.01).sum()))
         mean_k.append(float(np.mean([fit.effective_states for fit in fits])))
         print(f"seed {seed}: #beta_k>0.01={n_large[-1]:2d}  K medio={mean_k[-1]:.3f}", flush=True)
