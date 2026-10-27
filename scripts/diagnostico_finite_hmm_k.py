@@ -103,10 +103,16 @@ def main() -> int:
 
     # El nombre por defecto lleva el modo de extraccion (hallazgo D1b): el cache de agosto
     # (`corpus_cache_<max_files>.jsonl`, extraccion antigua) no se mezcla con el de melodia.
+    preprocessing = config.experiment.preprocessing
     corpus_cache = args.corpus_cache or str(
         REPO_ROOT
         / "artifacts"
-        / default_corpus_cache_name(args.max_files, config.experiment.preprocessing.extraction_mode)
+        / default_corpus_cache_name(
+            args.max_files,
+            preprocessing.extraction_mode,
+            prefer_treble=preprocessing.prefer_treble,
+            include_rests=preprocessing.include_rests,
+        )
     )
     print(f"[diagnostico] preparando corpus (cache: {corpus_cache})", flush=True)
     preparation = prepare_corpus(

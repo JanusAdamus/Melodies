@@ -31,7 +31,9 @@ from next_token_experiment.data.dataset import (
 from next_token_experiment.data.preprocess import (
     build_preprocessing_report,
     check_corpus_cache_mode,
+    extraction_signature,
     prepare_corpus,
+    recorded_extraction_signature,
 )
 from next_token_experiment.data.tokenizer import build_tokenizer
 from next_token_experiment.experiment.storage import ensure_directory, write_csv
@@ -101,6 +103,33 @@ _CHECKPOINT_ROW_KEYS = (
     "protocol_evidence",
     "structural_predictions",
 )
+
+
+class ResumeExtractionMismatchError(ValueError):
+    """La corrida que se reanuda se extrajo con otra configuracion de extraccion."""
+
+
+def _check_resume_extraction(run_directory: Path, preprocessing) -> None:
+    """Hallazgo D1b: --resume no mezcla en una curva celdas de dos extracciones.
+
+    El config.json de la corrida previa dice con que extraccion salieron las celdas del
+    checkpoint; sin ``extraction_mode`` es una corrida anterior a D1b (``legacy_all_parts``).
+    Se revisa antes de preparar el corpus y de reescribir config.json.
+    """
+
+    config_path = run_directory / "config.json"
+    if not config_path.exists():
+        return
+    recorded = json.loads(config_path.read_text(encoding="utf-8"))
+    recorded_preprocessing = recorded.get("experiment", {}).get("preprocessing", {})
+    previous = recorded_extraction_signature(recorded_preprocessing)
+    requested = extraction_signature(preprocessing)
+    if previous != requested:
+        raise ResumeExtractionMismatchError(
+            f"La corrida {run_directory} se extrajo con {previous} y la reanudacion pide "
+            f"{requested}; reanudala con la misma extraccion (--extraction) o empieza otra "
+            "corrida con otro --run-name."
+        )
 
 
 def _load_checkpoint(path: Path) -> tuple[set[str], dict[str, list[dict[str, object]]]]:
@@ -1162,9 +1191,11 @@ def run_learning_curve_experiment(
     run_directory = Path(config.results_root) / run_name
     if not resume:
         _guard_fresh_run_directory(run_directory)
-    # Hallazgo D1b: un cache de otro modo de extraccion no se usa; se rechaza antes de
-    # crear el directorio de la corrida.
-    check_corpus_cache_mode(corpus_cache_path, config.experiment.preprocessing.extraction_mode)
+    else:
+        _check_resume_extraction(run_directory, config.experiment.preprocessing)
+    # Hallazgo D1b: un cache de otra extraccion no se usa; se rechaza antes de crear el
+    # directorio de la corrida.
+    check_corpus_cache_mode(corpus_cache_path, config.experiment.preprocessing)
     output_root = ensure_directory(run_directory)
     preparation = prepare_corpus(
         config.experiment,

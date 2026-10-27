@@ -34,10 +34,17 @@ CACHE_MODE_KEY = "extraction_mode"
 # Los caches anteriores al hallazgo D1b no guardan modo: todos salieron de la extraccion
 # antigua (``extract_events``), que hoy se llama ``legacy_all_parts``.
 UNRECORDED_CACHE_MODE = "legacy_all_parts"
+# En ``legacy_all_parts`` los tokens dependen tambien de estos parametros, asi que el cache
+# los guarda. ``melody`` no los usa (y rechaza silencios), asi que no forman parte de su firma.
+LEGACY_PARAMETER_KEYS = ("prefer_treble", "include_rests")
+# Todas las corridas de agosto (config.json en artifacts/) usaron estos valores; un cache sin
+# campos de extraccion es de agosto y por tanto de esta configuracion.
+AUGUST_LEGACY_PARAMETERS = {"prefer_treble": True, "include_rests": False}
+CACHE_SIGNATURE_KEYS = (CACHE_MODE_KEY, *LEGACY_PARAMETER_KEYS)
 
 
 class CorpusCacheModeError(ValueError):
-    """El cache de partituras se extrajo con un modo distinto al que pide la corrida."""
+    """El cache de partituras se extrajo con una configuracion distinta a la de la corrida."""
 
 
 def _require_extraction_mode(mode: str) -> None:
@@ -45,42 +52,102 @@ def _require_extraction_mode(mode: str) -> None:
         raise ValueError(f"Modo de extraccion no soportado: {mode!r}; usa uno de {EXTRACTION_MODES}.")
 
 
-def default_corpus_cache_name(max_files: int | None, mode: str) -> str:
-    """Nombre de cache por modo; el de ``legacy_all_parts`` es el de agosto, para reproducirlo."""
+def _signature(mode: str, prefer_treble: object, include_rests: object) -> tuple:
+    if mode == "legacy_all_parts":
+        return (mode, prefer_treble, include_rests)
+    return (mode,)
+
+
+def extraction_signature(preprocessing: PreprocessingConfig) -> tuple:
+    """Todo lo que determina los eventos extraidos: el modo y, en legacy, sus parametros."""
+
+    _require_extraction_mode(preprocessing.extraction_mode)
+    return _signature(
+        preprocessing.extraction_mode,
+        bool(preprocessing.prefer_treble),
+        bool(preprocessing.include_rests),
+    )
+
+
+def recorded_extraction_signature(payload: dict[str, object]) -> tuple:
+    """Firma de extraccion de una fila de cache o de un bloque ``preprocessing`` guardado.
+
+    Sin modo es de agosto: legacy con los parametros de agosto, salvo que el bloque
+    guarde los suyos (los config.json de agosto si los guardan). Con modo legacy y sin
+    parametros no se sabe con que se extrajo: la firma lleva ``None`` y no coincide con
+    ninguna configuracion.
+    """
+
+    if CACHE_MODE_KEY not in payload:
+        return _signature(
+            UNRECORDED_CACHE_MODE,
+            *(payload.get(key, AUGUST_LEGACY_PARAMETERS[key]) for key in LEGACY_PARAMETER_KEYS),
+        )
+    return _signature(
+        str(payload[CACHE_MODE_KEY]),
+        *(payload.get(key) for key in LEGACY_PARAMETER_KEYS),
+    )
+
+
+def default_corpus_cache_name(
+    max_files: int | None,
+    mode: str,
+    *,
+    prefer_treble: bool = AUGUST_LEGACY_PARAMETERS["prefer_treble"],
+    include_rests: bool = AUGUST_LEGACY_PARAMETERS["include_rests"],
+) -> str:
+    """Nombre de cache por configuracion de extraccion.
+
+    El de ``legacy_all_parts`` con los parametros de agosto es el de agosto, para
+    reproducirlo; otra configuracion legacy lleva sus parametros en el nombre.
+    """
 
     _require_extraction_mode(mode)
     size = "all" if max_files is None else str(max_files)
-    if mode == UNRECORDED_CACHE_MODE:
+    if mode != UNRECORDED_CACHE_MODE:
+        return f"corpus_cache_{size}_{mode}.jsonl"
+    if {"prefer_treble": prefer_treble, "include_rests": include_rests} == AUGUST_LEGACY_PARAMETERS:
         return f"corpus_cache_{size}.jsonl"
-    return f"corpus_cache_{size}_{mode}.jsonl"
+    return (
+        f"corpus_cache_{size}_{mode}_treble{int(bool(prefer_treble))}"
+        f"_rests{int(bool(include_rests))}.jsonl"
+    )
 
 
-def read_corpus_cache_modes(cache_path: str | Path) -> set[str]:
-    """Modos de extraccion presentes en un cache JSONL (vacio si no existe o no tiene filas)."""
+def read_corpus_cache_signatures(cache_path: str | Path) -> set[tuple]:
+    """Firmas de extraccion presentes en un cache JSONL (vacio si no existe o no tiene filas)."""
 
     path = Path(cache_path)
-    modes: set[str] = set()
+    signatures: set[tuple] = set()
     if not path.exists():
-        return modes
+        return signatures
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
             if line.strip():
-                modes.add(json.loads(line).get(CACHE_MODE_KEY, UNRECORDED_CACHE_MODE))
-    return modes
+                signatures.add(recorded_extraction_signature(json.loads(line)))
+    return signatures
 
 
-def check_corpus_cache_mode(cache_path: str | Path | None, mode: str) -> None:
-    """Se niega a usar un cache cuyas filas no salieron todas del modo pedido."""
+def check_corpus_cache_mode(
+    cache_path: str | Path | None, preprocessing: PreprocessingConfig
+) -> None:
+    """Se niega a usar un cache cuyas filas no salieron todas de la extraccion pedida."""
 
-    _require_extraction_mode(mode)
+    expected = extraction_signature(preprocessing)
     if cache_path is None:
         return
-    modes = read_corpus_cache_modes(cache_path)
-    if modes and modes != {mode}:
+    signatures = read_corpus_cache_signatures(cache_path)
+    if signatures and signatures != {expected}:
+        suggestion = default_corpus_cache_name(
+            3000,
+            preprocessing.extraction_mode,
+            prefer_treble=preprocessing.prefer_treble,
+            include_rests=preprocessing.include_rests,
+        )
         raise CorpusCacheModeError(
-            f"El cache {cache_path} tiene modo de extraccion {sorted(modes)} y la corrida pide "
-            f"{mode!r}; usa un cache propio de ese modo (por ejemplo "
-            f"{default_corpus_cache_name(3000, mode)} para 3000 partituras)."
+            f"El cache {cache_path} tiene extraccion {sorted(signatures, key=repr)} y la "
+            f"corrida pide {expected}; usa un cache propio de esa extraccion (por ejemplo "
+            f"{suggestion} para 3000 partituras)."
         )
 
 
@@ -300,9 +367,9 @@ def _prepare_one_without_vocabulary(
     return prepared
 
 
-def _encode_cache_entry(entry: PreparedPiece | ExclusionRecord, extraction_mode: str) -> str:
+def _encode_cache_entry(entry: PreparedPiece | ExclusionRecord, signature: tuple) -> str:
     payload = asdict(entry)
-    payload[CACHE_MODE_KEY] = extraction_mode
+    payload.update(zip(CACHE_SIGNATURE_KEYS, signature))
     if isinstance(entry, ExclusionRecord):
         payload["kind"] = "exclusion"
     else:
@@ -316,7 +383,8 @@ def _decode_cache_entry(
     vocabulary: list[str],
 ) -> PreparedPiece | ExclusionRecord:
     kind = payload.pop("kind")
-    payload.pop(CACHE_MODE_KEY, None)  # ya validado por check_corpus_cache_mode
+    for key in CACHE_SIGNATURE_KEYS:  # ya validados por check_corpus_cache_mode
+        payload.pop(key, None)
     if kind == "exclusion":
         return ExclusionRecord(**payload)  # type: ignore[arg-type]
     # Las cachés anteriores al 2026-10-26 guardan la obra canónica truncada
@@ -369,8 +437,8 @@ def prepare_corpus(
     # mas partituras que `max_files` las arrastraria todas e ignoraria el muestreo.
     selected = {str(path) for path in score_paths}
 
-    extraction_mode = config.preprocessing.extraction_mode
-    check_corpus_cache_mode(cache_path, extraction_mode)
+    signature = extraction_signature(config.preprocessing)
+    check_corpus_cache_mode(cache_path, config.preprocessing)
 
     entries: list[PreparedPiece | ExclusionRecord] = []
     cache_file = Path(cache_path) if cache_path is not None else None
@@ -410,7 +478,7 @@ def prepare_corpus(
             _silence_worker_warnings()
             stream = (worker(path) for path in pending)
             _consume_prepared(
-                stream, entries, cache_handle, vocabulary, len(pending), progress_every, extraction_mode
+                stream, entries, cache_handle, vocabulary, len(pending), progress_every, signature
             )
         else:
             with ProcessPoolExecutor(
@@ -425,7 +493,7 @@ def prepare_corpus(
                     vocabulary,
                     len(pending),
                     progress_every,
-                    extraction_mode,
+                    signature,
                 )
     finally:
         if cache_handle is not None:
@@ -446,13 +514,13 @@ def _consume_prepared(
     vocabulary: list[str],
     total: int,
     progress_every: int,
-    extraction_mode: str,
+    signature: tuple,
 ) -> None:
     """Drain prepared scores, restoring the shared vocabulary and flushing the cache."""
 
     for index, prepared in enumerate(stream, start=1):
         if cache_handle is not None:
-            cache_handle.write(_encode_cache_entry(prepared, extraction_mode) + "\n")
+            cache_handle.write(_encode_cache_entry(prepared, signature) + "\n")
             if index % 200 == 0:
                 cache_handle.flush()
         if isinstance(prepared, PreparedPiece):

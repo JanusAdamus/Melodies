@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -204,6 +204,245 @@ class CorpusCacheModeTests(unittest.TestCase):
                 progress_every=0,
             )
             self.assertEqual(len(legacy.pieces), 1)
+
+
+class LegacyCacheParametersTests(unittest.TestCase):
+    """En ``legacy_all_parts`` los tokens dependen de prefer_treble e include_rests.
+
+    Un cache legacy de agosto (prefer_treble=True, sin silencios) no sirve para otra
+    configuracion legacy, por ejemplo el perfil research_richer_events.
+    """
+
+    def test_legacy_parameters_change_the_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "dos_partes.musicxml"
+            _write_two_part_score(path)
+            august = _config(root, extraction_mode="legacy_all_parts")
+            other = _config(root, extraction_mode="legacy_all_parts", prefer_treble=False)
+            tokens_august = preprocess_score_file(
+                path, str(root), august.preprocessing, august.representation, 1
+            ).tokens
+            tokens_other = preprocess_score_file(
+                path, str(root), other.preprocessing, other.representation, 1
+            ).tokens
+            self.assertNotEqual(tokens_august, tokens_other)
+
+    def test_cache_entries_record_the_legacy_parameters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "scores"
+            root.mkdir()
+            _write_two_part_score(root / "a.musicxml")
+            cache = Path(tmp) / "cache.jsonl"
+            prepare_corpus(
+                _config(root, extraction_mode="legacy_all_parts", prefer_treble=False,
+                        include_rests=True),
+                n_workers=1,
+                cache_path=cache,
+                progress_every=0,
+            )
+            row = json.loads(cache.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(row["extraction_mode"], "legacy_all_parts")
+            self.assertIs(row["prefer_treble"], False)
+            self.assertIs(row["include_rests"], True)
+
+    def test_legacy_cache_with_other_parameters_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "scores"
+            root.mkdir()
+            _write_two_part_score(root / "a.musicxml")
+            cache = Path(tmp) / "cache.jsonl"
+            prepare_corpus(
+                _config(root, extraction_mode="legacy_all_parts"),
+                n_workers=1,
+                cache_path=cache,
+                progress_every=0,
+            )
+            before = cache.read_text(encoding="utf-8")
+            with self.assertRaises(CorpusCacheModeError):
+                prepare_corpus(
+                    _config(root, extraction_mode="legacy_all_parts", prefer_treble=False),
+                    n_workers=1,
+                    cache_path=cache,
+                    progress_every=0,
+                )
+            with self.assertRaises(CorpusCacheModeError):
+                prepare_corpus(
+                    _config(root, extraction_mode="legacy_all_parts", include_rests=True),
+                    n_workers=1,
+                    cache_path=cache,
+                    progress_every=0,
+                )
+            self.assertEqual(cache.read_text(encoding="utf-8"), before)
+
+    def test_august_cache_without_fields_is_the_default_legacy_configuration(self) -> None:
+        """Todas las corridas de agosto usaron prefer_treble=True e include_rests=False."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "scores"
+            root.mkdir()
+            _write_two_part_score(root / "a.musicxml")
+            cache = Path(tmp) / "cache.jsonl"
+            prepare_corpus(
+                _config(root, extraction_mode="legacy_all_parts"),
+                n_workers=1,
+                cache_path=cache,
+                progress_every=0,
+            )
+            rows = [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines()]
+            for row in rows:
+                for key in ("extraction_mode", "prefer_treble", "include_rests"):
+                    row.pop(key, None)
+            cache.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+            with self.assertRaises(CorpusCacheModeError):
+                prepare_corpus(
+                    _config(root, extraction_mode="legacy_all_parts", prefer_treble=False,
+                            include_rests=True),
+                    n_workers=1,
+                    cache_path=cache,
+                    progress_every=0,
+                )
+            legacy = prepare_corpus(
+                _config(root, extraction_mode="legacy_all_parts"),
+                n_workers=1,
+                cache_path=cache,
+                progress_every=0,
+            )
+            self.assertEqual(len(legacy.pieces), 1)
+
+    def test_legacy_row_with_mode_but_without_parameters_is_not_trusted(self) -> None:
+        """Una fila con modo legacy pero sin parametros no dice con que se extrajo."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "scores"
+            root.mkdir()
+            _write_two_part_score(root / "a.musicxml")
+            cache = Path(tmp) / "cache.jsonl"
+            cache.write_text(
+                json.dumps({"kind": "exclusion", "piece_id": "x", "path": "x",
+                            "reason": "too_short", "detail": "",
+                            "extraction_mode": "legacy_all_parts"}) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(CorpusCacheModeError):
+                prepare_corpus(
+                    _config(root, extraction_mode="legacy_all_parts"),
+                    n_workers=1,
+                    cache_path=cache,
+                    progress_every=0,
+                )
+
+    def test_default_cache_name_separates_legacy_configurations(self) -> None:
+        august = default_corpus_cache_name(3000, "legacy_all_parts")
+        richer = default_corpus_cache_name(
+            3000, "legacy_all_parts", prefer_treble=False, include_rests=True
+        )
+        self.assertEqual(august, "corpus_cache_3000.jsonl")
+        self.assertNotEqual(richer, august)
+        self.assertNotEqual(
+            default_corpus_cache_name(3000, "legacy_all_parts", prefer_treble=False),
+            default_corpus_cache_name(3000, "legacy_all_parts", include_rests=True),
+        )
+
+
+def _write_run_directory(results_root: Path, preprocessing: dict) -> Path:
+    """Directorio de una corrida previa: config.json y una celda en checkpoint.jsonl."""
+
+    from Comparacion.config import build_default_learning_curve_config
+
+    config = build_default_learning_curve_config(
+        corpus_root="synthetic-corpus", results_root=str(results_root)
+    )
+    payload = json.loads(json.dumps(asdict(config)))
+    payload["experiment"]["preprocessing"] = preprocessing
+    run = results_root / "corrida"
+    run.mkdir()
+    (run / "config.json").write_text(json.dumps(payload), encoding="utf-8")
+    (run / "checkpoint.jsonl").write_text(json.dumps({"cell": "1:0.1"}) + "\n", encoding="utf-8")
+    return run
+
+
+_AUGUST_PREPROCESSING = {
+    "include_rests": False,
+    "prefer_treble": True,
+    "transpose_to_canonical_key": False,
+    "include_metadata_features": False,
+}
+
+
+class ResumeExtractionTests(unittest.TestCase):
+    """--resume no puede mezclar celdas de dos extracciones en una misma curva."""
+
+    def _resume(self, results_root: Path, **preprocessing):
+        from Comparacion.config import build_default_learning_curve_config
+        from Comparacion.runner import run_learning_curve_experiment
+
+        config = build_default_learning_curve_config(
+            corpus_root="synthetic-corpus", results_root=str(results_root)
+        )
+        config = replace(
+            config,
+            experiment=replace(
+                config.experiment,
+                preprocessing=replace(config.experiment.preprocessing, **preprocessing),
+            ),
+        )
+        return run_learning_curve_experiment(config, run_name="corrida", resume=True)
+
+    def test_resume_with_melody_over_an_august_run_is_refused(self) -> None:
+        from Comparacion.runner import ResumeExtractionMismatchError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run = _write_run_directory(Path(tmp), dict(_AUGUST_PREPROCESSING))
+            before = (run / "config.json").read_text(encoding="utf-8")
+            with patch("Comparacion.runner.prepare_corpus") as prepare:
+                with self.assertRaises(ResumeExtractionMismatchError):
+                    self._resume(Path(tmp))
+            prepare.assert_not_called()
+            self.assertEqual((run / "config.json").read_text(encoding="utf-8"), before)
+
+    def test_resume_with_other_legacy_parameters_is_refused(self) -> None:
+        from Comparacion.runner import ResumeExtractionMismatchError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_run_directory(Path(tmp), dict(_AUGUST_PREPROCESSING))
+            with patch("Comparacion.runner.prepare_corpus") as prepare:
+                with self.assertRaises(ResumeExtractionMismatchError):
+                    self._resume(
+                        Path(tmp), extraction_mode="legacy_all_parts", prefer_treble=False
+                    )
+            prepare.assert_not_called()
+
+    def test_resume_with_melody_over_a_legacy_d1b_run_is_refused(self) -> None:
+        from Comparacion.runner import ResumeExtractionMismatchError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_run_directory(
+                Path(tmp), {**_AUGUST_PREPROCESSING, "extraction_mode": "legacy_all_parts"}
+            )
+            with patch("Comparacion.runner.prepare_corpus") as prepare:
+                with self.assertRaises(ResumeExtractionMismatchError):
+                    self._resume(Path(tmp))
+            prepare.assert_not_called()
+
+    def test_resume_with_the_same_extraction_goes_on(self) -> None:
+        sentinel = RuntimeError("prepare_corpus alcanzado")
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_run_directory(Path(tmp), dict(_AUGUST_PREPROCESSING))
+            with patch("Comparacion.runner.prepare_corpus", side_effect=sentinel):
+                with self.assertRaises(RuntimeError) as caught:
+                    self._resume(Path(tmp), extraction_mode="legacy_all_parts")
+            self.assertIs(caught.exception, sentinel)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_run_directory(
+                Path(tmp), {**_AUGUST_PREPROCESSING, "extraction_mode": "melody"}
+            )
+            with patch("Comparacion.runner.prepare_corpus", side_effect=sentinel):
+                with self.assertRaises(RuntimeError) as caught:
+                    self._resume(Path(tmp))
+            self.assertIs(caught.exception, sentinel)
 
 
 class RunnerExtractionTests(unittest.TestCase):
