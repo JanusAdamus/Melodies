@@ -71,12 +71,16 @@ def summarize_finite_result(result: FiniteHMMResult) -> pd.DataFrame:
                 "log_likelihood",
                 "viterbi_score",
                 "n_active_states",
+                "n_viterbi_states",
                 "n_segments",
                 "mean_segment_length",
             ],
             "value": [
                 result.log_likelihood,
                 result.viterbi_score,
+                # Estimando del preregistro, igual que en summarize_hdp_result; el conteo
+                # de estados distintos de Viterbi va aparte con su propio nombre.
+                result.effective_states,
                 len(result.active_states),
                 segmentation["n_segments"],
                 segmentation["mean_segment_length"],

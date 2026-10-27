@@ -112,5 +112,39 @@ class FiniteEffectiveStatesTests(unittest.TestCase):
         self.assertAlmostEqual(record["finite_effective_states"], 1.0)
 
 
+class SummaryLabelTests(unittest.TestCase):
+    """El rótulo 'n_active_states' es el estimando del preregistro en ambos modelos."""
+
+    def setUp(self) -> None:
+        self.result = _three_state_model().fit_predict(_sequence(_TOKENS_98_1_1))
+
+    @staticmethod
+    def _metrics(table: pd.DataFrame) -> pd.Series:
+        return table.set_index("metric")["value"]
+
+    def _check(self, table: pd.DataFrame) -> None:
+        metrics = self._metrics(table)
+        # 98/1/1 %: Viterbi visita 3 estados, pero solo 1 supera el 2 %.
+        self.assertAlmostEqual(float(metrics["n_active_states"]), self.result.effective_states)
+        self.assertAlmostEqual(float(metrics["n_active_states"]), 1.0)
+        self.assertEqual(float(metrics["n_viterbi_states"]), 3.0)
+
+    def test_finite_summary_dataframe(self) -> None:
+        self._check(self.result.summary_dataframe())
+
+    def test_summarize_finite_result(self) -> None:
+        from src.analysis.diagnostics import summarize_finite_result
+
+        self._check(summarize_finite_result(self.result))
+
+    def test_hdp_tables_use_the_same_estimand_under_the_label(self) -> None:
+        from src.analysis.diagnostics import summarize_hdp_result
+        from src.models.hdp_hmm import TruncatedHDPHMM
+
+        hdp = TruncatedHDPHMM(n_states=6, n_iters=20, burn_in=10, seed=1).fit(_sequence(_TOKENS_98_1_1))
+        for table in (hdp.summary_dataframe(), summarize_hdp_result(hdp)):
+            self.assertAlmostEqual(float(self._metrics(table)["n_active_states"]), hdp.effective_states)
+
+
 if __name__ == "__main__":
     unittest.main()

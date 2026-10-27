@@ -51,12 +51,15 @@ class FiniteHMMResult:
                     "log_likelihood",
                     "viterbi_score",
                     "n_active_states",
+                    "n_viterbi_states",
                     "n_observations",
                     "state_space_size",
                 ],
                 "value": [
                     self.log_likelihood,
                     self.viterbi_score,
+                    # Mismo estimando que el HDP-HMM bajo el mismo rótulo (preregistro).
+                    self.effective_states,
                     len(self.active_states),
                     self.observations.size,
                     len(self.state_space),
