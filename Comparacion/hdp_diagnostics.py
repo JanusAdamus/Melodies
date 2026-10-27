@@ -186,31 +186,57 @@ def _in_burn_in(row: Mapping[str, object], burn_in: int) -> bool:
     return int(row["iteration"]) <= burn_in
 
 
+#: Hiperparámetros que definen la posterior; cada model_seed los elige en validación.
+_POSTERIOR_KEYS = ("alpha", "alpha0", "gamma", "kappa", "eta", "n_states_truncation")
+
+
 def build_cell_chain_diagnostics(
     trace_rows: Sequence[Mapping[str, object]],
     *,
     burn_in: int,
     min_iterations: int,
 ) -> dict[str, object]:
-    """Diagnóstico por celda (split_seed, data_seed, frac), sin burn-in.
+    """Diagnóstico por celda (split_seed, data_seed, frac) y posterior, sin burn-in.
 
-    Dentro de una celda, cada ``model_seed`` es una cadena sobre la misma
-    posterior; celdas distintas nunca se concatenan (H7).
+    Cada ``model_seed`` elige sus hiperparámetros en validación; dos semillas que
+    eligen hiperparámetros distintos muestrean posteriores distintas.  Por eso una
+    cadena es una ``model_seed`` dentro de (celda, hiperparámetros seleccionados) y
+    sólo se comparan cadenas de la misma posterior.  Celdas distintas nunca se
+    concatenan (H7).
     """
 
-    cells: dict[tuple[object, ...], dict[int, list[Mapping[str, object]]]] = {}
+    groups: dict[
+        tuple[tuple[object, ...], tuple[object, ...]], dict[int, list[Mapping[str, object]]]
+    ] = {}
     for row in trace_rows:
         if _in_burn_in(row, burn_in):
             continue
-        key = tuple(row.get(name) for name in _CELL_KEYS)
-        cells.setdefault(key, {}).setdefault(row["model_seed"], []).append(row)
+        cell_key = tuple(row.get(name) for name in _CELL_KEYS)
+        posterior_key = tuple(row.get(name) for name in _POSTERIOR_KEYS)
+        groups.setdefault((cell_key, posterior_key), {}).setdefault(row["model_seed"], []).append(row)
+
+    posteriors_by_cell: dict[tuple[object, ...], set[tuple[object, ...]]] = {}
+    for cell_key, posterior_key in groups:
+        posteriors_by_cell.setdefault(cell_key, set()).add(posterior_key)
+    mixed_cells = [
+        dict(zip(_CELL_KEYS, cell_key))
+        for cell_key, posteriors in sorted(posteriors_by_cell.items(), key=lambda item: tuple(map(str, item[0])))
+        if len(posteriors) > 1
+    ]
 
     cell_reports = [
         {
-            "cell": dict(zip(_CELL_KEYS, key)),
+            "cell": dict(zip(_CELL_KEYS, cell_key)),
+            "posterior": {
+                name: value
+                for name, value in zip(_POSTERIOR_KEYS, posterior_key)
+                if value is not None
+            },
             "diagnostics": build_chain_diagnostics(chains, min_iterations=min_iterations),
         }
-        for key, chains in sorted(cells.items(), key=lambda item: tuple(map(str, item[0])))
+        for (cell_key, posterior_key), chains in sorted(
+            groups.items(), key=lambda item: (tuple(map(str, item[0][0])), tuple(map(str, item[0][1])))
+        )
     ]
     verdict_counts: dict[str, int] = {}
     for report in cell_reports:
@@ -221,7 +247,11 @@ def build_cell_chain_diagnostics(
         "status": "ok" if cell_reports else "diagnostics_inconclusive",
         "verdict": present[0] if present else "no_evidence",
         "verdict_counts": verdict_counts,
-        "unit": "chain = model_seed within (split_seed, data_seed, frac)",
+        "unit": "chain = model_seed within (split_seed, data_seed, frac) and selected hyperparameters",
+        "posterior_keys": list(_POSTERIOR_KEYS),
+        # Celdas donde las semillas eligieron hiperparámetros distintos: sus cadenas
+        # no se comparan entre sí, y hay menos evidencia entre cadenas por posterior.
+        "cells_with_mixed_selected_hyperparameters": mixed_cells,
         "burn_in_excluded": int(burn_in),
         "min_iterations": int(min_iterations),
         "n_cells": len(cell_reports),

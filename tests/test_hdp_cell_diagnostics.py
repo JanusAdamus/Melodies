@@ -92,6 +92,40 @@ class CellChainDiagnosticsTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "drift_detected")
         self.assertEqual(report["verdict_counts"]["drift_detected"], 1)
 
+    def test_chains_with_different_selected_hyperparameters_are_not_compared(self) -> None:
+        # Cada model_seed elige sus hiperparámetros en validación: con alpha distinto
+        # muestrea otra posterior, y el acuerdo entre cadenas no tiene sentido.
+        low = [{**row, "alpha": 8.0, "alpha0": 1.0, "gamma": 1.0} for row in _chain(1, **_cell(1))]
+        high = [
+            {**row, "alpha": 12.0, "alpha0": 1.0, "gamma": 1.0, "log_likelihood": row["log_likelihood"] + 5000}
+            for row in _chain(2, **_cell(1))
+        ]
+
+        report = build_cell_chain_diagnostics(low + high, burn_in=BURN_IN, min_iterations=N_ITERS - BURN_IN)
+
+        self.assertNotIn("chains_disagree", report["verdict_counts"])
+        self.assertEqual(report["n_cells"], 2)
+        for cell in report["cells"]:
+            with self.subTest(posterior=cell["posterior"]):
+                self.assertEqual(cell["diagnostics"]["n_chains"], 1)
+                self.assertEqual(cell["cell"], _cell(1))
+        self.assertEqual(
+            sorted(cell["posterior"]["alpha"] for cell in report["cells"]), [8.0, 12.0]
+        )
+        self.assertEqual(report["cells_with_mixed_selected_hyperparameters"], [_cell(1)])
+
+    def test_chains_with_the_same_selected_hyperparameters_are_still_compared(self) -> None:
+        rows = [
+            {**row, "alpha": 8.0, "alpha0": 1.0, "gamma": 1.0}
+            for row in _chain(1, **_cell(1)) + _chain(2, **_cell(1))
+        ]
+
+        report = build_cell_chain_diagnostics(rows, burn_in=BURN_IN, min_iterations=N_ITERS - BURN_IN)
+
+        (cell,) = report["cells"]
+        self.assertEqual(cell["diagnostics"]["n_chains"], 2)
+        self.assertEqual(report["cells_with_mixed_selected_hyperparameters"], [])
+
     def test_a_chain_with_repeated_iterations_is_rejected(self) -> None:
         concatenated = _chain(1, **_cell(1)) + _chain(1, **_cell(2))
 

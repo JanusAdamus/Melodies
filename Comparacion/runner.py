@@ -1963,7 +1963,8 @@ def run_learning_curve_experiment(
     write_csv(output_root / "results_summary.csv", summary_rows)
     write_csv(output_root / "piece_metrics_raw.csv", piece_metric_rows)
     write_csv(output_root / "engineering_costs.csv", _engineering_cost_rows(raw_rows))
-    # H7: una cadena es una model_seed dentro de una celda (split, data_seed, frac);
+    # H7: una cadena es una model_seed dentro de una celda (split, data_seed, frac)
+    # y de los hiperparámetros que esa semilla eligió en validación;
     # el burn-in queda fuera del diagnóstico, que nunca declara convergencia.
     trace_path = write_cell_traces(hdp_trace_rows, output_root, burn_in=config.hdp_burn_in)
     _write_json(
