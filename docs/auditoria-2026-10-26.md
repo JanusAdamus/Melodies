@@ -35,7 +35,7 @@ T = transformador. Capítulos según `Tesis` en GitHub (86e8d17).
 | H5 | HIGH | H | La log L reportada es el máximo de la cadena, incluido el burn-in (17/167 obras eligen una iteración de burn-in); infla ≈ +20 nats por obra | `hdp/s3_report.py` | magnitud de ΔlogL |
 | F2 | HIGH | F | K_fin (Viterbi distintos de 252, crece con T, supera el tope 20 del HDP) y K_hdp no son el mismo estimando; 43 grupos de estados con emisiones idénticas | `finito/a3_*` | «32.2 frente a 8.2» |
 | D1 | HIGH | D | La «melodía» mezcla ambas manos (`prefer_treble=False`), cuenta notas ligadas como nuevas (1328), notas de adorno (861+390) y cifrados (243); acordes reducidos a su raíz | `datos/probe_events.py`, `scan_corpus.py` | toda tabla del cap. 3/4 y la definición de melodía del cap. 2 |
-| D1b | HIGH | D,C | La comparación PDMX (cap. 4) también usa la extracción antigua (`next_token_experiment/data/preprocess.py` → `extract_events`, `prefer_treble=True`): no quita ligaduras, adornos ni cifrados; PDMX tiene muchas *lead sheets* | lectura de código; configs `plan_*` con `"prefer_treble": true` | toda cifra PDMX |
+| D1b | HIGH | D,C | La comparación PDMX (cap. 4) también usa la extracción antigua (`next_token_experiment/data/preprocess.py` → `extract_events`, `prefer_treble=True`): no quita ligaduras, adornos ni cifrados; PDMX tiene muchas *lead sheets* | lectura de código; configs `plan_*` con `"prefer_treble": true`; `tests/test_d1b_extraccion_pdmx.py` (detalle abajo) | toda cifra PDMX |
 | D2 | HIGH | D | SymbTr = primeros 100 archivos en orden alfabético: 4 de 155 makams | `datos/` | «repertorio heterogéneo» |
 | C1 | HIGH | C | Costo desigual: HMM cobra la selección completa en CPU; transformador un solo ajuste en GPU sin su búsqueda | `comparacion/` | «el transformador es más barato» |
 | C2 | HIGH | C | Curva de aprendizaje confundida: HMM eligió K=48 (techo) en 30/30 celdas; VOMM eligió el orden máximo; HDP con β fijo | `comparacion/`, `hmm-grid-sensitivity.md` | «sólo el transformador aprovecha el corpus» |
@@ -57,6 +57,37 @@ T = transformador. Capítulos según `Tesis` en GitHub (86e8d17).
 | F3 | LOW | F,T | BOS forma parte del soporte predictivo (13 clases para 12 alturas) en todos los modelos | `finito/a4_*`, `transformer/t1_*` | perplejidades absolutas |
 | H8 | LOW | H | El generador aleatorio vive en la instancia: dos `fit` seguidos dan resultados distintos | `hdp/s7_seed_reuse.py` | reutilización del modelo |
 | — | LOW | varios | `max_windows` sesgado, `--resume` no valida configuración, subconjunto «clásico» = 6 obras más cortas, leyendas «izquierdo/derecho» en figuras apiladas, repeticiones no expandidas | informes | menor |
+
+### D1b: la comparación PDMX usaba la extracción antigua
+
+Hallazgo nuevo, posterior a las cinco revisiones; se registró en el handoff
+(tarea 1.3) y se corrigió en la rama `fix/auditoria-d1b`.
+
+- **Qué pasaba.** `preprocess_score_file` llamaba a
+  `extract_events(score, include_rests, prefer_treble)`, la extracción de D1
+  (partes fusionadas, acorde reducido a su raíz, ligaduras, adornos y cifrados
+  como eventos).  Toda corrida de `Comparacion` y el caché
+  `artifacts/corpus_cache_3000.jsonl` salieron de ahí.
+- **Prueba que lo muestra.** Partitura de dos partes: en sol, el acorde Do-Mi-Sol
+  y luego Re5; en fa, Do3 y Sol2.  Antes del cambio, el preprocesamiento por
+  omisión daba los tokens `[0, 2]` (raíz del acorde); la melodía vigente es
+  `[7, 2]` (nota superior; el bajo no entra).
+- **Corrección.** `PreprocessingConfig.extraction_mode` (por omisión `melody`)
+  y extracción con `extract_events_for_mode`.  `legacy_all_parts` sólo sirve
+  para reproducir agosto y conserva `prefer_treble` e `include_rests`.  Pedir
+  silencios con `melody` es un error, no se ignora; el perfil
+  `research_richer_events`, que los necesita, declara `legacy_all_parts`.  Un
+  modo desconocido detiene la corrida en lugar de excluir cada partitura.
+  `Comparacion/cli.py` acepta `--extraction {melody,legacy_all_parts}`.
+- **Caché.** Cada fila guarda `extraction_mode`; las filas sin ese campo (todos
+  los cachés anteriores) cuentan como `legacy_all_parts`.  `prepare_corpus` y el
+  runner se niegan a usar un caché con un modo distinto al pedido, y el runner
+  lo rechaza antes de crear el directorio de la corrida.  Nombre por modo:
+  `corpus_cache_3000_melody.jsonl`; el de agosto conserva
+  `corpus_cache_3000.jsonl`.  Comprobado en modo lectura: el caché de agosto de
+  esta máquina sólo contiene `legacy_all_parts` y se rechaza para `melody`.
+- **Pendiente.** Las cifras PDMX del capítulo 4 siguen siendo las de la
+  extracción antigua hasta la corrida de la Fase 2 con `melody` y caché nuevo.
 
 ## Lo que se sostiene
 
