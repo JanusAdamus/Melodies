@@ -55,38 +55,36 @@ def three_state_tokens(length: int, seed: int = 0) -> np.ndarray:
 
 #: Cadena del preregistro (docs/preregistro-2026-10-26.md: 400 iteraciones, burn-in 200).
 CRITERION_B_CHAIN = (400, 200)
-#: Bloques disjuntos de 50 semillas (0..49, 50..99, 100..149, 150..199).  Ninguna conclusión
-#: sobre (b) puede depender de un bloque escogido.
-CRITERION_B_BLOCKS = [range(start, start + 50) for start in range(0, 200, 50)]
-#: Estado medido el 2026-10-26 (s8_criterio_b_bloques_simulada_salida_20261026.txt): con esta obra y
-#: 400/200, r por bloque = 0.025, -0.034, 0.152, 0.177; TOST p = 0.025, 0.029, 0.142, 0.184.  Dos
-#: bloques demuestran |ρ| < 0.3 y dos no permiten decidir; ninguno lo incumple claramente.
-CRITERION_B_XFAIL_REASON = (
-    "criterio (b) inconclusive: en los bloques 100..149 y 150..199 (r = 0.152 y 0.177) el IC 95 % de "
-    "Fisher incluye 0.3 y la equivalencia TOST no es significativa (p = 0.142 y 0.184)"
-)
+#: Semillas 0..199, las de s8_criterio_b_bloques_simulada_salida_20261026.txt.
+CRITERION_B_SEEDS = range(200)
 
 
-def _criterion_b_point(args: tuple[int, int, int]) -> tuple[int, float]:
+class _FrozenBetaHDPHMM(TruncatedHDPHMM):
+    """Muestreador con β congelado en el primer sorteo (el defecto H1): K debe seguir a ese sorteo."""
+
+    def _update_beta(self, beta, state_sequences):
+        return beta, "frozen_for_test"
+
+
+def _criterion_b_point(args: tuple[int, int, int, bool]) -> tuple[int, float]:
     """(#β_k > 0.01 del primer sorteo, K ocupados) de una semilla sobre la obra simulada fija."""
 
-    n_iters, burn_in, seed = args
+    n_iters, burn_in, seed, freeze_beta = args
+    model_class = _FrozenBetaHDPHMM if freeze_beta else TruncatedHDPHMM
     tokens = three_state_tokens(300, seed=5)
-    result = TruncatedHDPHMM(n_states=20, n_iters=n_iters, burn_in=burn_in, seed=seed).fit(_observations(tokens))
+    result = model_class(n_states=20, n_iters=n_iters, burn_in=burn_in, seed=seed).fit(_observations(tokens))
     return int(np.sum(result.diagnostics.initial_beta > 0.01)), float(result.effective_states)
 
 
-def _criterion_b_blocks(n_iters: int, burn_in: int) -> list[tuple[list[int], list[float]]]:
-    jobs = [(n_iters, burn_in, seed) for block in CRITERION_B_BLOCKS for seed in block]
+def _criterion_b_rows(seeds, n_iters: int, burn_in: int, freeze_beta: bool = False) -> tuple[list[int], list[float]]:
+    jobs = [(n_iters, burn_in, seed, freeze_beta) for seed in seeds]
     with ProcessPoolExecutor(max_workers=min(len(jobs), os.cpu_count() or 1)) as pool:
         rows = list(pool.map(_criterion_b_point, jobs))
-    size = len(CRITERION_B_BLOCKS[0])
-    blocks = [rows[start:start + size] for start in range(0, len(rows), size)]
-    return [([row[0] for row in block], [row[1] for row in block]) for block in blocks]
+    return [row[0] for row in rows], [row[1] for row in rows]
 
 
-def _criterion_b_decision(blocks: list[tuple[list[int], list[float]]]) -> str:
-    """Decisión de s8_criterio_b_bloques: met_robustly, not_met o inconclusive."""
+def _criterion_b_decision(n_large: list[int], occupied: list[float]) -> str:
+    """Decisión de s8_criterio_b_bloques con todas las semillas juntas: met, not_met o inconclusive."""
 
     spec = importlib.util.spec_from_file_location(
         "s8_criterio_b_bloques",
@@ -94,9 +92,7 @@ def _criterion_b_decision(blocks: list[tuple[list[int], list[float]]]) -> str:
     )
     script = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(script)
-    return script.criterion_b_decision(
-        [(float(pearsonr(n_large, occupied).statistic), len(n_large)) for n_large, occupied in blocks]
-    )
+    return script.criterion_b_decision(float(pearsonr(n_large, occupied).statistic), len(n_large))
 
 
 class CRTTests(unittest.TestCase):
@@ -132,11 +128,21 @@ class BetaSamplingTests(unittest.TestCase):
         }
         self.assertGreater(len(n_large), 2, n_large)
 
-    @pytest.mark.xfail(strict=False, reason=CRITERION_B_XFAIL_REASON)
+    @pytest.mark.slow
     def test_occupied_states_do_not_follow_the_first_beta_draw(self) -> None:
-        # Criterio (b) (PROMPT_CLAUDE.md, |r| < 0.3) con la cadena del preregistro, decidido en
-        # 4 bloques disjuntos de 50 semillas (regla en s8_criterio_b_bloques.py).
-        self.assertEqual(_criterion_b_decision(_criterion_b_blocks(*CRITERION_B_CHAIN)), "met_robustly")
+        # Criterio (b) (PROMPT_CLAUDE.md, |r| < 0.3) con la cadena del preregistro y las 200 semillas
+        # juntas: |r| < 0.3 y equivalencia TOST significativa (regla en s8_criterio_b_bloques.py).
+        # Medido el 2026-10-26: r = 0.069, TOST p = 0.00037 (s8_criterio_b_agrupado_simulada_salida_20261026.txt).
+        self.assertEqual(_criterion_b_decision(*_criterion_b_rows(CRITERION_B_SEEDS, *CRITERION_B_CHAIN)), "met")
+
+    @pytest.mark.slow
+    def test_criterion_b_fails_with_a_frozen_beta(self) -> None:
+        # Control de que la prueba anterior puede fallar: con β congelado en el primer sorteo (el
+        # defecto H1) y las mismas 200 semillas, la regla no puede dar «met».  Con n = 200 la TOST sólo
+        # es significativa si r < tanh(atanh(0.3) - 1.645/sqrt(197)) ≈ 0.19; medido el 2026-10-26:
+        # r = 0.314, not_met (s8_criterio_b_bloques_simulada_beta_congelado_salida_20261026.txt).
+        decision = _criterion_b_decision(*_criterion_b_rows(CRITERION_B_SEEDS, *CRITERION_B_CHAIN, freeze_beta=True))
+        self.assertNotEqual(decision, "met")
 
     def test_recovers_three_occupied_states(self) -> None:
         tokens = three_state_tokens(500, seed=11)

@@ -1,23 +1,38 @@
-"""Criterio (b) en bloques DISJUNTOS de semillas sobre una misma obra, con la cadena del preregistro.
+"""Criterio (b) con todas las semillas juntas sobre una misma obra, con la cadena del preregistro.
 
 Uso:
     python s8_criterio_b_bloques.py simulada [--n-blocks 4] [--block-size 50] [--first-seed 0]
     python s8_criterio_b_bloques.py CACHE.jsonl --single-work 200 [...]
-    opciones comunes: [--n-iters 400] [--burn-in 200] [--n-workers N]
+    python s8_criterio_b_bloques.py --resumen SALIDA.txt
+    opciones comunes: [--n-iters 400] [--burn-in 200] [--n-workers N] [--congelar-beta]
+
+--congelar-beta es el control negativo: β queda fijo en el primer sorteo (el defecto H1), así que la
+regla debe dejar de dar «met».
 
 «simulada» es la obra de las pruebas: three_state_tokens(300, seed=5) de tests/test_hdp_sampler.py
 (HMM de 3 estados, 6 símbolos).  Con un caché del runner se toma la obra --single-work (clases de
 altura 0..11).  Truncamiento K=20; por omisión 400 iteraciones y burn-in 200
-(docs/preregistro-2026-10-26.md).  Para cada semilla: #β_k > 0.01 del primer sorteo y K ocupados
-(effective_states, ocupación ≥ 2 %).  Por bloque se reporta lo mismo que s5_beta_seed_v3.summary
-(r, IC de Fisher, TOST, Spearman, pendiente con IC t y bootstrap) y al final la decisión.
+(docs/preregistro-2026-10-26.md, que sólo fija la cadena).  Para cada semilla: #β_k > 0.01 del
+primer sorteo y K ocupados (effective_states, ocupación ≥ 2 %).  Con --resumen recalcula todo
+desde las filas «seed N: ...» de una salida guardada, sin volver a ajustar.
 
-Regla de decisión (fijada antes de correr; el umbral 0.3 es el de PROMPT_CLAUDE.md, tarea 1.1 (b)):
-- un bloque CUMPLE si |r| < 0.3 y la equivalencia TOST de |ρ| < 0.3 es significativa (p < 0.05);
-- un bloque INCUMPLE CLARAMENTE si su IC 95 % de Fisher queda entero fuera de (-0.3, 0.3);
-- met_robustly si todos los bloques cumplen; not_met si alguno incumple claramente;
-  inconclusive en otro caso (los IC no permiten decidir).
-Se exigen al menos 3 bloques de al menos 50 semillas.
+Decisión (criterio escrito en PROMPT_CLAUDE.md, tarea 1.1 (b): |r| < 0.3), con TODAS las semillas
+juntas:
+- met si la estimación puntual cumple |r| < 0.3 y la equivalencia TOST de |ρ| < 0.3 (z de Fisher)
+  es significativa (p < 0.05), que es la evidencia con potencia;
+- not_met si |r| ≥ 0.3;
+- inconclusive si |r| < 0.3 pero la TOST no es significativa.
+Se exigen al menos 10 semillas (las que pide PROMPT_CLAUDE.md).
+
+Historia, para que no se lea mal: la versión anterior de este script (commits a3044e2 y a183bd2)
+decidía con una regla por bloques («cada uno de 4 bloques de 50 semillas debe pasar TOST») que se
+escribió DESPUÉS de conocer las cifras, no antes de correr como decía su docstring.  Una revisión
+adversarial mostró que esa regla no tiene potencia: con independencia real (K medio permutado) casi
+nunca la pasa.  s9_potencia_permutacion.py lo reproduce sobre las filas guardadas (5000
+permutaciones, semilla 0; s9_potencia_permutacion_salida_20261026.txt): la regla por bloques da
+met_robustly en 104/5000 (simulada) y 109/5000 (PDMX obra 200), ~2 %; la regla agrupada de abajo
+da met en 4980/5000 y 4969/5000.  La regla por bloques se descartó y manda el criterio escrito.
+Los bloques se siguen imprimiendo, pero sólo como descriptivo de estabilidad entre semillas.
 """
 import argparse
 import importlib.util
@@ -41,31 +56,42 @@ v3 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(v3)
 
 BOUND = v3.EQUIVALENCE_BOUND
-MIN_BLOCKS, MIN_BLOCK_SIZE = 3, 50
+MIN_SEEDS = 10
 
 
-def block_status(r, n, alpha=0.05):
-    """«cumple», «incumple» (IC 95 % entero fuera de ±0.3) o «indeciso»."""
+def criterion_b_decision(r, n, alpha=0.05):
+    """met, not_met o inconclusive para el r de todas las semillas juntas (regla en el docstring)."""
 
-    low, high = v3.fisher_interval(r, n)
-    if abs(r) < BOUND and v3.equivalence_pvalue(r, n) < alpha:
-        return "cumple"
-    if low > BOUND or high < -BOUND:
-        return "incumple"
-    return "indeciso"
-
-
-def criterion_b_decision(blocks):
-    """Decisión sobre [(r, n), ...] de bloques disjuntos (ver la regla en el docstring del módulo)."""
-
-    if len(blocks) < MIN_BLOCKS or any(n < MIN_BLOCK_SIZE for _, n in blocks):
-        raise ValueError(f"se necesitan >= {MIN_BLOCKS} bloques de >= {MIN_BLOCK_SIZE} semillas")
-    statuses = [block_status(r, n) for r, n in blocks]
-    if all(status == "cumple" for status in statuses):
-        return "met_robustly"
-    if "incumple" in statuses:
+    if n < MIN_SEEDS:
+        raise ValueError(f"se necesitan >= {MIN_SEEDS} semillas")
+    if abs(r) >= BOUND:
         return "not_met"
+    if v3.equivalence_pvalue(r, n) < alpha:
+        return "met"
     return "inconclusive"
+
+
+def pooled_report(sections):
+    """Líneas del resumen agrupado y la decisión, a partir de [(semillas, #β>0.01, K medio), ...]."""
+
+    seeds = [seed for section in sections for seed in section[0]]
+    if len(set(seeds)) != len(seeds):
+        raise ValueError("hay semillas repetidas entre bloques")
+    lines = ["== descriptivo por bloque (estabilidad; no decide) =="]
+    for block_seeds, n_large, occupied in sections:
+        if len(block_seeds) > 3 and np.ptp(n_large) > 0:
+            r = float(stats.pearsonr(n_large, occupied).statistic)
+            low, high = v3.fisher_interval(r, len(block_seeds))
+            lines.append(f"semillas {block_seeds[0]}..{block_seeds[-1]}: r = {r:.3f}, IC 95 % [{low:.3f}, {high:.3f}], "
+                         f"TOST p = {v3.equivalence_pvalue(r, len(block_seeds)):.3f}")
+    x = np.asarray([value for section in sections for value in section[1]], float)
+    y = np.asarray([value for section in sections for value in section[2]], float)
+    lines.append(f"== todas las semillas juntas: semillas {min(seeds)}..{max(seeds)} ==")
+    lines.extend(v3.summary(x, y))
+    r = float(stats.pearsonr(x, y).statistic)
+    lines.append(f"TOST |r| < {BOUND} con todas las semillas (más cifras): p = {v3.equivalence_pvalue(r, x.size):.2g}")
+    lines.append(f"decisión del criterio (b): {criterion_b_decision(r, x.size)}")
+    return lines
 
 
 def load_work(source, single_work):
@@ -81,16 +107,20 @@ def load_work(source, single_work):
 
 
 def fit_point(job):
-    source, single_work, n_iters, burn_in, seed = job
+    source, single_work, n_iters, burn_in, seed, freeze_beta = job
     tokens, vocabulary, _ = load_work(source, single_work)
     observations = ObservationSequence("symbolic", tokens, vocabulary, [""] * len(tokens), [], {})
-    result = TruncatedHDPHMM(n_states=20, n_iters=n_iters, burn_in=burn_in, seed=seed).fit(observations)
+    model_class = TruncatedHDPHMM
+    if freeze_beta:
+        from tests.test_hdp_sampler import _FrozenBetaHDPHMM as model_class
+    result = model_class(n_states=20, n_iters=n_iters, burn_in=burn_in, seed=seed).fit(observations)
     return seed, int((result.diagnostics.initial_beta > 0.01).sum()), float(result.effective_states)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("source", help="«simulada» o un caché .jsonl del runner")
+    parser.add_argument("source", nargs="?", help="«simulada» o un caché .jsonl del runner")
+    parser.add_argument("--resumen", default=None, help="salida guardada de la que recalcular el resumen")
     parser.add_argument("--single-work", type=int, default=200)
     parser.add_argument("--n-blocks", type=int, default=4)
     parser.add_argument("--block-size", type=int, default=50)
@@ -98,37 +128,43 @@ def main():
     parser.add_argument("--n-iters", type=int, default=v3.PREREGISTERED_CHAIN[0])
     parser.add_argument("--burn-in", type=int, default=v3.PREREGISTERED_CHAIN[1])
     parser.add_argument("--n-workers", type=int, default=os.cpu_count() or 1)
+    parser.add_argument("--congelar-beta", action="store_true",
+                        help="control negativo: β fijo en el primer sorteo (defecto H1)")
     args = parser.parse_args()
+
+    if args.resumen is not None:
+        text = Path(args.resumen).read_text(encoding="utf8")
+        chain = v3.CHAIN.search(text)
+        if chain is None:
+            print("AVISO: la salida no declara la cadena; no evalúa el criterio (b)")
+        else:
+            print("\n".join(v3.chain_lines(*(int(value) for value in chain.groups()))))
+        print(f"recalculado desde las filas de {args.resumen}")
+        print("\n".join(pooled_report(v3.parse_rows(text))))
+        return
+    if args.source is None:
+        parser.error("falta «simulada», CACHE.jsonl o --resumen SALIDA.txt")
 
     tokens, _, description = load_work(args.source, args.single_work)
     print("\n".join(v3.chain_lines(20, args.n_iters, args.burn_in)))
     print(f"obra: {description}; eventos: {tokens.size}")
+    if args.congelar_beta:
+        print("CONTROL NEGATIVO: β congelado en el primer sorteo (no es el muestreador de la tesis)")
     seeds = list(range(args.first_seed, args.first_seed + args.n_blocks * args.block_size))
-    jobs = [(args.source, args.single_work, args.n_iters, args.burn_in, seed) for seed in seeds]
+    jobs = [(args.source, args.single_work, args.n_iters, args.burn_in, seed, args.congelar_beta) for seed in seeds]
     start = time.perf_counter()
     with ProcessPoolExecutor(max_workers=args.n_workers) as pool:
         points = sorted(pool.map(fit_point, jobs))
-    elapsed = time.perf_counter() - start
-    print(f"{len(jobs)} ajustes en {elapsed:.1f} s con {args.n_workers} procesos")
+    print(f"{len(jobs)} ajustes en {time.perf_counter() - start:.1f} s con {args.n_workers} procesos")
 
-    blocks = []
+    sections = []
     for index in range(args.n_blocks):
         block = points[index * args.block_size:(index + 1) * args.block_size]
-        x = np.asarray([row[1] for row in block], float)
-        y = np.asarray([row[2] for row in block], float)
         print(f"obras (bloque {index}): semillas {block[0][0]}..{block[-1][0]}")
         for seed, n_large, occupied in block:
             print(f"seed {seed}: #beta_k>0.01={n_large:2d}  K medio={occupied:.3f}")
-        print("\n".join(v3.summary(x, y)))
-        r = float(stats.pearsonr(x, y).statistic)
-        print(f"estado del bloque: {block_status(r, x.size)}")
-        blocks.append((r, x.size))
-    print("== resumen por bloque ==")
-    for index, (r, n) in enumerate(blocks):
-        low, high = v3.fisher_interval(r, n)
-        print(f"bloque {index}: r = {r:.3f}, IC 95 % [{low:.3f}, {high:.3f}], "
-              f"TOST p = {v3.equivalence_pvalue(r, n):.3f}, {block_status(r, n)}")
-    print(f"decisión del criterio (b): {criterion_b_decision(blocks)}")
+        sections.append(tuple(list(column) for column in zip(*block)))
+    print("\n".join(pooled_report(sections)))
 
 
 if __name__ == "__main__":

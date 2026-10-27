@@ -1,0 +1,20 @@
+cadena: K=20, 400 iteraciones, burn-in 200
+recalculado desde las filas de s8_criterio_b_bloques_pdmx200_salida_20261026.txt
+== descriptivo por bloque (estabilidad; no decide) ==
+semillas 0..49: r = -0.109, IC 95 % [-0.376, 0.174], TOST p = 0.085
+semillas 50..99: r = -0.162, IC 95 % [-0.422, 0.121], TOST p = 0.159
+semillas 100..149: r = -0.117, IC 95 % [-0.383, 0.167], TOST p = 0.094
+semillas 150..199: r = 0.087, IC 95 % [-0.196, 0.357], TOST p = 0.064
+== todas las semillas juntas: semillas 0..199 ==
+n semillas = 200
+Pearson r = -0.100 (p = 0.161)
+IC 95 % de Fisher para r = [-0.235, 0.040]
+TOST |r| < 0.3: p = 0.002
+Spearman rho = -0.136 (p = 0.0548)
+pendiente = -0.0674 estados por componente; IC 95 % (t) = [-0.1617, 0.0270]
+IC 95 % bootstrap de la pendiente = [-0.1603, 0.0268]
+rango de #beta_k>0.01 = 3..11; efecto de la pendiente sobre ese rango = -0.539 estados, IC 95 % (t) = [-1.29, 0.22]
+K medio: media 7.921, d.e. entre semillas 1.180, rango 5.040..10.915
+veredicto: |r| < 0.3 demostrado (equivalencia)
+TOST |r| < 0.3 con todas las semillas (más cifras): p = 0.0016
+decisión del criterio (b): met
