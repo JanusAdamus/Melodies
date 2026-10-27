@@ -86,12 +86,22 @@ def _occupied_states(states: np.ndarray, n_states: int, threshold: float) -> int
     return int(np.sum(occupancy >= threshold))
 
 
-def _forward_step_log_scales(samples: list[PosteriorSample], tokens: np.ndarray) -> np.ndarray:
-    """log c_t = log p(x_t | x_<t, θ_s) para cada muestra s (forward escalado en lote)."""
+def _forward_step_log_scales(
+    samples: list[PosteriorSample],
+    tokens: np.ndarray,
+    support: np.ndarray | None = None,
+) -> np.ndarray:
+    """log c_t = log p(x_t | x_<t, θ_s) para cada muestra s (forward escalado en lote).
+
+    Con `support`, cada paso se divide entre p(x_t ∈ support | x_<t, θ_s): la predictiva
+    de un paso renormalizada sobre esos símbolos. El filtrado no cambia.
+    """
 
     initial = np.stack([sample.initial_probs for sample in samples])
     transition = np.stack([sample.transition_matrix for sample in samples])
-    emission = np.stack([sample.emission_matrix for sample in samples])[:, :, tokens]
+    full_emission = np.stack([sample.emission_matrix for sample in samples])
+    emission = full_emission[:, :, tokens]
+    support_mass = None if support is None else full_emission[:, :, support].sum(axis=2)
     log_scales = np.empty((len(samples), tokens.size), dtype=float)
     predicted = initial
     for step in range(tokens.size):
@@ -99,6 +109,8 @@ def _forward_step_log_scales(samples: list[PosteriorSample], tokens: np.ndarray)
         scale = joint.sum(axis=1)
         with np.errstate(divide="ignore"):
             log_scales[:, step] = np.log(scale)
+            if support_mass is not None:
+                log_scales[:, step] -= np.log(np.sum(predicted * support_mass, axis=1))
         filtered = joint / np.where(scale > 0.0, scale, 1.0)[:, None]
         predicted = np.einsum("sk,skj->sj", filtered, transition)
     return log_scales
@@ -108,6 +120,7 @@ def heldout_nll_per_token(
     results: "HDPHMMResult | Sequence[HDPHMMResult]",
     fit_tokens: np.ndarray,
     test_tokens: np.ndarray,
+    support: Sequence[int] | None = None,
 ) -> float:
     """−log p(x_prueba | x_ajuste) / n_prueba con la predictiva posterior del HDP-HMM.
 
@@ -117,6 +130,9 @@ def heldout_nll_per_token(
     se promedia en probabilidad sobre todas las muestras de todas las cadenas:
     p(x_prueba | x_ajuste) ≈ (1/S) Σ_s p(x_prueba | x_ajuste, θ_s).
     Con `fit_tokens` vacío es la predictiva de x_prueba sin contexto.
+    Con `support` (índices del vocabulario, p. ej. las 12 alturas sin BOS), cada
+    predictiva de un paso se renormaliza sobre esos símbolos antes de multiplicarse,
+    como `Comparacion.classical_models.conditional_log_likelihood`.
     """
 
     chains = [results] if isinstance(results, HDPHMMResult) else list(results)
@@ -126,9 +142,12 @@ def heldout_nll_per_token(
         raise ValueError("La parte de prueba no puede estar vacía.")
     if not chains or any(not chain.posterior_samples for chain in chains):
         raise ValueError("Se requiere al menos una cadena con muestras posteriores.")
+    support_indices = None if support is None else np.unique(np.asarray(list(support), dtype=int))
+    if support_indices is not None and not np.all(np.isin(test_tokens, support_indices)):
+        raise ValueError("Todo símbolo de prueba debe estar en el soporte de evaluación.")
     tokens = np.concatenate([fit_tokens, test_tokens])
     per_sample = [
-        _forward_step_log_scales(chain.posterior_samples, tokens)[:, fit_tokens.size :].sum(axis=1)
+        _forward_step_log_scales(chain.posterior_samples, tokens, support_indices)[:, fit_tokens.size :].sum(axis=1)
         for chain in chains
     ]
     log_predictive = np.concatenate(per_sample)

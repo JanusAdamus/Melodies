@@ -75,6 +75,50 @@ class ReportingTests(unittest.TestCase):
 
         self.assertAlmostEqual(got, expected_nll, places=6)
 
+    def test_heldout_renormalizes_each_step_over_the_scoring_support(self) -> None:
+        # Nota 2 de la bitácora: con BOS en el vocabulario de ajuste, cada predictiva
+        # p(x_t | x_<t, θ_s) se renormaliza sobre el soporte (BOS fuera), igual que
+        # Comparacion.conditional_log_likelihood, y luego se promedia sobre muestras.
+        bos = 5
+        support = [0, 1, 2, 3, 4]
+        fit_tokens = np.concatenate([[bos], self.tokens[:240]])
+        fit_tokens[fit_tokens == bos] = 4
+        fit_tokens[0] = bos
+        test_tokens = self.tokens[240:].copy()
+        test_tokens[test_tokens == bos] = 4
+        per_sample = []
+        for sample in self.result.posterior_samples:
+            args = (sample.initial_probs, sample.transition_matrix, sample.emission_matrix)
+            total, prefix = 0.0, list(fit_tokens)
+            for token in test_tokens:
+                context, _ = forward_log_likelihood(*args, np.array(prefix))
+                step = {v: forward_log_likelihood(*args, np.array(prefix + [v]))[0] - context for v in support}
+                total += step[int(token)] - logsumexp(list(step.values()))
+                prefix.append(int(token))
+            per_sample.append(total)
+        expected = -(logsumexp(per_sample) - np.log(len(per_sample))) / test_tokens.size
+
+        got = heldout_nll_per_token(self.result, fit_tokens, test_tokens, support=support)
+
+        self.assertAlmostEqual(got, expected, places=6)
+        self.assertLess(got, heldout_nll_per_token(self.result, fit_tokens, test_tokens))
+        self.assertAlmostEqual(
+            heldout_nll_per_token(self.result, fit_tokens, test_tokens, support=range(6)),
+            heldout_nll_per_token(self.result, fit_tokens, test_tokens),
+            places=10,
+        )
+        with self.assertRaises(ValueError):
+            heldout_nll_per_token(self.result, fit_tokens, np.array([bos]), support=support)
+
+    def test_trace_rows_number_every_iteration_including_burn_in(self) -> None:
+        # Nota 1 de la bitácora: Comparacion descarta iteration <= burn_in.
+        rows = self.result.diagnostics.trace_rows()
+        self.assertEqual([row["iteration"] for row in rows], list(range(1, 41)))
+        self.assertEqual(rows[0]["burn_in"], 20)
+        self.assertEqual(
+            [sample.iteration for sample in self.result.posterior_samples], list(range(21, 41))
+        )
+
     def test_heldout_pools_chains_and_accepts_empty_context(self) -> None:
         test_tokens = self.tokens[240:]
         pooled = heldout_nll_per_token([self.result, self.result], self.tokens[:0], test_tokens)
