@@ -121,7 +121,7 @@ def compare_models(
             {
                 "model": "finite_hmm",
                 "log_likelihood": finite_result.log_likelihood,
-                "effective_states": len(finite_result.active_states),
+                "effective_states": finite_result.effective_states,
                 "n_segments": finite_seg["n_segments"],
                 "mean_segment_length": finite_seg["mean_segment_length"],
                 "trajectory_stability": 1.0,

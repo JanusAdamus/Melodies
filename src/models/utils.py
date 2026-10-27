@@ -162,6 +162,13 @@ def dirichlet_logpdf(x: np.ndarray, alpha: np.ndarray) -> float:
     return total
 
 
+def occupied_state_count(states: np.ndarray, n_states: int, threshold: float) -> int:
+    """Número de estados con ocupación >= `threshold` en una trayectoria (preregistro)."""
+
+    occupancy = np.bincount(np.asarray(states, dtype=int), minlength=n_states) / len(states)
+    return int(np.sum(occupancy >= threshold))
+
+
 def count_transitions(states: np.ndarray, n_states: int) -> np.ndarray:
     states = np.asarray(states, dtype=int)
     if states.size < 2:

@@ -35,3 +35,7 @@ htmlcov/
 notebooks/.ipynb_checkpoints/
 notebooks/.mplconfig/
 .mplconfig/
+visualizaciones/salida/
+visualizaciones/media/
+visualizaciones/salida/
+visualizaciones/media/

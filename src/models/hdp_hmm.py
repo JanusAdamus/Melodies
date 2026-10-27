@@ -16,6 +16,7 @@ from .utils import (
     contiguous_segments,
     count_emissions,
     count_transitions,
+    occupied_state_count,
     sample_dirichlet,
     set_random_seed,
 )
@@ -81,9 +82,7 @@ class PosteriorSample:
         )
 
 
-def _occupied_states(states: np.ndarray, n_states: int, threshold: float) -> int:
-    occupancy = np.bincount(states, minlength=n_states) / states.size
-    return int(np.sum(occupancy >= threshold))
+_occupied_states = occupied_state_count
 
 
 def _forward_step_log_scales(
