@@ -2,7 +2,8 @@
 import json, sys
 sys.path.insert(0, sys.argv[1])
 from next_token_experiment.schemas import PreparedPiece
-from Comparacion.runner import _build_grouped_fixed_splits
+# El runner usa el constructor compartido de Comparacion.splits (agrupa por metadatos y contenido).
+from Comparacion.splits import build_grouped_fixed_splits
 import dataclasses
 fields = {f.name for f in dataclasses.fields(PreparedPiece)}
 rows = [json.loads(l) for l in open(sys.argv[2], encoding="utf-8")]
@@ -19,7 +20,7 @@ def build(posix):
         out.append(PreparedPiece(**d))
     return out
 for posix in (False, True):
-    fs = _build_grouped_fixed_splits(build(posix), test_fraction=0.15, validation_fraction=0.10, seed=7)
+    fs = build_grouped_fixed_splits(build(posix), test_fraction=0.15, validation_fraction=0.10, seed=7)
     got = {p.piece_id.replace("/", "\\") for p in fs.test_pieces}
     ref = set(plan["test"]["piece_ids"])
     print(f"ids_posix={posix}: test={len(got)}  coincide con plan={got == ref}  interseccion={len(got & ref)}")

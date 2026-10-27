@@ -22,6 +22,6 @@ res = {}
 for ds in (1, 2):
     for ms in (1, 2):
         m = _build_transformer_model(cfg, ms)
-        dl = _build_transformer_dataloaders(cfg, subsets[ds][1.0], val, test)
+        dl = _build_transformer_dataloaders(cfg, subsets[ds][1.0], val, test, model_seed=ms, data_seed=ds)
         m.fit(dl["train"], dl["validation"]); res[(ds, ms)] = m.evaluate(dl["test"])["summary"]["nll_per_token"]
 for k, v in res.items(): print(f"data_seed={k[0]} model_seed={k[1]} test_nll={v!r}")
