@@ -2,6 +2,9 @@ Corrida del 2026-10-26 en la computadora con GPU (sólo CPU), rama fix/auditoria
 Caché: artifacts/corpus_cache_3000.jsonl (PDMX, extracción de agosto). No es el obs_cache.pkl del auditor
 (multicorpus_full no está en esta computadora), así que las obras difieren de s5_beta_seed_v2.
 K=20, 80 iteraciones, burn-in 40, semillas 7..56 (50).
+AVISO (revisión posterior): 80/40 NO es la cadena del preregistro (400/200), así que esta salida
+no evalúa el criterio (b); con datos simulados 80/40 sí muestra dependencia (r = 0.318, p = 0.025).
+La misma obra con 400/200 está en s5_beta_seed_v3_salida_400_20261026.txt.
 Criterio (b) de PROMPT_CLAUDE.md, |r| < 0.3 (corregido tras la revisión adversarial del 2026-10-26):
 la estimación puntual queda por debajo de 0.3 en ambas corridas, pero eso NO demuestra independencia.
 Con n = 50, el IC 95 % de Fisher para r es [-0.416, 0.128] (15 obras) y [-0.212, 0.342] (una obra);
