@@ -292,6 +292,66 @@ class ResumeGuardTests(unittest.TestCase):
         self.assertEqual(mocks["finite_constructor"].call_count, 0)
 
 
+class ResumeReferenceSplitTests(unittest.TestCase):
+    """--resume no puede borrar ni cambiar la diferencia con la partición de
+    referencia que la corrida ya reportó (preregistro B)."""
+
+    def _config(self, directory: str, reference: Path | None):
+        return replace(
+            _runner_config(directory),
+            train_fractions=(0.5, 1.0),
+            reference_splits_path=None if reference is None else str(reference),
+        )
+
+    def _reference(self, directory: str, name: str = "ref.json", ids=None) -> Path:
+        path = Path(directory) / name
+        if ids is None:
+            _run(directory, "original", plan_only=True)
+            plan = json.loads((Path(directory) / "original" / "execution_plan.json").read_text(encoding="utf-8"))
+            path.write_text(json.dumps({"splits": plan["splits"]}), encoding="utf-8")
+        else:
+            path.write_text(json.dumps({"test": ids}), encoding="utf-8")
+        return path
+
+    def test_resume_without_the_reference_is_rejected_and_keeps_the_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            reference = self._reference(directory)
+            _run(directory, "run", config=self._config(directory, reference))
+            summary_path = Path(directory) / "run" / "run_summary.json"
+            before = summary_path.read_text(encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "referencia"):
+                _run(directory, "run", config=self._config(directory, None), resume=True)
+            self.assertEqual(summary_path.read_text(encoding="utf-8"), before)
+            self.assertEqual(json.loads(before)["reference_split_comparison"]["status"], "reported")
+
+    def test_resume_with_a_different_reference_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            reference = self._reference(directory)
+            other = self._reference(directory, "otra.json", ids=["x", "y"])
+            _run(directory, "run", config=self._config(directory, reference))
+            with self.assertRaisesRegex(ValueError, "referencia"):
+                _run(directory, "run", config=self._config(directory, other), resume=True)
+
+    def test_resume_adding_a_reference_the_run_did_not_have_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            reference = self._reference(directory)
+            _run(directory, "run", config=self._config(directory, None))
+            with self.assertRaisesRegex(ValueError, "referencia"):
+                _run(directory, "run", config=self._config(directory, reference), resume=True)
+
+    def test_the_same_reference_moved_elsewhere_resumes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            reference = self._reference(directory)
+            _run(directory, "run", config=self._config(directory, reference))
+            moved = Path(directory) / "otra_unidad" / "ref.json"
+            moved.parent.mkdir()
+            moved.write_bytes(reference.read_bytes())
+            mocks = _run(directory, "run", config=self._config(directory, moved), resume=True)
+            summary = json.loads((Path(directory) / "run" / "run_summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(mocks["finite_constructor"].call_count, 0)
+        self.assertEqual(summary["reference_split_comparison"]["status"], "reported")
+
+
 class ArtifactPlanTests(unittest.TestCase):
     def test_every_file_a_full_run_writes_is_in_the_artifact_plan(self) -> None:
         import fnmatch

@@ -124,7 +124,8 @@ def _config_sha256(config: LearningCurveConfig) -> str:
     Las rutas no entran: mover la corrida o el corpus a otra unidad no es otra
     configuración.  El contenido que importa ya se compara aparte (corpus y
     partición por su propio hash) o entra aquí por su contenido (anotaciones
-    estructurales).  ``reference_splits_path`` sólo cambia el reporte.
+    estructurales).  ``reference_splits_path`` no entra por su ruta: --resume
+    compara el contenido de la referencia aparte (``reference_splits_sha256``).
     """
 
     payload = asdict(config)
@@ -168,6 +169,12 @@ def _guard_resume_inputs(
     if recorded.get("config_sha256") != expected["config_sha256"]:
         raise ValueError(
             "No puedo reanudar: la configuración no coincide con la del checkpoint."
+        )
+    if recorded.get("reference_splits_sha256") != expected["reference_splits_sha256"]:
+        raise ValueError(
+            "No puedo reanudar: la partición de referencia (--reference-splits, por su "
+            "contenido) no es la del checkpoint; reanudar sin ella o con otra borraría o "
+            "cambiaría la diferencia con el conjunto de prueba anterior ya reportada."
         )
 
 
@@ -234,6 +241,15 @@ def _load_reference_splits(path_value: str | None) -> dict[str, list[str]] | Non
     if not reference:
         raise ValueError(f"{path_value} no contiene train_pool, validation ni test.")
     return reference
+
+
+def _reference_splits_sha256(reference: Mapping[str, list[str]] | None) -> str | None:
+    """Hash del contenido de la partición de referencia; ``None`` si no se dio."""
+
+    if reference is None:
+        return None
+    encoded = json.dumps({name: list(ids) for name, ids in reference.items()}, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _json_safe(value: object) -> object:
@@ -1665,14 +1681,14 @@ def run_learning_curve_experiment(
         for data_seed in config.data_seeds
     }
 
-    manifest = split_manifest(
-        fixed_splits,
-        reference=_load_reference_splits(config.reference_splits_path),
-    )
+    reference_splits = _load_reference_splits(config.reference_splits_path)
+    manifest = split_manifest(fixed_splits, reference=reference_splits)
     resume_inputs = {
         "split_sha256": manifest["sha256"],
         "corpus_sha256": _corpus_sha256(preparation.pieces),
         "config_sha256": _config_sha256(config),
+        # La ruta no entra en config_sha256; la referencia cuenta por su contenido.
+        "reference_splits_sha256": _reference_splits_sha256(reference_splits),
     }
     checkpoint_path = output_root / "checkpoint.jsonl"
     if resume:
