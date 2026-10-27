@@ -100,3 +100,18 @@ marginales; el reporte lista esos pares. En el eje de costo se usa la
 incertidumbre de cada medición de costo, sin el tiempo de evaluación. Esta regla
 está implementada en `Comparacion/runner.py` (`PARETO_MIN_PAIRED_WORKS = 10`)
 de la rama `fix/auditoria-comparacion`.
+
+## Aclaración 2, 2026-10-27 (antes de ver resultados de las corridas corregidas)
+
+Decisión de Adrián. Precisa el estimando de las reglas de decisión de A y B; no
+cambia ninguna regla.
+
+**Estimando que decide.** «Diferencia pareada por obra» es la media, sobre las
+obras de prueba, de la diferencia de NLL por nota de cada obra, con el mismo
+peso para cada obra. Su IC es bootstrap por obra (remuestreo de obras) ajustado
+por Holm por pasos sobre la familia preregistrada: las tres comparaciones de A y
+las seis de B. La diferencia ponderada por tokens (cada nota con el mismo peso)
+se reporta como secundaria, con su propio IC, y no decide.
+
+**Familia de B.** Las seis comparaciones incluyen al VOMM. Una corrida sin VOMM
+no evalúa la regla de B; si se hace, se declara exploratoria.
