@@ -174,6 +174,10 @@ _VERDICT_SEVERITY = (
     "no_evidence",
     "chains_too_short",
     "drift_detected",
+    # Semillas de una misma celda que eligieron hiperparámetros distintos y cuyas
+    # cadenas discrepan: posible multimodalidad de la selección.  No se suaviza a
+    # «una sola cadena» por haberlas separado por posterior.
+    "selected_hyperparameters_disagree",
     "chains_disagree",
     "single_chain_no_cross_chain_evidence",
     "stable_within_the_observed_window",
@@ -208,12 +212,14 @@ def build_cell_chain_diagnostics(
     groups: dict[
         tuple[tuple[object, ...], tuple[object, ...]], dict[int, list[Mapping[str, object]]]
     ] = {}
+    chains_by_cell: dict[tuple[object, ...], dict[int, list[Mapping[str, object]]]] = {}
     for row in trace_rows:
         if _in_burn_in(row, burn_in):
             continue
         cell_key = tuple(row.get(name) for name in _CELL_KEYS)
         posterior_key = tuple(row.get(name) for name in _POSTERIOR_KEYS)
         groups.setdefault((cell_key, posterior_key), {}).setdefault(row["model_seed"], []).append(row)
+        chains_by_cell.setdefault(cell_key, {}).setdefault(row["model_seed"], []).append(row)
 
     posteriors_by_cell: dict[tuple[object, ...], set[tuple[object, ...]]] = {}
     for cell_key, posterior_key in groups:
@@ -238,10 +244,32 @@ def build_cell_chain_diagnostics(
             groups.items(), key=lambda item: (tuple(map(str, item[0][0])), tuple(map(str, item[0][1])))
         )
     ]
+    # En una celda mixta las cadenas no estiman la misma posterior, pero que las
+    # semillas discrepen entre sí es evidencia que el veredicto global no puede
+    # perder: se contrastan todas las semillas de la celda y, si discrepan, la celda
+    # cuenta como «selected_hyperparameters_disagree».
+    mixed_reports = []
+    for cell in mixed_cells:
+        cell_key = tuple(cell[name] for name in _CELL_KEYS)
+        diagnostics = build_chain_diagnostics(chains_by_cell[cell_key], min_iterations=min_iterations)
+        cross = diagnostics["cross_chain"]
+        disagree = cross["log_likelihood_agree"] is False or cross["active_states_agree"] is False
+        mixed_reports.append(
+            {
+                "cell": cell,
+                "verdict": (
+                    "selected_hyperparameters_disagree" if disagree else "selected_hyperparameters_agree"
+                ),
+                "diagnostics": diagnostics,
+            }
+        )
     verdict_counts: dict[str, int] = {}
     for report in cell_reports:
         verdict = str(report["diagnostics"]["verdict"])
         verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+    for report in mixed_reports:
+        if report["verdict"] == "selected_hyperparameters_disagree":
+            verdict_counts[report["verdict"]] = verdict_counts.get(report["verdict"], 0) + 1
     present = [verdict for verdict in _VERDICT_SEVERITY if verdict in verdict_counts]
     return {
         "status": "ok" if cell_reports else "diagnostics_inconclusive",
@@ -252,9 +280,13 @@ def build_cell_chain_diagnostics(
         # Celdas donde las semillas eligieron hiperparámetros distintos: sus cadenas
         # no se comparan entre sí, y hay menos evidencia entre cadenas por posterior.
         "cells_with_mixed_selected_hyperparameters": mixed_cells,
+        "mixed_cell_cross_posterior_diagnostics": mixed_reports,
         "burn_in_excluded": int(burn_in),
         "min_iterations": int(min_iterations),
-        "n_cells": len(cell_reports),
+        # n_cells: celdas (split_seed, data_seed, frac) distintas; cada celda puede
+        # tener varios grupos (celda, posterior) en «cells».
+        "n_cells": len(chains_by_cell),
+        "n_cell_posterior_groups": len(cell_reports),
         "cells": cell_reports,
         "convergence_claimed": False,
         "policy": POLICY,

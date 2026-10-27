@@ -104,7 +104,8 @@ class CellChainDiagnosticsTests(unittest.TestCase):
         report = build_cell_chain_diagnostics(low + high, burn_in=BURN_IN, min_iterations=N_ITERS - BURN_IN)
 
         self.assertNotIn("chains_disagree", report["verdict_counts"])
-        self.assertEqual(report["n_cells"], 2)
+        self.assertEqual(report["n_cells"], 1)
+        self.assertEqual(report["n_cell_posterior_groups"], 2)
         for cell in report["cells"]:
             with self.subTest(posterior=cell["posterior"]):
                 self.assertEqual(cell["diagnostics"]["n_chains"], 1)
@@ -141,6 +142,54 @@ class CellChainDiagnosticsTests(unittest.TestCase):
         self.assertEqual(Path(path).name, "hdp_traces.csv")
         self.assertIn("in_burn_in", lines[0].split(","))
         self.assertEqual(len(lines), N_ITERS + 1)
+
+
+class MixedHyperparameterCellTests(unittest.TestCase):
+    """Revisión adversarial de H7: separar por posterior no debe suavizar el veredicto."""
+
+    def _rows(self, offsets: dict[int, float]) -> list[dict[str, object]]:
+        return [
+            {
+                **row,
+                "alpha": float(seed),
+                "alpha0": 1.0,
+                "gamma": 1.0,
+                "log_likelihood": row["log_likelihood"] + offset,
+            }
+            for seed, offset in offsets.items()
+            for row in _chain(seed, **_cell(1))
+        ]
+
+    def test_seeds_that_select_different_posteriors_and_disagree_are_not_softened(self) -> None:
+        # adv_hdp.py: 1 celda, 3 semillas con alpha 1/2/3 y niveles muy distintos.
+        rows = self._rows({1: 0.0, 2: -25000.0, 3: -50000.0})
+
+        report = build_cell_chain_diagnostics(rows, burn_in=BURN_IN, min_iterations=N_ITERS - BURN_IN)
+
+        self.assertEqual(report["n_cells"], 1)
+        self.assertEqual(report["n_cell_posterior_groups"], 3)
+        self.assertEqual(report["verdict"], "selected_hyperparameters_disagree")
+        (mixed,) = report["mixed_cell_cross_posterior_diagnostics"]
+        self.assertEqual(mixed["cell"], _cell(1))
+        self.assertEqual(mixed["verdict"], "selected_hyperparameters_disagree")
+        self.assertFalse(mixed["diagnostics"]["cross_chain"]["log_likelihood_agree"])
+
+    def test_mixed_posteriors_that_agree_keep_the_per_posterior_verdict(self) -> None:
+        rows = self._rows({1: 0.0, 2: 0.0})
+
+        report = build_cell_chain_diagnostics(rows, burn_in=BURN_IN, min_iterations=N_ITERS - BURN_IN)
+
+        self.assertEqual(report["verdict"], "single_chain_no_cross_chain_evidence")
+        (mixed,) = report["mixed_cell_cross_posterior_diagnostics"]
+        self.assertEqual(mixed["verdict"], "selected_hyperparameters_agree")
+
+    def test_disagreement_across_posteriors_ranks_above_single_chain_evidence(self) -> None:
+        from Comparacion.hdp_diagnostics import _VERDICT_SEVERITY
+
+        self.assertLess(
+            _VERDICT_SEVERITY.index("selected_hyperparameters_disagree"),
+            _VERDICT_SEVERITY.index("single_chain_no_cross_chain_evidence"),
+        )
 
 
 if __name__ == "__main__":
