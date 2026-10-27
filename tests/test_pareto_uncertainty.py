@@ -426,6 +426,14 @@ class WorkMeanParetoTests(unittest.TestCase):
         # El preregistro sólo dice «la incertidumbre de cada medición de costo»: el
         # 10 % es una decisión de diseño y la salida no debe hacerla pasar por preregistrada.
         self.assertIn("not_in_preregistration", band["status"])
+        # La documentación nombrada existe y declara la banda.
+        from pathlib import Path
+
+        doc = Path(__file__).resolve().parents[1] / band["documented_in"]
+        self.assertTrue(doc.is_file(), doc)
+        text = doc.read_text(encoding="utf-8")
+        self.assertIn("PARETO_TIME_RELATIVE_TOLERANCE", text)
+        self.assertIn("no está en el preregistro", text)
         candidate = partial["candidates"][0]
         self.assertAlmostEqual(candidate["mean_selected_fit_wall_clock_s_interval"][0], 90.0)
         self.assertAlmostEqual(candidate["mean_selected_fit_wall_clock_s_interval"][1], 110.0)

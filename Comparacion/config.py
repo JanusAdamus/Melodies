@@ -51,8 +51,10 @@ class LearningCurveConfig:
     bootstrap_seed: int = 17
     boundary_tolerance: int = 1
     structural_annotations_path: str | None = None
-    #: execution_plan.json (o {partición: [ids]}) de la corrida original; si se da,
-    #: splits/manifest.json declara cuántas piezas comparte la partición nueva.
+    #: Partición de la corrida original (su directorio, su splits/, test_pieces.json,
+    #: val_pieces.json, un execution_plan.json o {partición: [ids]}); sólo se lee.
+    #: Si se da, el manifiesto, el plan y run_summary.json reportan la diferencia;
+    #: si no, declaran que no se reportó (preregistro B).
     reference_splits_path: str | None = None
     #: C1: búsqueda de arquitectura/hiperparámetros del transformador hecha fuera
     #: de esta corrida. Sin declararla, su costo queda como no medido.

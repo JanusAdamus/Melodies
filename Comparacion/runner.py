@@ -1407,7 +1407,7 @@ _PARETO_TIME_INTERVAL = {
     "max(selected_fit_wall_clock_s) * (1 + relative_tolerance)] over the runs at frac = 1.0",
     "relative_tolerance": PARETO_TIME_RELATIVE_TOLERANCE,
     "status": "design_choice_fixed_before_the_corrected_runs_not_in_preregistration",
-    "documented_in": "docs/comparacion-pareto.md",
+    "documented_in": "docs/multidimensional-evaluation.md",
 }
 
 #: Diseño (revisión de C5): un IC pareado sobre menos obras en común no decide la
