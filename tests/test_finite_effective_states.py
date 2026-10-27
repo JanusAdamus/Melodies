@@ -7,6 +7,8 @@ posterior de estados. No se compara un K del HDP contra un K de Viterbi.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
+import inspect
 import unittest
 from unittest.mock import patch
 
@@ -92,12 +94,21 @@ class FiniteEffectiveStatesTests(unittest.TestCase):
 
         sequence = _sequence(_TOKENS_98_1_1)
         row = pd.Series({"path": "obra.musicxml", "title": "obra"})
-        with patch.object(library_batch, "parse_score", return_value=None), patch.object(
-            library_batch, "extract_events", return_value=[]
-        ), patch.object(library_batch, "build_observation_sequence", return_value=sequence), patch.object(
-            library_batch, "FiniteChordHMM", _three_state_model
-        ):
-            record = library_batch.analyze_catalog_piece(row, "pitch_class", "finite_hmm", False, {})
+        # La firma cambia entre ramas: en fix/auditoria-tesis recibe los eventos ya
+        # extraídos; en la base, la ruta de la partitura y prefer_treble.
+        parameters = inspect.signature(library_batch.analyze_catalog_piece).parameters
+        kwargs = {"row": row, "obs_type": "pitch_class", "model": "finite_hmm", "hdp_params": {}}
+        if "events" in parameters:
+            kwargs["events"] = []
+        else:
+            kwargs["prefer_treble"] = False
+        with ExitStack() as stack:
+            for name in ("parse_score", "extract_events"):
+                if hasattr(library_batch, name):
+                    stack.enter_context(patch.object(library_batch, name, return_value=[]))
+            stack.enter_context(patch.object(library_batch, "build_observation_sequence", return_value=sequence))
+            stack.enter_context(patch.object(library_batch, "FiniteChordHMM", _three_state_model))
+            record = library_batch.analyze_catalog_piece(**kwargs)
         self.assertAlmostEqual(record["finite_effective_states"], 1.0)
 
 
