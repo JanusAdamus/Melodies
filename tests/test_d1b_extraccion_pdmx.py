@@ -346,6 +346,105 @@ class LegacyCacheParametersTests(unittest.TestCase):
         )
 
 
+class CacheRepresentationTests(unittest.TestCase):
+    """Los tokens del cache dependen de la representacion (y de duration_bins y
+    metrical_levels cuando la representacion los usa): un cache de otra representacion
+    no se reutiliza."""
+
+    def _pitch_class_cache(self, tmp: str) -> tuple[Path, Path]:
+        root = Path(tmp) / "scores"
+        root.mkdir()
+        _write_two_part_score(root / "a.musicxml")
+        cache = Path(tmp) / "cache.jsonl"
+        prepare_corpus(_config(root), n_workers=1, cache_path=cache, progress_every=0)
+        return root, cache
+
+    def test_cache_from_another_representation_is_refused_and_left_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, cache = self._pitch_class_cache(tmp)
+            before = cache.read_text(encoding="utf-8")
+
+            with self.assertRaises(CorpusCacheModeError):
+                prepare_corpus(
+                    _config(root),
+                    representation="pitch_class_duration",
+                    n_workers=1,
+                    cache_path=cache,
+                    progress_every=0,
+                )
+            self.assertEqual(cache.read_text(encoding="utf-8"), before)
+
+    def test_same_representation_still_reuses_the_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, cache = self._pitch_class_cache(tmp)
+            reused = prepare_corpus(
+                _config(root), n_workers=1, cache_path=cache, progress_every=0
+            )
+            self.assertEqual([piece.tokens for piece in reused.pieces], [[7, 2]])
+            self.assertEqual(reused.pieces[0].representation, "pitch_class")
+
+    def test_cache_with_other_duration_bins_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "scores"
+            root.mkdir()
+            _write_two_part_score(root / "a.musicxml")
+            cache = Path(tmp) / "cache.jsonl"
+            config = _config(root)
+            prepare_corpus(
+                config,
+                representation="pitch_class_duration",
+                n_workers=1,
+                cache_path=cache,
+                progress_every=0,
+            )
+            other_bins = replace(
+                config,
+                representation=replace(config.representation, duration_bins=(1.0, 2.0)),
+            )
+            with self.assertRaises(CorpusCacheModeError):
+                prepare_corpus(
+                    other_bins,
+                    representation="pitch_class_duration",
+                    n_workers=1,
+                    cache_path=cache,
+                    progress_every=0,
+                )
+
+    def test_exclusions_record_the_representation(self) -> None:
+        """Una exclusion por tokenizacion tambien depende de la representacion."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "scores"
+            root.mkdir()
+            _write_two_part_score(root / "a.musicxml")
+            cache = Path(tmp) / "cache.jsonl"
+            config = _config(root)
+            config = replace(config, corpus=replace(config.corpus, min_events_per_piece=99))
+            prepare_corpus(config, n_workers=1, cache_path=cache, progress_every=0)
+
+            rows = [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([row["kind"] for row in rows], ["exclusion"])
+            self.assertEqual(rows[0]["representation"], "pitch_class")
+
+    def test_august_cache_rows_without_representation_on_exclusions_are_accepted(self) -> None:
+        """Los caches de agosto guardan representacion solo en las piezas (pitch_class)."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, cache = self._pitch_class_cache(tmp)
+            rows = [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines()]
+            for row in rows:
+                for key in ("duration_bins", "metrical_levels"):
+                    row.pop(key, None)
+            rows.append({"kind": "exclusion", "piece_id": "x", "path": "x",
+                         "reason": "too_short", "detail": "", "extraction_mode": "melody"})
+            cache.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+            reused = prepare_corpus(
+                _config(root), n_workers=1, cache_path=cache, progress_every=0
+            )
+            self.assertEqual([piece.tokens for piece in reused.pieces], [[7, 2]])
+
+
 def _write_run_directory(results_root: Path, preprocessing: dict) -> Path:
     """Directorio de una corrida previa: config.json y una celda en checkpoint.jsonl."""
 

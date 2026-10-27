@@ -151,6 +151,70 @@ def check_corpus_cache_mode(
         )
 
 
+# Los tokens tambien dependen de la representacion y, segun cual, de duration_bins y
+# metrical_levels; el cache guarda esos campos en cada fila y no se reutiliza con otros.
+REPRESENTATION_KEY = "representation"
+TOKEN_PARAMETER_KEYS = ("duration_bins", "metrical_levels")
+_TOKEN_PARAMETERS_BY_REPRESENTATION = {
+    "pitch_class": (),
+    "pitch_class_duration": ("duration_bins",),
+    "event_pitch_duration_metrical": ("duration_bins", "metrical_levels"),
+}
+
+
+def token_fields(config: RepresentationConfig, representation: str | None = None) -> dict:
+    """Campos que, junto con la extraccion, determinan los tokens de una partitura."""
+
+    target = representation or config.primary
+    if target not in _TOKEN_PARAMETERS_BY_REPRESENTATION:
+        raise ValueError(f"Unsupported representation: {target}")
+    fields: dict[str, object] = {REPRESENTATION_KEY: target}
+    for key in _TOKEN_PARAMETERS_BY_REPRESENTATION[target]:
+        fields[key] = list(getattr(config, key))
+    return fields
+
+
+def _token_signature(fields: dict[str, object]) -> tuple | None:
+    """Firma de tokens de una fila; ``None`` si la fila no guarda representacion.
+
+    Las exclusiones de los caches anteriores no guardan representacion; las piezas de esos
+    mismos caches si, y son las que fijan la firma del cache.
+    """
+
+    if REPRESENTATION_KEY not in fields:
+        return None
+    target = str(fields[REPRESENTATION_KEY])
+    parameters = []
+    for key in _TOKEN_PARAMETERS_BY_REPRESENTATION.get(target, TOKEN_PARAMETER_KEYS):
+        value = fields.get(key)
+        parameters.append(None if value is None else tuple(value))
+    return (target, *parameters)
+
+
+def check_corpus_cache_representation(
+    cache_path: str | Path | None,
+    config: RepresentationConfig,
+    representation: str | None = None,
+) -> None:
+    """Se niega a usar un cache cuyos tokens salieron de otra representacion."""
+
+    expected = _token_signature(token_fields(config, representation))
+    if cache_path is None or not Path(cache_path).exists():
+        return
+    signatures: set[tuple] = set()
+    with Path(cache_path).open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                signature = _token_signature(json.loads(line))
+                if signature is not None:
+                    signatures.add(signature)
+    if signatures and signatures != {expected}:
+        raise CorpusCacheModeError(
+            f"El cache {cache_path} tiene tokens {sorted(signatures, key=repr)} y la "
+            f"corrida pide {expected}; usa un cache propio de esa representacion."
+        )
+
+
 def _duration_to_bin_index(duration: float, duration_bins: tuple[float, ...]) -> int:
     closest = min(duration_bins, key=lambda item: abs(item - duration))
     return duration_bins.index(closest)
@@ -367,9 +431,12 @@ def _prepare_one_without_vocabulary(
     return prepared
 
 
-def _encode_cache_entry(entry: PreparedPiece | ExclusionRecord, signature: tuple) -> str:
+def _encode_cache_entry(
+    entry: PreparedPiece | ExclusionRecord, signature: tuple, tokens: dict[str, object]
+) -> str:
     payload = asdict(entry)
     payload.update(zip(CACHE_SIGNATURE_KEYS, signature))
+    payload.update(tokens)
     if isinstance(entry, ExclusionRecord):
         payload["kind"] = "exclusion"
     else:
@@ -383,9 +450,10 @@ def _decode_cache_entry(
     vocabulary: list[str],
 ) -> PreparedPiece | ExclusionRecord:
     kind = payload.pop("kind")
-    for key in CACHE_SIGNATURE_KEYS:  # ya validados por check_corpus_cache_mode
+    for key in (*CACHE_SIGNATURE_KEYS, *TOKEN_PARAMETER_KEYS):  # ya validados
         payload.pop(key, None)
     if kind == "exclusion":
+        payload.pop(REPRESENTATION_KEY, None)
         return ExclusionRecord(**payload)  # type: ignore[arg-type]
     # Las cachés anteriores al 2026-10-26 guardan la obra canónica truncada
     # por Path().stem (auditoría C3); se recalcula con la regla vigente.
@@ -439,6 +507,8 @@ def prepare_corpus(
 
     signature = extraction_signature(config.preprocessing)
     check_corpus_cache_mode(cache_path, config.preprocessing)
+    tokens = token_fields(config.representation, representation)
+    check_corpus_cache_representation(cache_path, config.representation, representation)
 
     entries: list[PreparedPiece | ExclusionRecord] = []
     cache_file = Path(cache_path) if cache_path is not None else None
@@ -478,7 +548,14 @@ def prepare_corpus(
             _silence_worker_warnings()
             stream = (worker(path) for path in pending)
             _consume_prepared(
-                stream, entries, cache_handle, vocabulary, len(pending), progress_every, signature
+                stream,
+                entries,
+                cache_handle,
+                vocabulary,
+                len(pending),
+                progress_every,
+                signature,
+                tokens,
             )
         else:
             with ProcessPoolExecutor(
@@ -494,6 +571,7 @@ def prepare_corpus(
                     len(pending),
                     progress_every,
                     signature,
+                    tokens,
                 )
     finally:
         if cache_handle is not None:
@@ -515,12 +593,13 @@ def _consume_prepared(
     total: int,
     progress_every: int,
     signature: tuple,
+    tokens: dict[str, object],
 ) -> None:
     """Drain prepared scores, restoring the shared vocabulary and flushing the cache."""
 
     for index, prepared in enumerate(stream, start=1):
         if cache_handle is not None:
-            cache_handle.write(_encode_cache_entry(prepared, signature) + "\n")
+            cache_handle.write(_encode_cache_entry(prepared, signature, tokens) + "\n")
             if index % 200 == 0:
                 cache_handle.flush()
         if isinstance(prepared, PreparedPiece):
