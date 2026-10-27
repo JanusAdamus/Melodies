@@ -119,34 +119,77 @@ def _log_beta_posterior(beta: np.ndarray, state_sequences, model: TruncatedHDPHM
     return total
 
 
+#: Escenarios de β | z.  Con un solo inicio por estado, Γ(c+1)/Γ(c) = c y α0 se cancela de
+#: p(β | z), así que ningún escenario así distingue α0 de α.  Por eso hay dos escenarios:
+#: - «muchos_inicios»: 16 secuencias y α0 = 10 frente a α = 1; pesan las mesas iniciales y γ/L.
+#: - «rachas_largas»: una secuencia con rachas largas; la diagonal (κ en el CRT y la
+#:   corrección w) domina β.
+BETA_SCENARIOS = {
+    "muchos_inicios": (
+        dict(alpha=1.0, alpha0=10.0, gamma=3.0),
+        [[0] * 25 + [1] * 15 + [0] * 20 + [2] * 10 + [1] * 30] + [[0, 0]] * 10 + [[1, 1]] * 4 + [[2, 2]] * 2,
+    ),
+    "rachas_largas": (
+        dict(alpha=2.0, alpha0=1.5, gamma=3.0),
+        [[0] * 50 + [1] * 30 + [0] * 10 + [2] * 10],
+    ),
+}
+#: Error Monte Carlo del muestreador correcto (cadenas 0..3, 20 000 iteraciones): ≤ 0.0027 en
+#: medias y ≤ 0.0019 en d.e.  Diferencia máxima de mutantes de `_update_beta` con estos
+#: escenarios (cadena 0): CRT sin κ 0.042; w con probabilidad ρ 0.037; γ en vez de γ/L 0.028
+#: (muchos_inicios) y 0.069 (rachas_largas); α en vez de α0 en las mesas iniciales 0.097.
+BETA_ATOL = 0.01
+
+
+def _scenario(name: str, kappa: float, **override) -> tuple[TruncatedHDPHMM, list[np.ndarray]]:
+    params, sequences = BETA_SCENARIOS[name]
+    model = TruncatedHDPHMM(n_states=3, kappa=kappa, n_iters=2, burn_in=0, **{**params, **override})
+    return model, [np.asarray(sequence) for sequence in sequences]
+
+
+def _exact_moments(model: TruncatedHDPHMM, state_sequences) -> tuple[np.ndarray, np.ndarray]:
+    """Media y d.e. de β | z por muestreo de importancia con propuesta uniforme en el simplex."""
+
+    proposals = np.random.default_rng(1).dirichlet(np.ones(3), size=400_000)
+    log_weights = _log_beta_posterior(proposals, state_sequences, model)
+    weights = np.exp(log_weights - log_weights.max())
+    weights /= weights.sum()
+    mean = weights @ proposals
+    return mean, np.sqrt(weights @ (proposals - mean) ** 2)
+
+
 class FoxBetaUpdateTests(unittest.TestCase):
     """β | z de las mesas CRT (con corrección w por κ) coincide con la posterior exacta."""
 
-    def _check_against_importance_sampling(self, kappa: float) -> None:
-        model = TruncatedHDPHMM(n_states=3, alpha=2.0, alpha0=1.5, gamma=3.0, kappa=kappa, n_iters=2, burn_in=0)
-        state_sequences = [np.array([0, 0, 0, 0, 1, 1, 0, 2, 2, 2, 2, 2, 0, 1, 1]), np.array([1, 1, 2, 2])]
+    def _check_against_importance_sampling(self, name: str, kappa: float) -> None:
+        model, state_sequences = _scenario(name, kappa)
         model.rng = np.random.default_rng(0)
         beta = np.full(3, 1.0 / 3.0)
-        draws = []
-        for iteration in range(42_000):
+        draws = np.empty((20_000, 3))
+        for iteration in range(22_000):
             beta, _ = model._update_beta(beta, state_sequences)
             if iteration >= 2_000:
-                draws.append(beta)
-        gibbs_mean = np.mean(draws, axis=0)
+                draws[iteration - 2_000] = beta
 
-        # γ/L = 1: la previa es uniforme en el simplex y sirve de propuesta.
-        proposals = np.random.default_rng(1).dirichlet(np.ones(3), size=400_000)
-        log_weights = _log_beta_posterior(proposals, state_sequences, model)
-        weights = np.exp(log_weights - log_weights.max())
-        exact_mean = weights @ proposals / weights.sum()
+        exact_mean, exact_sd = _exact_moments(model, state_sequences)
+        np.testing.assert_allclose(draws.mean(axis=0), exact_mean, atol=BETA_ATOL)
+        np.testing.assert_allclose(draws.std(axis=0), exact_sd, atol=BETA_ATOL)
 
-        np.testing.assert_allclose(gibbs_mean, exact_mean, atol=0.01)
+    def test_scenario_separates_wrong_alpha0_and_wrong_gamma(self) -> None:
+        # Con α en vez de α0, o γ en vez de γ/L, la distribución estacionaria del muestreador
+        # sería la posterior exacta con ese parámetro cambiado.  La prueba sólo tiene potencia
+        # contra esos errores si esa posterior se aleja de la verdadera más del doble de BETA_ATOL.
+        model, state_sequences = _scenario("muchos_inicios", 0.0)
+        reference, _ = _exact_moments(model, state_sequences)
+        for override in (dict(alpha0=model.alpha), dict(gamma=model.gamma * model.n_states)):
+            wrong, _ = _exact_moments(*_scenario("muchos_inicios", 0.0, **override))
+            self.assertGreater(np.abs(wrong - reference).max(), 2 * BETA_ATOL, override)
 
     def test_beta_update_targets_the_posterior_without_stickiness(self) -> None:
-        self._check_against_importance_sampling(kappa=0.0)
+        self._check_against_importance_sampling("muchos_inicios", kappa=0.0)
 
     def test_beta_update_targets_the_posterior_with_sticky_override(self) -> None:
-        self._check_against_importance_sampling(kappa=6.0)
+        self._check_against_importance_sampling("rachas_largas", kappa=6.0)
 
 
 class SeedTests(unittest.TestCase):
