@@ -66,6 +66,69 @@ class WorkMeanHolmTests(unittest.TestCase):
         )
 
 
+def _two_file_work_rows(nll_by_model: dict[str, tuple[float, float]]) -> list[dict]:
+    """Una obra con dos archivos de 10 y 100 notas; otra obra de un archivo."""
+
+    rows = []
+    for model, (short_nll, long_nll) in nll_by_model.items():
+        for piece, n_tokens, nll in (("w0_a", 10, short_nll), ("w0_b", 100, long_nll)):
+            rows.append(
+                {"model": model, "frac": 1.0, "canonical_work_id": "w0", "piece_id": piece,
+                 "split_seed": 0, "data_seed": 0, "model_seed": 0,
+                 "n_tokens": n_tokens, "test_nll": nll, "log_likelihood": -nll * n_tokens}
+            )
+        rows.append(
+            {"model": model, "frac": 1.0, "canonical_work_id": "w1", "piece_id": "w1_a",
+             "split_seed": 0, "data_seed": 0, "model_seed": 0,
+             "n_tokens": 50, "test_nll": 2.0, "log_likelihood": -100.0}
+        )
+    return rows
+
+
+class PerNoteNllOfAWorkTests(unittest.TestCase):
+    """La NLL de una obra es su NLL por nota (Σll/Σn), no la media de sus archivos."""
+
+    def test_the_paired_difference_uses_the_per_note_nll_of_each_work(self) -> None:
+        rows = _two_file_work_rows({"a": (1.0, 3.0), "b": (2.0, 2.0)})
+        payload = pairwise_model_comparisons(rows, bootstrap_samples=50, seed=0)
+        (item,) = payload["comparisons"]
+        per_note_a = (10 * 1.0 + 100 * 3.0) / 110
+        # w0 difiere en per_note_a - 2; w1 no difiere; media sobre 2 obras.
+        self.assertAlmostEqual(item["mean_difference"], (per_note_a - 2.0) / 2, places=12)
+
+    def test_the_paired_estimand_matches_the_pareto_marginal(self) -> None:
+        from Comparacion.statistics import headline_estimates
+
+        rows = _two_file_work_rows({"a": (5.0, 1.0), "b": (1.0, 1.5)})
+        paired = pairwise_model_comparisons(rows, bootstrap_samples=50, seed=0)["comparisons"][0]
+        marginal = {
+            item["model"]: item["point_estimate"]
+            for item in headline_estimates(rows, bootstrap_samples=50, seed=0)["estimates"]
+            if item["estimand"] == "work_mean_nll"
+        }
+        self.assertAlmostEqual(paired["mean_difference"], marginal["a"] - marginal["b"], places=12)
+        # Mismo signo que la NLL por nota: A es mejor en w0 (Σll/Σn).
+        self.assertLess(paired["mean_difference"], 0.0)
+
+    def test_repeated_runs_of_a_work_are_averaged_after_the_per_note_ratio(self) -> None:
+        rows = _two_file_work_rows({"a": (1.0, 3.0), "b": (2.0, 2.0)})
+        again = [dict(row, model_seed=1) for row in rows]
+        payload = pairwise_model_comparisons(rows + again, bootstrap_samples=50, seed=0)
+        per_note_a = (10 * 1.0 + 100 * 3.0) / 110
+        self.assertAlmostEqual(
+            payload["comparisons"][0]["mean_difference"], (per_note_a - 2.0) / 2, places=12
+        )
+
+    def test_a_single_file_work_without_token_count_keeps_its_nll(self) -> None:
+        rows = [
+            {"model": m, "frac": 1.0, "canonical_work_id": w, "split_seed": 0, "data_seed": 0,
+             "model_seed": 0, "test_nll": v}
+            for m, w, v in (("a", "w0", 1.0), ("b", "w0", 2.0), ("a", "w1", 1.0), ("b", "w1", 3.0))
+        ]
+        payload = pairwise_model_comparisons(rows, bootstrap_samples=50, seed=0)
+        self.assertAlmostEqual(payload["comparisons"][0]["mean_difference"], -1.5, places=12)
+
+
 class HeadlineRoleTests(unittest.TestCase):
     def test_headline_estimates_mark_the_work_mean_as_the_one_that_decides(self) -> None:
         from Comparacion.statistics import headline_estimates

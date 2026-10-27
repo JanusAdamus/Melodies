@@ -173,6 +173,52 @@ def _work_totals(
     return averaged, run_counts
 
 
+def _work_nll_means(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[tuple[str, float], dict[str, float]]:
+    """Per (model, frac): work -> its per-note NLL, averaged over runs.
+
+    Within one run the NLL of a work is Σll/Σn over its files (Aclaración 2: the
+    per-note NLL of the work), never the mean of its files' NLL.  A work with a
+    single file and no token count keeps that file's NLL; a multi-file work with
+    a file lacking its token count has no per-note NLL in that run and is left
+    out rather than imputed.  Runs (split_seed, data_seed, model_seed) are then
+    averaged with equal weight.
+    """
+
+    by_run: dict[tuple[str, float], dict[str, dict[tuple[str, ...], list[Mapping[str, object]]]]] = {}
+    for row in rows:
+        model = row.get("model")
+        work = row.get("canonical_work_id")
+        fraction = _finite_float(row.get("frac"))
+        if not isinstance(model, str) or not model or fraction is None:
+            continue
+        if not isinstance(work, str) or not work.strip() or _row_test_nll(row) is None:
+            continue
+        by_run.setdefault((model, fraction), {}).setdefault(work, {}).setdefault(
+            _nominal_run_key(row), []
+        ).append(row)
+
+    result: dict[tuple[str, float], dict[str, float]] = {}
+    for key, works in by_run.items():
+        per_work: dict[str, float] = {}
+        for work, runs in works.items():
+            run_values: list[float] = []
+            for files in runs.values():
+                totals = [_row_log_likelihood_and_tokens(row) for row in files]
+                if all(item is not None for item in totals):
+                    run_values.append(
+                        -sum(item[0] for item in totals) / sum(item[1] for item in totals)
+                    )
+                elif len(files) == 1:
+                    run_values.append(float(_row_test_nll(files[0])))
+            if run_values:
+                per_work[work] = float(np.mean(run_values))
+        if per_work:
+            result[key] = per_work
+    return result
+
+
 def _bootstrap_indices(n_works: int, samples: int, generator: np.random.Generator) -> np.ndarray:
     return generator.integers(0, n_works, size=(samples, n_works))
 
@@ -200,6 +246,7 @@ def headline_estimates(
     generator = np.random.default_rng(_nonnegative_integer(seed, name="seed"))
     rows = list(rows)
     totals, run_counts = _work_totals(rows)
+    per_note = _work_nll_means(rows)
     run_accounting = run_counts_by_model_and_fraction(rows)
     estimates: list[dict[str, object]] = []
     for (model, fraction), works in sorted(totals.items()):
@@ -207,8 +254,16 @@ def headline_estimates(
         n_tokens = np.asarray([value[1] for value in works.values()], dtype=float)
         indices = _bootstrap_indices(len(works), samples, generator)
         token_draws = -log_likelihoods[indices].sum(axis=1) / n_tokens[indices].sum(axis=1)
-        work_nll = -log_likelihoods / n_tokens
-        work_draws = work_nll[indices].mean(axis=1)
+        # La misma NLL por obra que usa la comparación pareada (Σll/Σn por corrida,
+        # luego media de corridas): el marginal de Pareto y el pareado coinciden.
+        work_values = per_note.get((model, fraction), {})
+        n_work_mean = len(work_values)
+        if set(work_values) == set(works):
+            work_nll = np.asarray([work_values[work] for work in works], dtype=float)
+            work_draws = work_nll[indices].mean(axis=1)
+        else:
+            work_nll = np.asarray(list(work_values.values()), dtype=float)
+            work_draws = work_nll[_bootstrap_indices(n_work_mean, samples, generator)].mean(axis=1)
         token_point = float(-log_likelihoods.sum() / n_tokens.sum())
         token_interval = _percentile_interval(token_draws)
         common = {
@@ -241,6 +296,7 @@ def headline_estimates(
                 },
                 {
                     **common,
+                    "n_works": n_work_mean,
                     "estimand": "work_mean_nll",
                     "role": "decides",
                     "point_estimate": float(work_nll.mean()),
@@ -555,7 +611,8 @@ def pairwise_model_comparisons(
     familia son los modelos presentes en ``rows``; las particiones anidadas
     heredan siempre la familia de la llamada exterior.
 
-    Repeated data/model seeds are first averaged within each
+    The NLL of a work in one run is its per-note NLL (Σll/Σn over its files);
+    repeated data/model seeds are then averaged within each
     ``(model, canonical_work_id)``.  File-level ``piece_id`` is never used as
     a fallback. Pairwise differences are then computed as
     ``model_a test_nll - model_b test_nll``; negative values favor ``model_a``.
@@ -572,23 +629,10 @@ def pairwise_model_comparisons(
 
     rows_list = [row for row in rows if isinstance(row, Mapping)]
     model_names: set[str] = set()
-    repeated_values: dict[tuple[str, str], list[float]] = {}
     for row in rows_list:
-        if not isinstance(row, Mapping):
-            continue
         model = row.get("model")
-        if not isinstance(model, str) or not model:
-            continue
-        model_names.add(model)
-        if not _full_fraction(row):
-            continue
-        canonical_work_id = row.get("canonical_work_id")
-        if not isinstance(canonical_work_id, str) or not canonical_work_id.strip():
-            continue
-        test_nll = _row_test_nll(row)
-        if test_nll is None:
-            continue
-        repeated_values.setdefault((model, canonical_work_id), []).append(test_nll)
+        if isinstance(model, str) and model:
+            model_names.add(model)
 
     if expected_models is not None:
         expected = {str(model) for model in expected_models}
@@ -598,10 +642,15 @@ def pairwise_model_comparisons(
                 "modelos fuera de la familia de Holm preregistrada: " + ", ".join(unexpected)
             )
         model_names = expected
+    # Aclaración 2: la NLL de cada obra es su NLL por nota (Σll/Σn de sus
+    # archivos en cada corrida, luego media de corridas), la misma que usa el
+    # marginal work_mean_nll de headline_estimates y la frontera de Pareto.
     work_means = {
-        key: float(np.mean(values))
-        for key, values in repeated_values.items()
-        if values
+        (model, canonical_work_id): value
+        for (model, _fraction), works in _work_nll_means(
+            row for row in rows_list if _full_fraction(row)
+        ).items()
+        for canonical_work_id, value in works.items()
     }
     works_by_model: dict[str, set[str]] = {model: set() for model in model_names}
     for model, canonical_work_id in work_means:
