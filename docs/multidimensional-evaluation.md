@@ -70,8 +70,14 @@ solo cuando existen ambos arreglos validos.
 En la fraccion completa, `pairwise_comparisons.json` contiene todos los pares de
 modelos disponibles. Primero promedia variantes y semillas dentro de cada obra
 canonica; despues calcula diferencias pareadas de NLL, intervalo bootstrap del
-95 %, Wilcoxon cuando es aplicable y ajuste Holm sobre la familia de valores p
-validos.
+95 %, Wilcoxon cuando es aplicable y ajuste Holm sobre la familia completa de
+pares (la del preregistro: no se encoge; un par sin datos cuenta como p = 1 y se
+reporta como no evaluable). Los pares los fijan los modelos que el diseno corre
+(`expected_models`), no los que dejaron filas: un modelo sin filas aporta pares
+no evaluables y un modelo fuera del diseno es un error. El bloque `holm_family`
+del JSON registra el tamano de la familia, sus modelos, sus pruebas y cuales no
+se evaluaron; `holm_family_by_split_seed` hace lo mismo dentro de cada particion,
+que hereda la familia completa.
 
 `pareto_summary.json` distingue dos alcances. Si faltan mediciones
 estructurales, puede calcular una frontera parcial, etiquetada como

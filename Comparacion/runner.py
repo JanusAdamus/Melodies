@@ -617,6 +617,16 @@ def _load_structural_annotations(path_value: str | None) -> dict[str, object] | 
     return {"path": str(path), "records": records}
 
 
+def _comparison_family_models(config) -> list[str]:
+    """Modelos que forman la familia de Holm: los que el diseño corre, no los que
+    dejaron filas.  Con el VOMM son cuatro modelos y seis pares (preregistro B)."""
+
+    models = ["finite_hmm", "hdp_hmm", "transformer"]
+    if config.include_vomm_control:
+        models.append("vomm")
+    return sorted(models)
+
+
 def _build_piece_metric_rows(
     model_name: str,
     fraction: float,
@@ -2053,6 +2063,7 @@ def run_learning_curve_experiment(
         piece_metric_rows,
         bootstrap_samples=config.bootstrap_samples,
         seed=config.bootstrap_seed,
+        expected_models=_comparison_family_models(config),
     )
     _write_json(output_root / "pairwise_comparisons.json", pairwise_payload)
     # Los dos denominadores del reporte (archivos evaluados y obras comparadas)

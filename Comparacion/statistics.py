@@ -287,8 +287,16 @@ def _apply_token_weighted_holm(
     Se ordenan las comparaciones por su p bilateral del bootstrap; la de rango r
     (desde 0) lleva el IC percentil al nivel 1 − α/(m − r).  Se rechaza mientras el
     IC excluya 0; tras el primer no rechazo, ninguna posterior se rechaza.
+
+    m es la familia completa (todas las comparaciones), no las que tienen datos:
+    una prueba sin datos cuenta en la familia como si su p fuera 1 (va al final y
+    no se rechaza) y queda «not_evaluable».  Así, faltar el n_tokens de una obra
+    no encoge la familia ni afloja el α de las demás.
     """
 
+    for index, comparison in enumerate(comparisons):
+        if index not in draws_by_index:
+            comparison.update(_EMPTY_TOKEN_WEIGHTED_HOLM)
     ordered = sorted(
         draws_by_index,
         key=lambda index: (
@@ -297,7 +305,7 @@ def _apply_token_weighted_holm(
             str(comparisons[index]["model_b"]),
         ),
     )
-    n_tests = len(ordered)
+    n_tests = len(comparisons)
     still_rejecting = True
     for rank, index in enumerate(ordered):
         draws = draws_by_index[index]
@@ -309,6 +317,7 @@ def _apply_token_weighted_holm(
         comparisons[index]["token_weighted_holm_alpha"] = alpha
         comparisons[index]["token_weighted_holm_ci"] = [float(low), float(high)]
         comparisons[index]["token_weighted_holm_rejects_zero"] = still_rejecting
+        comparisons[index]["token_weighted_holm_status"] = "ok"
 
 
 def _empty_comparison(model_a: str, model_b: str) -> dict[str, object]:
@@ -343,10 +352,39 @@ _EMPTY_TOKEN_WEIGHTED_HOLM: dict[str, object] = {
     "token_weighted_holm_alpha": None,
     "token_weighted_holm_ci": None,
     "token_weighted_holm_rejects_zero": None,
+    "token_weighted_holm_status": "not_evaluable",
 }
 
 
+def _holm_family_record(comparisons: list[dict[str, object]]) -> dict[str, object]:
+    """Tamaño y composición de la familia de Holm, y qué pruebas no se evaluaron."""
+
+    tests = [[str(item["model_a"]), str(item["model_b"])] for item in comparisons]
+
+    def _block(is_evaluable) -> dict[str, object]:
+        missing = [pair for pair, item in zip(tests, comparisons) if not is_evaluable(item)]
+        return {
+            "family_size": len(tests),
+            "n_evaluable": len(tests) - len(missing),
+            "not_evaluable": missing,
+        }
+
+    return {
+        "family_alpha": HOLM_FAMILY_ALPHA,
+        "definition": "all_model_pairs_never_shrunk_not_evaluable_count_as_p_equal_1",
+        "tests": tests,
+        "wilcoxon": _block(lambda item: item["p_value_holm"] is not None),
+        "token_weighted_ci": _block(lambda item: item["token_weighted_holm_status"] == "ok"),
+    }
+
+
 def _apply_holm_adjustment(comparisons: list[dict[str, object]]) -> int:
+    """Holm sobre los p de Wilcoxon; devuelve cuántas pruebas fueron evaluables.
+
+    El factor usa la familia completa (todas las comparaciones): una prueba no
+    evaluable cuenta como p = 1 y no reduce el factor de las demás.
+    """
+
     valid_indices = [
         index
         for index, comparison in enumerate(comparisons)
@@ -362,14 +400,14 @@ def _apply_holm_adjustment(comparisons: list[dict[str, object]]) -> int:
         )
     )
 
-    n_tests = len(valid_indices)
+    n_tests = len(comparisons)
     running_adjusted = 0.0
     for rank, comparison_index in enumerate(valid_indices):
         raw_p_value = float(comparisons[comparison_index]["p_value"])
         candidate = min(1.0, (n_tests - rank) * raw_p_value)
         running_adjusted = min(1.0, max(running_adjusted, candidate))
         comparisons[comparison_index]["p_value_holm"] = running_adjusted
-    return n_tests
+    return len(valid_indices)
 
 
 def _split_seed_of(row: Mapping[str, object]) -> int | None:
@@ -454,8 +492,15 @@ def pairwise_model_comparisons(
     rows: Iterable[Mapping[str, object]],
     bootstrap_samples: int,
     seed: int,
+    expected_models: Iterable[str] | None = None,
 ) -> dict[str, object]:
     """Compare every sorted model pair using canonical works at ``frac == 1.0``.
+
+    ``expected_models`` fija la familia de Holm del diseño: todos sus pares
+    cuentan aunque un modelo no haya dejado filas (sus pares quedan no
+    evaluables), y un modelo fuera de ese conjunto es un error.  Sin él, la
+    familia son los modelos presentes en ``rows``; las particiones anidadas
+    heredan siempre la familia de la llamada exterior.
 
     Repeated data/model seeds are first averaged within each
     ``(model, canonical_work_id)``.  File-level ``piece_id`` is never used as
@@ -492,6 +537,14 @@ def pairwise_model_comparisons(
             continue
         repeated_values.setdefault((model, canonical_work_id), []).append(test_nll)
 
+    if expected_models is not None:
+        expected = {str(model) for model in expected_models}
+        unexpected = sorted(model_names - expected)
+        if unexpected:
+            raise ValueError(
+                "modelos fuera de la familia de Holm preregistrada: " + ", ".join(unexpected)
+            )
+        model_names = expected
     work_means = {
         key: float(np.mean(values))
         for key, values in repeated_values.items()
@@ -583,6 +636,10 @@ def pairwise_model_comparisons(
 
     n_valid_tests = _apply_holm_adjustment(comparisons_payload)
     _apply_token_weighted_holm(comparisons_payload, token_weighted_draws)
+    holm_family = {
+        "expected_models": sorted(model_names),
+        **_holm_family_record(comparisons_payload),
+    }
     # Con varias semillas de partición, las obras se repiten entre particiones y
     # no pueden agruparse como observaciones nuevas: se compara dentro de cada
     # partición y se reporta la variación aparte.
@@ -591,6 +648,7 @@ def pairwise_model_comparisons(
         {seed for seed in (_split_seed_of(row) for row in materialized_rows) if seed is not None}
     )
     comparisons_by_split_seed: dict[str, list[dict[str, object]]] = {}
+    holm_family_by_split_seed: dict[str, dict[str, object]] = {}
     if len(split_seeds) > 1:
         for split_seed in split_seeds:
             subset = [
@@ -600,8 +658,10 @@ def pairwise_model_comparisons(
                 subset,
                 bootstrap_samples=validated_bootstrap_samples,
                 seed=validated_seed,
+                expected_models=sorted(model_names),
             )
             comparisons_by_split_seed[str(split_seed)] = nested["comparisons"]
+            holm_family_by_split_seed[str(split_seed)] = nested["holm_family"]
     # El denominador de cada comparación es una obra canónica, no un archivo:
     # dejarlo explícito evita citar 424 archivos donde hay 414 obras.
     denominators = {
@@ -630,6 +690,7 @@ def pairwise_model_comparisons(
             else "single_split_seed"
         ),
         "comparisons_by_split_seed": comparisons_by_split_seed,
+        "holm_family_by_split_seed": holm_family_by_split_seed,
         "split_variation": summarize_split_variation(materialized_rows),
         "metric": "test_nll",
         "difference_orientation": "model_a_minus_model_b",
@@ -639,5 +700,6 @@ def pairwise_model_comparisons(
         "models": sorted(model_names),
         "n_comparisons": len(comparisons_payload),
         "n_valid_tests": n_valid_tests,
+        "holm_family": holm_family,
         "comparisons": comparisons_payload,
     }
