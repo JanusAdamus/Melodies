@@ -2,7 +2,16 @@ Corrida del 2026-10-26 en la computadora con GPU (sólo CPU), rama fix/auditoria
 Caché: artifacts/corpus_cache_3000.jsonl (PDMX, extracción de agosto). No es el obs_cache.pkl del auditor
 (multicorpus_full no está en esta computadora), así que las obras difieren de s5_beta_seed_v2.
 K=20, 80 iteraciones, burn-in 40, semillas 7..56 (50).
-Criterio (b) de PROMPT_CLAUDE.md, |r| < 0.3: cumplido en ambas corridas.
+Criterio (b) de PROMPT_CLAUDE.md, |r| < 0.3 (corregido tras la revisión adversarial del 2026-10-26):
+la estimación puntual queda por debajo de 0.3 en ambas corridas, pero eso NO demuestra independencia.
+Con n = 50, el IC 95 % de Fisher para r es [-0.416, 0.128] (15 obras) y [-0.212, 0.342] (una obra);
+ambos incluyen |r| = 0.3, y la prueba de equivalencia TOST para |rho| < 0.3 no es significativa
+(p = 0.148 y p = 0.051).  En una obra, el IC de la pendiente sobre el rango 3..9 va de -0.76 a +1.24
+estados, así que no excluye un efecto de hasta ~1 estado.  La corrida v2 (20 semillas, otro corpus)
+dio r = -0.40, en la misma dirección que el -0.156 de 15 obras.
+Redacción correcta: «no hay evidencia de dependencia», no «K no sigue al primer β».
+Cifras recalculadas desde las filas de abajo con
+python scripts/auditoria_2026_10_26/hdp/s5_beta_seed_v3.py --resumen <este archivo>; ver el final.
 
 == 15 obras (índices 0, 200, ..., 2800) ==
 python scripts/auditoria_2026_10_26/hdp/s5_beta_seed_v3.py artifacts/corpus_cache_3000.jsonl --n-seeds 50
@@ -126,3 +135,27 @@ pendiente = 0.0407 estados por componente; IC 95 % (t) = [-0.1261, 0.2075]
 IC 95 % bootstrap de la pendiente = [-0.1297, 0.1880]
 rango de #beta_k>0.01 = 3..9; efecto de la pendiente sobre ese rango = 0.244 estados
 K medio: media 5.605, d.e. entre semillas 1.018, rango 4.000..7.800
+
+== Resumen recalculado con --resumen (código de este commit) ==
+== semillas 7..56 ==
+n semillas = 50
+Pearson r = -0.156 (p = 0.28)
+IC 95 % de Fisher para r = [-0.416, 0.128]
+TOST |r| < 0.3: p = 0.148
+Spearman rho = -0.162 (p = 0.261)
+pendiente = -0.0207 estados por componente; IC 95 % (t) = [-0.0588, 0.0174]
+IC 95 % bootstrap de la pendiente = [-0.0600, 0.0148]
+rango de #beta_k>0.01 = 3..9; efecto de la pendiente sobre ese rango = -0.124 estados, IC 95 % (t) = [-0.35, 0.10]
+K medio: media 5.014, d.e. entre semillas 0.235, rango 4.495..5.442
+veredicto: sin evidencia de dependencia ni de |r| < 0.3
+== semillas 7..56 ==
+n semillas = 50
+Pearson r = 0.071 (p = 0.626)
+IC 95 % de Fisher para r = [-0.212, 0.342]
+TOST |r| < 0.3: p = 0.051
+Spearman rho = -0.016 (p = 0.911)
+pendiente = 0.0407 estados por componente; IC 95 % (t) = [-0.1261, 0.2075]
+IC 95 % bootstrap de la pendiente = [-0.1297, 0.1880]
+rango de #beta_k>0.01 = 3..9; efecto de la pendiente sobre ese rango = 0.244 estados, IC 95 % (t) = [-0.76, 1.24]
+K medio: media 5.605, d.e. entre semillas 1.018, rango 4.000..7.800
+veredicto: sin evidencia de dependencia ni de |r| < 0.3
