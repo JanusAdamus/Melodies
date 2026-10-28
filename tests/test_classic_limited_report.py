@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -53,7 +54,9 @@ HDP_BETTER = pd.DataFrame(
 )
 
 
-def _fake_run(path, obs, treble, params):
+def _fake_run(path, *args):
+    # *args: la firma de _run_piece cambia entre esta rama (obs, prefer_treble, params) y
+    # fix/auditoria-tesis (events, obs, params); la prueba vale con las dos.
     return {
         "path": path,
         "finite_log_likelihood": -10.0,
@@ -71,15 +74,24 @@ class ClassicLimitedMainTests(unittest.TestCase):
         catalog = pd.DataFrame(
             {"path": ["a.mxl", "b.mxl"], "title": ["A", "B"], "composer": ["X", "Y"], "note_count": [10, 20]}
         )
-        with tempfile.TemporaryDirectory() as output, patch.multiple(
-            cla,
-            build_library_catalog=lambda directory: catalog,
-            _selected_catalog=lambda frame, limit: frame,
-            summarize_catalog=lambda frame: {"catalog": frame},
-            export_tables=lambda *args, **kwargs: None,
-            generate_analysis_figures=lambda *args, **kwargs: [],
-            _run_piece=_fake_run,
-        ), patch.object(sys, "argv", ["classic_limited_analysis", "--output-dir", output]):
+        stubs = {
+            "build_library_catalog": lambda directory: catalog,
+            "_selected_catalog": lambda frame, limit: frame,
+            "summarize_catalog": lambda frame: {"catalog": frame},
+            "export_tables": lambda *args, **kwargs: None,
+            "generate_analysis_figures": lambda *args, **kwargs: [],
+            "_run_piece": _fake_run,
+        }
+        if hasattr(cla, "prepare_corpus"):  # fix/auditoria-tesis prepara el corpus antes de seleccionar
+            stubs["prepare_corpus"] = lambda frame, **kwargs: SimpleNamespace(
+                pieces=frame,
+                failures=pd.DataFrame(),
+                duplicates=pd.DataFrame(),
+                events={path: [] for path in frame["path"]},
+            )
+        with tempfile.TemporaryDirectory() as output, patch.multiple(cla, **stubs), patch.object(
+            sys, "argv", ["classic_limited_analysis", "--output-dir", output]
+        ):
             cla.main()
             root = Path(output)
             for relative in ("analysis/resumen_global.tex", "analysis/analysis_report.md", "nota_tecnica.md"):
