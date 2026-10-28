@@ -137,6 +137,8 @@ def veredicto(status: str | None, decision_ci: Sequence[float] | None) -> str:
     if status != "ok" or decision_ci is None:
         return "no evaluable"
     low, high = (float(x) for x in decision_ci)
+    if low > high:
+        raise ValueError(f"IC de decisión con el extremo inferior {low!r} sobre el superior {high!r}")
     if high < 0.0:
         return "mejora"
     if low > 0.0:

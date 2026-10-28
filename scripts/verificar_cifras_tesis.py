@@ -39,28 +39,47 @@ Reglas que ignoran números estructurales (cada una probada en
 ``tests/test_verificar_cifras_tesis.py``; el reporte dice qué regla ignoró cada uno):
 
 * ``comentario``: tras un ``%`` no escapado;
-* ``preambulo``: antes de ``\\begin{document}`` (si el archivo lo tiene);
+* ``preambulo``: antes de ``\\begin{document}`` (si el archivo lo tiene), salvo los cuerpos
+  de las definiciones de macros, que se leen;
 * ``pendiente``: dentro de ``\\pendiente{...}``; el marcador se lista aparte;
-* ``ecuacion``: matemática en display (``equation``, ``align``, ``gather``, ``multline``,
-  ``eqnarray``, ``\\[...\\]``, ``$$...$$``); la matemática en línea SÍ se revisa;
+* ``marcado_estructural``: dentro de ``\\estructural{...}`` (en la tesis,
+  ``\\newcommand{\\estructural}[1]{#1}``), para marcar a mano una constante que ninguna regla
+  reconoce (``$\\alpha = \\estructural{0.05}$``);
+* ``ecuacion``: en matemática en display (``equation``, ``align``, ``gather``, ``multline``,
+  ``eqnarray``, ``\\[...\\]``, ``$$...$$``) sólo un dígito suelto (``\\frac{1}{2}``, ``2\\pi``,
+  ``+ 1``) que no siga a una relación (``=``, ``<``, ``\\approx``, ``\\le``...); los decimales,
+  los enteros de más de una cifra y lo que sigue a una relación se leen, igual que toda la
+  matemática en línea;
 * ``argumento_estructural``: argumentos de ``\\label``, ``\\ref``, ``\\cite``..., rutas
-  (``\\input``, ``\\includegraphics``, ``\\url``), el ``id`` de ``\\cifra``, medidas
-  (``\\hspace``, ``\\setlength``...), especificación de columnas de tablas,
-  ``\\multicolumn``/``\\multirow``/``\\cmidrule``/``\\cline``, argumentos opcionales
-  ``[...]`` y ``\\texttt{...}`` con letras (un identificador); ``\\texttt{9.876}`` SÍ se revisa;
-* ``subindice``: sub y superíndices (``x_{t-1}``, ``\\beta_2``);
+  (``\\input``, ``\\includegraphics``, ``\\url``, el primero de ``\\href``), el ``id`` de
+  ``\\cifra``, medidas (``\\hspace``, ``\\setlength``, el alto de ``\\raisebox``, el factor de
+  ``\\scalebox``, el ancho de ``\\parbox``/``minipage``...), especificación de columnas de tablas,
+  ``\\multicolumn``/``\\multirow``/``\\cmidrule``/``\\cline``, el nombre y el número de
+  argumentos de ``\\newcommand``/``\\def`` (su cuerpo y su valor por omisión SÍ se leen; una
+  macro de formato como ``\\arraystretch`` se ignora entera), los parámetros ``#1``,
+  ``\\texttt{...}`` con letras (un identificador; ``\\texttt{9.876}`` SÍ se revisa) y sólo los
+  argumentos opcionales de comandos con opciones (``\\usepackage``, ``\\begin``, ``\\\\[2pt]``,
+  ``\\hyperref[etiqueta]``, ``\\footnote[3]``, ``\\makebox``...); los demás opcionales
+  (``\\caption[...]``, ``\\section[...]``, ``\\item[...]``) y el contenido de las cajas y del
+  texto de ``\\href``/``\\hyperref`` SÍ se leen;
+* ``subindice``: los enteros de sub y superíndices (``x_{t-1}``, ``\\beta_2``); un decimal en
+  ellos (``e^{-0.437}``) se lee;
 * ``longitud``: un número seguido de unidad (``pt``, ``cm``, ``mm``, ``em``, ``ex``, ``bp``)
-  o de ``\\textwidth``/``\\linewidth``...;
+  o de ``\\textwidth``/``\\linewidth``... sólo como argumento: tras ``{``, ``[``, ``=``, ``,`` o
+  un comando (``\\vskip 1em``); en prosa («gana por 37 pt», «2pt») el número se lee;
 * ``fecha``: ``AAAA-MM-DD`` y fechas con nombre de mes («26 de octubre de 2026»);
-* ``anio_de_cita``: un año 1500–2099 tras «et al.», en «Autor (AAAA)» o dentro de un
-  paréntesis de cita «(Autor, AAAA; Otro, AAAA)»; fuera de paréntesis «Autor, 1999» no;
+* ``anio_de_cita``: un año 1500–2099 tras «et al.»; en «Autor (AAAA)» o dentro de un
+  paréntesis de cita «(Autor, AAAA; Otro, AAAA)» sólo si una bibliografía ``.bib`` (las del
+  directorio de la tesis y las de ``--bib``) tiene una entrada de ese año con ese apellido;
+  «PDMX (1999)» o «(Gibbs, 1999)» sin esa entrada se leen;
 * ``referencia_estructural``: un número justo tras «capítulo», «sección», «tabla»,
   «figura», «ecuación», «página», «fase», «tarea», «enmienda», «punto», «hallazgo», «apéndice»...
   y números de catálogo (``BWV``, ``Anh.``, ``Op.``, ``No.``).  Sólo tras el plural
   («las tablas 2 y 3», «secciones 4.1, 4.2 y 5.3») sigue una lista, y cada elemento debe
   tener la forma del primero: «tabla 3, 0.42» y «figura 2 y 37 obras» conservan 0.42 y 37;
 * un dígito pegado a letras o a ``_`` es parte de un identificador (``H10``, ``pdmx50``,
-  ``984dfde``) y no se lee como número.
+  ``984dfde``, ``3D``, ``3x3``) y no se lee como número, salvo una unidad pegada al final
+  (``37x``, ``120ms``, ``12GB``, ``5min``...), con la que el número SÍ se lee.
 
 Signo: un ``-`` (o ``−``, o ``$-$``) justo antes del número lo hace negativo, salvo que
 siga a un dígito, ``)``, ``]`` u otro ``-`` (rango «2-3», «0.1--0.3»).
@@ -86,6 +105,7 @@ import math
 import re
 import statistics
 import sys
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -110,16 +130,39 @@ SEPARADORES_MILES = re.compile(r"\\,|\{\\,\}|~")
 SIN_ARGUMENTOS = {
     "label", "ref", "eqref", "pageref", "autoref", "cref", "Cref", "nameref", "cite", "citep", "citet", "citeauthor",
     "citeyear", "parencite", "textcite", "autocite", "nocite", "input", "include", "includegraphics", "includepdf",
-    "usepackage", "documentclass", "url", "href", "hspace", "vspace", "setlength", "addtolength", "setcounter",
-    "addtocounter", "bibliography", "bibliographystyle", "addbibresource", "definecolor", "newcommand",
-    "renewcommand", "providecommand", "newenvironment", "renewenvironment", "graphicspath", "cline", "hyperref",
-    "rule", "raisebox", "scalebox", "verb",
+    "usepackage", "documentclass", "url", "hspace", "vspace", "setlength", "addtolength", "setcounter",
+    "addtocounter", "bibliography", "bibliographystyle", "addbibresource", "definecolor", "graphicspath", "cline",
+    "rule", "verb", "tag", "fontsize", "setstretch", "geometry", "hypersetup", "captionsetup", "newcolumntype",
+    "specialrule", "lstinputlisting", "enlargethispage", "linespread",
 }
-# número de grupos {...} que se descartan; el resto del comando se lee
+# número de grupos {...} que se descartan (sus opcionales [...] también); el resto se lee:
+# \href{url}{texto}, \raisebox{alto}[..][..]{texto}, \parbox[t]{ancho}{texto}, \hyperref[etiqueta]{texto}
 PRIMEROS_ARGUMENTOS = {"multicolumn": 2, "multirow": 2, "resizebox": 2, "color": 1, "textcolor": 1, "colorbox": 1,
-                       "cmidrule": 1, "end": 1}
+                       "fcolorbox": 2, "cmidrule": 1, "end": 1, "href": 1, "raisebox": 1, "scalebox": 1, "rotatebox": 1,
+                       "parbox": 1, "hyperref": 0, "makebox": 0, "framebox": 0, "footnote": 0, "footnotemark": 0,
+                       "footnotetext": 0, "linebreak": 0, "pagebreak": 0, "nopagebreak": 0, "nolinebreak": 0,
+                       "toprule": 0, "midrule": 0, "bottomrule": 0, "addlinespace": 0, "cellcolor": 1, "rowcolor": 1,
+                       "bibitem": 1}
+# grupos que siguen a \begin{entorno}: especificación de columnas o anchos
 ENTORNOS_TABLA = {"tabular": 1, "tabular*": 2, "tabularx": 2, "tabulary": 2, "longtable": 1, "array": 1,
-                  "longtable*": 1, "tabu": 1}
+                  "longtable*": 1, "tabu": 1, "minipage": 1, "subfigure": 1, "subtable": 1, "wrapfigure": 2,
+                  "wraptable": 2, "multicols": 1, "multicols*": 1}
+# definiciones: el cuerpo se lee (un resultado puede vivir en una macro)
+DEFINICION = re.compile(
+    r"\\(?P<cmd>(?:re)?newcommand|providecommand|DeclareRobustCommand|(?:re)?newenvironment)\*?|\\(?P<def>[gex]?def)(?![A-Za-z@])"
+)
+# macros de formato: su definición entera es estructural
+MACROS_DE_FORMATO = {"arraystretch", "baselinestretch", "tabcolsep", "arraycolsep", "extrarowheight", "footnotesep",
+                     "bibfont", "thefootnote", "floatpagefraction", "topfraction", "bottomfraction", "textfraction",
+                     "dbltopfraction", "dblfloatpagefraction"}
+RELACION = re.compile(
+    r"(?:=|<|>|\\(?:approx|simeq|sim|leq?|geq?|neq|ne|equiv|propto|lesssim|gtrsim|ll|gg)(?![A-Za-z]))[\s{}$&~\-]*\Z"
+)
+DIGITO_SUELTO = re.compile(r"(?<![\w.])(?<!\\,)(?<!\{,\})\d(?![\w.])(?!\{,\}\d)(?!(?:\\,|\{\\,\}|~)\d{3})")
+ENTERO = re.compile(r"(?<![\d.])\d+(?![\d.])")
+UNIDAD_PEGADA = re.compile(
+    r"(?<![\w.])\d+(?:\.\d+)?(?P<u>x|ms|s|min|h|k|M|GB|MB|KB|TB|GiB|MiB|KiB|pt|cm|mm|em|ex|bp)(?![\w])"
+)
 ENTORNOS_ECUACION = r"(?:equation|align|alignat|flalign|gather|multline|eqnarray|displaymath)\*?"
 BLOQUE_TABLA = re.compile(r"\\begin\{(tabular\*?|tabularx|tabulary|longtable\*?)\}.*?\\end\{\1\}", re.S)
 MESES = r"(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)"
@@ -322,6 +365,133 @@ def _referencias(lienzo: _Lienzo) -> None:
         lienzo.borrar(match.start(), match.end(), "referencia_estructural")
 
 
+def _definiciones(lienzo: _Lienzo) -> list[tuple[int, int]]:
+    """Borra la cabecera de cada ``\\newcommand``/``\\def``... y devuelve los cuerpos, que se leen.
+
+    Se borran el comando, el nombre de la macro y el número de argumentos ``[n]``; el valor
+    por omisión ``[...]`` y el cuerpo ``{...}`` (dos en ``\\newenvironment``) quedan.  Una
+    macro de formato (``\\arraystretch``...) se borra entera.
+    """
+
+    text = lienzo.texto
+    cuerpos: list[tuple[int, int]] = []
+
+    def blanco(pos: int) -> int:
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        return pos
+
+    for match in DEFINICION.finditer(text):
+        if lienzo.chars[match.start()] == " ":
+            continue
+        pos = blanco(match.end())
+        if pos < len(text) and text[pos] == "{":
+            end = _grupo(text, pos, "{")
+            if end is None:
+                continue
+            nombre = text[pos + 1 : end - 1].strip().lstrip("\\")
+        else:
+            name = re.match(r"\\(?:[A-Za-z@]+|.)", text[pos:])
+            if name is None:
+                continue
+            nombre, end = name.group(0)[1:], pos + name.end()
+        pos = end
+        propios: list[tuple[int, int]] = []
+        if match.group("def"):
+            pos += re.match(r"(?:#\d|\s)*", text[pos:]).end()  # texto de parámetros #1#2
+        else:
+            pos = blanco(pos)
+            if pos < len(text) and text[pos] == "[":  # número de argumentos
+                end = _grupo(text, pos, "[")
+                if end is None:
+                    continue
+                pos = blanco(end)
+        cabecera = pos
+        if not match.group("def") and pos < len(text) and text[pos] == "[":  # valor por omisión: se lee
+            end = _grupo(text, pos, "[")
+            if end is None:
+                continue
+            propios.append((pos, end))
+            pos = blanco(end)
+        for _ in range(2 if match.group("cmd") and "environment" in match.group("cmd") else 1):
+            pos = blanco(pos)
+            end = _grupo(text, pos, "{")
+            if end is None:
+                break
+            propios.append((pos, end))
+            pos = end
+        if nombre in MACROS_DE_FORMATO:
+            lienzo.borrar(match.start(), pos, "argumento_estructural")
+            continue
+        lienzo.borrar(match.start(), cabecera, "argumento_estructural")
+        cuerpos.extend(propios)
+    return cuerpos
+
+
+def _borrar_salvo(lienzo: _Lienzo, start: int, end: int, conservar: Sequence[tuple[int, int]], regla: str) -> None:
+    pos = start
+    for keep_start, keep_end in sorted(conservar):
+        if keep_end <= start or keep_start >= end:
+            continue
+        if keep_start > pos:
+            lienzo.borrar(pos, keep_start, regla)
+        pos = max(pos, keep_end)
+    if pos < end:
+        lienzo.borrar(pos, end, regla)
+
+
+def _es_longitud(text: str, start: int) -> bool:
+    """Un número con unidad es una longitud sólo como argumento: tras ``{ [ = ,`` o un comando."""
+
+    index = start - 1
+    while index >= 0 and text[index] in " \t":
+        index -= 1
+    if index < 0:
+        return False
+    if text[index] in "{[=,":
+        return True
+    letters = index
+    while letters >= 0 and (text[letters].isalpha() or text[letters] == "@"):
+        letters -= 1
+    return letters < index and letters >= 0 and text[letters] == "\\"
+
+
+def _sin_acentos(text: str) -> str:
+    text = re.sub(r"\\[`'^\"~=.uvHcdbtr](?![A-Za-z])|[{}]", "", text)
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)).lower()
+
+
+def cargar_bib(paths: Iterable[Path]) -> dict[int, set[str]]:
+    """Año → apellidos de los autores (sin acentos, en minúsculas) de las entradas ``.bib``."""
+
+    anios: dict[int, set[str]] = {}
+    for path in paths:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        for entry in re.split(r"(?=@[A-Za-z]+\s*[{(])", text):
+            year = re.search(r"\b(?:year|date)\s*=\s*[{\"]?\s*(\d{4})", entry, re.I)
+            author = re.search(r"\bauthor\s*=\s*", entry, re.I)
+            if year is None or author is None:
+                continue
+            start = author.end()
+            if start < len(entry) and entry[start] == "{":
+                end = _grupo(entry, start, "{")
+                names = entry[start + 1 : (end or len(entry)) - 1]
+            else:
+                quoted = re.match(r"\"([^\"]*)\"", entry[start:])
+                names = quoted.group(1) if quoted else ""
+            surnames = anios.setdefault(int(year.group(1)), set())
+            for name in re.split(r"\s+and\s+", _sin_acentos(names)):
+                surname = name.split(",", 1)[0] if "," in name else (name.split() or [""])[-1]
+                surnames.update(w for w in re.findall(r"[a-z][a-z'-]+", surname))
+    return anios
+
+
+def _autor_en_bib(segmento: str, anio: str, bib: dict[int, set[str]]) -> bool:
+    surnames = bib.get(int(anio[:4]), set())
+    words = re.findall(r"[A-ZÁÉÍÓÚÑÜ][\wáéíóúñü'-]+", segmento)  # sólo palabras con mayúscula
+    return any(_sin_acentos(w) in surnames for w in words)
+
+
 def _negativo(text: str, start: int) -> bool:
     index = start - 1
     while index >= 0 and text[index] in " $~{}":
@@ -334,19 +504,25 @@ def _negativo(text: str, start: int) -> bool:
     return before < 0 or not (text[before].isdigit() or text[before] in ")]-")
 
 
-def extraer_numeros(tex: str) -> Extraccion:
+def extraer_numeros(tex: str, bib: dict[int, set[str]] | None = None) -> Extraccion:
+    """Números de un ``.tex``; ``bib`` (de :func:`cargar_bib`) habilita los años de cita a mano."""
+
     lienzo = _Lienzo(tex)
     resultado = lienzo.resultado
 
     for match in re.finditer(r"(?<!\\)%[^\n]*", lienzo.texto):
         lienzo.borrar(match.start(), match.end(), "comentario")
+    cuerpos = _definiciones(lienzo)
     text = lienzo.texto
     begin = re.search(r"\\begin\{document\}", text)
     if begin:
-        lienzo.borrar(0, begin.end(), "preambulo")
+        _borrar_salvo(lienzo, 0, begin.end(), cuerpos, "preambulo")
         end = re.search(r"\\end\{document\}", text)
         if end:
-            lienzo.borrar(end.start(), len(text), "preambulo")
+            _borrar_salvo(lienzo, end.start(), len(text), cuerpos, "preambulo")
+    text = lienzo.texto
+    for match in re.finditer(r"(?<!\\)#\d", text):  # parámetros de una macro
+        lienzo.borrar(match.start(), match.end(), "argumento_estructural")
 
     text = lienzo.texto
     for match in re.finditer(r"\\pendiente\s*(?=\{)", text):
@@ -356,25 +532,37 @@ def extraer_numeros(tex: str) -> Extraccion:
         resultado.pendientes.append(" ".join(text[match.end() + 1 : close - 1].split()))
         resultado.pendientes_lineas.append(lienzo.linea(match.start()))
         lienzo.borrar(match.start(), close, "pendiente")
+    text = lienzo.texto
+    for match in re.finditer(r"\\estructural\s*(?=\{)", text):
+        close = _grupo(text, match.end(), "{")
+        if close is not None:
+            lienzo.borrar(match.start(), close, "marcado_estructural")
 
+    # display: un dígito suelto es una constante (\frac{1}{2}, 2\pi) salvo tras una relación
     text = lienzo.texto
     for pattern in (rf"\\begin\{{({ENTORNOS_ECUACION})\}}.*?\\end\{{\1\}}", r"(?<!\\)\\\[.*?\\\]", r"(?<!\\)\$\$.*?\$\$"):
         for match in re.finditer(pattern, text, re.S):
-            lienzo.borrar(match.start(), match.end(), "ecuacion")
+            for digit in DIGITO_SUELTO.finditer(text, match.start(), match.end()):
+                if not RELACION.search(text[max(match.start(), digit.start() - 40) : digit.start()]):
+                    lienzo.borrar(digit.start(), digit.end(), "ecuacion")
         text = lienzo.texto
 
     citas = _citas(lienzo)
     _comando_con_argumentos(lienzo)
     text = lienzo.texto
-    for match in re.finditer(r"\\[A-Za-z@]+\*?((?:\[[^\]\n]*\])+)|\\\\\*?(\[[^\]\n]*\])", text):
-        group = 1 if match.group(1) else 2
-        lienzo.borrar(match.start(group), match.end(group), "argumento_estructural")
+    for match in re.finditer(r"\\\\\*?(\[[^\]\n]*\])", text):  # \\[2pt]; los demás opcionales se leen
+        lienzo.borrar(match.start(1), match.end(1), "argumento_estructural")
     text = lienzo.texto
     for match in LONGITUD.finditer(text):
-        lienzo.borrar(match.start(), match.end(), "longitud")
+        if _es_longitud(text, match.start()):
+            lienzo.borrar(match.start(), match.end(), "longitud")
     text = lienzo.texto
-    for match in re.finditer(r"(?<!\\)[_^](?:\{[^{}\n]*\}|\d+)", text):
-        lienzo.borrar(match.start(), match.end(), "subindice")
+    for match in UNIDAD_PEGADA.finditer(text):  # «37x», «120ms»: el número se lee
+        lienzo.borrar(match.start("u"), match.end("u"), None)
+    text = lienzo.texto
+    for match in re.finditer(r"(?<!\\)[_^](?:\{[^{}\n]*\}|\d+)", text):  # índices enteros; un decimal se lee
+        for index in ENTERO.finditer(text, match.start(), match.end()):
+            lienzo.borrar(index.start(), index.end(), "subindice")
     text = lienzo.texto
     for match in re.finditer(r"\\[A-Za-z@]+\*?", text):
         lienzo.borrar(match.start(), match.end(), None)
@@ -386,9 +574,12 @@ def extraer_numeros(tex: str) -> Extraccion:
         text = lienzo.texto
     _referencias(lienzo)
     text = lienzo.texto
-    for pattern in REGLAS_ANIO:
+    for index, pattern in enumerate(REGLAS_ANIO):
+        if index > 0 and not bib:  # «Autor (AAAA)» y «(Autor, AAAA)» sólo con bibliografía
+            continue
         for match in pattern.finditer(text):
-            lienzo.borrar(match.start("y"), match.end("y"), "anio_de_cita")
+            if index == 0 or _autor_en_bib(text[match.start() : match.start("y")], match.group("y"), bib):
+                lienzo.borrar(match.start("y"), match.end("y"), "anio_de_cita")
         text = lienzo.texto
 
     for match in NUMERO.finditer(text):
@@ -627,9 +818,11 @@ def _expandir(paths: Sequence[Path] | None) -> list[Path]:
 
 
 def verificar(tesis: Path, *, procedencias: Sequence[Path] | None = None, reportes: Sequence[Path] | None = None,
-              corridas: Sequence[Path] | None = None, exigir_cita: bool = False) -> dict:
+              corridas: Sequence[Path] | None = None, exigir_cita: bool = False,
+              bibliografias: Sequence[Path] | None = None) -> dict:
     tesis = Path(tesis)
     fuentes = cargar_fuentes(_expandir(procedencias), reportes or [])
+    bib = cargar_bib([*sorted(tesis.rglob("*.bib")), *(bibliografias or [])])
     n_cifras, n_recalculadas, errores = recalcular(fuentes, corridas or [])
     errores.extend({"tipo": "id_duplicado", "archivo": None, "linea": None, "texto": d} for d in fuentes.duplicados)
     pendientes: list[dict] = []
@@ -643,7 +836,7 @@ def verificar(tesis: Path, *, procedencias: Sequence[Path] | None = None, report
         relative = path.relative_to(tesis).as_posix()
         original = path.read_text(encoding="utf-8")
         lines = original.splitlines()
-        result = extraer_numeros(original)
+        result = extraer_numeros(original, bib)
         ignorados.update(item.regla for item in result.ignorados)
         for text, line in zip(result.pendientes, result.pendientes_lineas):
             pendientes.append({"archivo": relative, "linea": line, "texto": text})
@@ -716,6 +909,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reporte", type=Path, nargs="*", default=[], help="Reportes de texto cuyos números cuentan como fuente.")
     parser.add_argument("--corridas", type=Path, nargs="*", default=[],
                         help="Dónde buscar una corrida por su nombre si ya no está en la ruta de la procedencia.")
+    parser.add_argument("--bib", type=Path, nargs="*", default=[],
+                        help="Bibliografías .bib además de las del directorio de la tesis (años de cita a mano).")
     parser.add_argument("--salida", type=Path, help="Escribe aquí el reporte JSON completo.")
     parser.add_argument("--exigir-cita", action="store_true",
                         help="Todo número fuera de una tabla generada debe ir en \\cifra{id}{...} (error «sin_cita»).")
@@ -726,7 +921,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     report = verificar(args.tesis, procedencias=args.procedencia, reportes=args.reporte, corridas=args.corridas,
-                       exigir_cita=args.exigir_cita)
+                       exigir_cita=args.exigir_cita, bibliografias=args.bib)
     if args.salida:
         args.salida.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"{report['n_archivos']} archivos, {report['n_numeros']} números, {report['n_numeros_con_fuente']} con fuente, "
