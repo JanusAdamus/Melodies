@@ -42,7 +42,7 @@ if str(REPO_ROOT) not in sys.path:
 from Comparacion.classical_models import FiniteGlobalHMM
 from Comparacion.config import build_default_learning_curve_config
 from Comparacion.splits import build_grouped_fixed_splits, build_nested_training_subsets
-from next_token_experiment.data.preprocess import prepare_corpus
+from next_token_experiment.data.preprocess import default_corpus_cache_name, prepare_corpus
 from next_token_experiment.data.tokenizer import build_tokenizer
 
 
@@ -75,7 +75,7 @@ def _parse_args() -> argparse.Namespace:
     # invocacion, asi que compartirlo entre corridas con distinto --max-files borra las
     # entradas de la corrida grande y obliga a reparsear el corpus entero. El nombre por
     # defecto lleva --max-files para que cada tamano tenga el suyo.
-    parser.add_argument("--corpus-cache", default=None, help="Parsed-score cache, so the diagnostic does not reparse the corpus. Defaults to artifacts/corpus_cache_<max_files>.jsonl; do not share one cache between different --max-files.")
+    parser.add_argument("--corpus-cache", default=None, help="Parsed-score cache, so the diagnostic does not reparse the corpus. Defaults to artifacts/corpus_cache_<max_files>_melody.jsonl; do not share one cache between different --max-files.")
     parser.add_argument("--n-workers", type=int, default=6, help="Parsing processes; only used if the cache is cold.")
     parser.add_argument("--data-seed", type=int, default=1, help="Data seed for the training subset.")
     parser.add_argument("--model-seed", type=int, default=1, help="Model seed passed to FiniteGlobalHMM.")
@@ -100,7 +100,19 @@ def main() -> int:
     if max_iterations <= 0:
         raise SystemExit("--max-iterations must be a positive integer.")
 
-    corpus_cache = args.corpus_cache or str(REPO_ROOT / "artifacts" / f"corpus_cache_{args.max_files}.jsonl")
+    # El nombre por defecto lleva el modo de extraccion (hallazgo D1b): el cache de agosto
+    # (`corpus_cache_<max_files>.jsonl`, extraccion antigua) no se mezcla con el de melodia.
+    preprocessing = config.experiment.preprocessing
+    corpus_cache = args.corpus_cache or str(
+        REPO_ROOT
+        / "artifacts"
+        / default_corpus_cache_name(
+            args.max_files,
+            preprocessing.extraction_mode,
+            prefer_treble=preprocessing.prefer_treble,
+            include_rests=preprocessing.include_rests,
+        )
+    )
     print(f"[diagnostico] preparando corpus (cache: {corpus_cache})", flush=True)
     preparation = prepare_corpus(
         config.experiment,

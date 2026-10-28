@@ -30,7 +30,14 @@ from next_token_experiment.data.dataset import (
     build_training_exposure_audit,
     dataloader_seed,
 )
-from next_token_experiment.data.preprocess import build_preprocessing_report, prepare_corpus
+from next_token_experiment.data.preprocess import (
+    build_preprocessing_report,
+    AUGUST_MIN_EVENTS_PER_PIECE,
+    check_corpus_cache,
+    extraction_signature,
+    prepare_corpus,
+    recorded_extraction_signature,
+)
 from next_token_experiment.data.tokenizer import build_tokenizer
 from next_token_experiment.experiment.storage import ensure_directory, write_csv
 from next_token_experiment.models.small_transformer import (
@@ -271,6 +278,45 @@ _CHECKPOINT_ROW_KEYS = (
     "structural_predictions",
     "hdp_trace_rows",
 )
+
+
+class ResumeExtractionMismatchError(ValueError):
+    """La corrida que se reanuda se extrajo con otra configuracion de extraccion."""
+
+
+def _check_resume_extraction(run_directory: Path, experiment) -> None:
+    """Hallazgo D1b: --resume no mezcla en una curva celdas de dos extracciones.
+
+    El config.json de la corrida previa dice con que extraccion y con que umbral de
+    eventos salieron las celdas del checkpoint; sin ``extraction_mode`` es una corrida
+    anterior a D1b (``legacy_all_parts``) y sin ``min_events_per_piece`` es de agosto (32).
+    Se revisa antes de preparar el corpus y de reescribir config.json.
+    """
+
+    config_path = run_directory / "config.json"
+    if not config_path.exists():
+        return
+    recorded = json.loads(config_path.read_text(encoding="utf-8"))
+    recorded_experiment = recorded.get("experiment", {})
+    recorded_preprocessing = recorded_experiment.get("preprocessing", {})
+    recorded_min_events = recorded_experiment.get("corpus", {}).get(
+        "min_events_per_piece", AUGUST_MIN_EVENTS_PER_PIECE
+    )
+    previous = (
+        recorded_extraction_signature(recorded_preprocessing),
+        int(recorded_min_events),
+    )
+    requested = (
+        extraction_signature(experiment.preprocessing),
+        int(experiment.corpus.min_events_per_piece),
+    )
+    if previous != requested:
+        raise ResumeExtractionMismatchError(
+            f"La corrida {run_directory} se extrajo con (extraccion, min_events_per_piece) "
+            f"{previous} y la reanudacion pide {requested}; reanudala con la misma "
+            "extraccion (--extraction) y el mismo umbral, o empieza otra "
+            "corrida con otro --run-name."
+        )
 
 
 def _load_checkpoint(path: Path) -> tuple[set[str], dict[str, list[dict[str, object]]]]:
@@ -1658,6 +1704,11 @@ def run_learning_curve_experiment(
     run_directory = Path(config.results_root) / run_name
     if not resume:
         _guard_fresh_run_directory(run_directory)
+    else:
+        _check_resume_extraction(run_directory, config.experiment)
+    # Hallazgo D1b: un cache con otra firma (extraccion, representacion, umbral de eventos
+    # o version del extractor) no se usa; se rechaza antes de crear el directorio.
+    check_corpus_cache(corpus_cache_path, config.experiment)
     output_root = ensure_directory(run_directory)
     preparation = prepare_corpus(
         config.experiment,

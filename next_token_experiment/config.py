@@ -22,6 +22,9 @@ class CorpusConfig:
 class PreprocessingConfig:
     include_rests: bool = False
     prefer_treble: bool = True
+    # Hallazgo D1b: ``melody`` (voz superior de la parte en sol) es la definicion vigente;
+    # ``legacy_all_parts`` solo sirve para reproducir las corridas de agosto.
+    extraction_mode: str = "melody"
     transpose_to_canonical_key: bool = False
     include_metadata_features: bool = False
 

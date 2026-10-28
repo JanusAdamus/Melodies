@@ -115,6 +115,8 @@ def build_profile_config(
                 config.preprocessing,
                 include_rests=True,
                 prefer_treble=False,
+                # La melodia no tiene silencios; este perfil necesita la extraccion antigua.
+                extraction_mode="legacy_all_parts",
             ),
             representation=replace(
                 config.representation,

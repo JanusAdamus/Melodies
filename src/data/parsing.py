@@ -165,19 +165,23 @@ def extract_events_for_mode(
     score: music21.stream.Score | music21.stream.Stream,
     mode: str = "melody",
     prefer_treble: bool = False,
+    include_rests: bool = False,
 ) -> list[MusicalEvent]:
     """Extrae eventos con un modo explicito.
 
     ``melody``: voz superior de la parte en sol (la definicion vigente).
     ``legacy_all_parts``: la extraccion anterior al 2026-10-26 (todas las partes fusionadas,
     acordes reducidos a su raiz, ligaduras y adornos como eventos); se conserva para citar
-    la version antigua. ``prefer_treble`` solo aplica a este modo.
+    la version antigua. ``prefer_treble`` e ``include_rests`` solo aplican a este modo; la
+    melodia no tiene silencios, asi que pedirlos con ``melody`` es un error y no se ignora.
     """
 
     if mode == "melody":
+        if include_rests:
+            raise ValueError("El modo 'melody' no extrae silencios; usa include_rests=False.")
         return extract_melody_events(score)
     if mode == "legacy_all_parts":
-        return extract_events(score, prefer_treble=prefer_treble)
+        return extract_events(score, include_rests=include_rests, prefer_treble=prefer_treble)
     raise ValueError(f"Modo de extraccion no soportado: {mode!r}; usa uno de {EXTRACTION_MODES}.")
 
 
