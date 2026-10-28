@@ -7,7 +7,8 @@ prueba, −log p(x_prueba | x_ajuste) / n_prueba, en nats, sobre las 12 clases d
 
 * n-gramas: predictiva posterior exacta de Dirichlet(α) (los conteos se actualizan con cada
   nota de prueba, que es ∫ p(x_prueba | θ) p(θ | x_ajuste) dθ en forma cerrada).
-* HMM finito: Baum-Welch (estimador puntual); la prueba se puntúa filtrando el estado a
+* HMM finito: Baum-Welch (estimador puntual), el mejor de ``finite_restarts`` inicios por
+  log-verosimilitud de entrenamiento; la prueba se puntúa filtrando el estado a
   través de la frontera ajuste/prueba.
 * HDP-HMM: predictiva posterior promediada sobre las muestras tras burn-in de todas las
   cadenas (`heldout_nll_per_token`).
@@ -265,6 +266,16 @@ def baum_welch(
     return HMMFit(initial, transition, emission, final, tuple(trace) + (final,))
 
 
+def best_baum_welch(tokens: Sequence[int], *, n_states: int, seeds: Sequence[int], **kwargs) -> HMMFit:
+    """Baum-Welch desde varias inicializaciones; devuelve el de mayor log p(x|θ) en ``tokens``.
+
+    Empates: el de la primera semilla. Sólo usa los datos de ajuste, nunca la validación.
+    """
+
+    fits = [baum_welch(tokens, n_states=n_states, seed=int(seed), **kwargs) for seed in seeds]
+    return max(fits, key=lambda fit: fit.log_likelihood)
+
+
 @dataclass(frozen=True)
 class Occupancy:
     mean: float
@@ -288,23 +299,26 @@ def fit_finite(
     *,
     grid: Sequence[int] = (2, 4, 8, 16, 32),
     seed: int = 0,
+    n_restarts: int = 5,
     max_states: int = 512,
     threshold: float = 0.02,
     n_occupancy_samples: int = 200,
 ) -> dict:
+    seeds = tuple(range(seed, seed + n_restarts))
     selection = select_by_validation(
         tuple(int(k) for k in grid),
         lambda k: hmm_conditional_nll(
-            *_params(baum_welch(split.inner_train, n_states=int(k), seed=seed)), split.inner_train, split.validation
+            *_params(best_baum_welch(split.inner_train, n_states=int(k), seeds=seeds)), split.inner_train, split.validation
         ),
         extend=True,
         max_value=max_states,
     )
     k = int(selection.selected)
-    fit = baum_welch(split.fit, n_states=k, seed=seed)
+    fit = best_baum_welch(split.fit, n_states=k, seeds=seeds)
     occupancy = posterior_occupied_states(fit, split.fit, threshold=threshold, n_samples=n_occupancy_samples, seed=seed)
     return {
         "finite_k": k,
+        "finite_restarts": int(n_restarts),
         "finite_k_validation_nll": selection.validation_nll,
         "finite_k_grid": list(selection.grid),
         "finite_grid_extensions": selection.grid_extensions,
@@ -408,6 +422,9 @@ class PorObraConfig:
     k_grid: tuple = (2, 4, 8, 16, 32)
     max_states: int = 512
     finite_seed: int = 0
+    #: Inicializaciones de Baum-Welch por K (semillas finite_seed..+n−1); gana la de mayor
+    #: log-verosimilitud de entrenamiento, en la validación y en el reajuste.
+    finite_restarts: int = 5
     etas: tuple = (1.0, 3.0, 6.0)
     truncation: int = 20
     n_chains: int = 4
@@ -442,6 +459,7 @@ def analyze_work(work_id: str, tokens: Sequence[int], config: PorObraConfig) -> 
             split,
             grid=config.k_grid,
             seed=config.finite_seed,
+            n_restarts=config.finite_restarts,
             max_states=config.max_states,
             threshold=config.occupancy_threshold,
             n_occupancy_samples=config.n_occupancy_samples,

@@ -73,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-events", type=int, default=porobra.MIN_EVENTS)
     parser.add_argument("--alphas", type=_floats, default=(0.1, 0.5, 1.0))
     parser.add_argument("--k-grid", type=_ints, default=(2, 4, 8, 16, 32))
+    parser.add_argument("--finite-restarts", type=int, default=5, help="Inicios de Baum-Welch por K (gana el de mayor log-verosimilitud).")
     parser.add_argument("--max-states", type=int, default=512, help="Techo de la ampliación de la rejilla del finito.")
     parser.add_argument("--etas", type=_floats, default=(1.0, 3.0, 6.0))
     parser.add_argument("--truncation", type=int, default=20, help="K de truncamiento del HDP (40: sensibilidad).")
@@ -148,6 +149,7 @@ def main(argv: list[str] | None = None) -> Path:
         alphas=tuple(args.alphas),
         k_grid=tuple(args.k_grid),
         max_states=args.max_states,
+        finite_restarts=args.finite_restarts,
         etas=tuple(args.etas),
         truncation=args.truncation,
         n_chains=args.chains,
