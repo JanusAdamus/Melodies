@@ -237,6 +237,53 @@ def test_hdp_por_obra_elige_eta_y_reporta_rhat_y_estados():
     assert math.isfinite(result["hdp_insample_ll_per_note"])
 
 
+@pytest.fixture(scope="module")
+def hdp_chains():
+    tokens, *_ = _simulate_hmm(80, 5)
+    split = porobra.split_tokens(tokens)
+    chains = porobra._hdp_chains(
+        split.fit, eta=1.0, truncation=6, n_chains=3, n_iters=16, burn_in=8, threshold=0.02, hyperparameters={}
+    )
+    return split, chains
+
+
+def test_nll_de_prueba_por_muestra_es_la_del_hmm_con_esos_parametros(hdp_chains):
+    split, chains = hdp_chains
+    traces = porobra.per_sample_test_nll(chains, split.fit, split.test)
+    assert [len(trace) for trace in traces] == [len(chain.posterior_samples) for chain in chains]
+    sample = chains[1].posterior_samples[3]
+    expected = porobra.hmm_conditional_nll(
+        sample.initial_probs, sample.transition_matrix, sample.emission_matrix, split.fit, split.test
+    )
+    assert traces[1][3] == pytest.approx(expected)
+
+
+def test_diagnostico_por_cadena_enmienda_6(hdp_chains):
+    split, chains = hdp_chains
+    result = porobra.hdp_chain_diagnostics(chains, split.fit, split.test)
+    by_chain = result["hdp_test_nll_by_chain"]
+    assert by_chain == pytest.approx([porobra.heldout_nll_per_token([c], split.fit, split.test) for c in chains])
+    assert result["hdp_test_nll_chain_range"] == pytest.approx(max(by_chain) - min(by_chain))
+    # Con el mismo número de muestras por cadena, el ensamble es la media de las predictivas.
+    n = split.test.size
+    ensemble = porobra.heldout_nll_per_token(chains, split.fit, split.test)
+    assert math.exp(-n * ensemble) == pytest.approx(np.mean([math.exp(-n * v) for v in by_chain]), rel=1e-9)
+    traces = porobra.per_sample_test_nll(chains, split.fit, split.test)
+    assert result["hdp_predictive_rhat"] == pytest.approx(porobra.split_rhat(traces))
+    occupied = [chain.diagnostics.occupied_state_samples for chain in chains]
+    assert result["hdp_states_mean_by_chain"] == pytest.approx([np.mean(o) for o in occupied])
+    assert result["hdp_states_sd_by_chain"] == pytest.approx([np.std(o) for o in occupied])
+
+
+def test_hdp_por_obra_lleva_el_diagnostico_por_cadena():
+    tokens, *_ = _simulate_hmm(80, 5)
+    result = porobra.fit_hdp(tokens, porobra.split_tokens(tokens), **FAST_HDP)
+    assert len(result["hdp_test_nll_by_chain"]) == FAST_HDP["n_chains"]
+    assert len(result["hdp_states_mean_by_chain"]) == FAST_HDP["n_chains"]
+    assert math.isfinite(result["hdp_predictive_rhat"])
+    assert result["hdp_test_nll_chain_range"] >= 0.0
+
+
 def test_analisis_de_una_obra_es_determinista_y_completo():
     tokens, *_ = _simulate_hmm(60, 6)
     config = porobra.PorObraConfig(k_grid=(2, 4), **FAST_HDP)
@@ -293,13 +340,21 @@ def test_veredicto_x_es_mejor_y_sin_evidencia():
     assert {c["verdict"] for c in tie["comparisons"]} == {"no_hay_evidencia"}
 
 
-def test_obras_sin_convergencia_quedan_fuera_de_la_metrica_principal():
+def test_metrica_principal_incluye_las_obras_sin_convergencia_enmienda_6():
+    # Enmienda 6: ninguna obra se excluye por el R-hat del HDP; la regla original queda
+    # como sensibilidad (sólo obras con R-hat < 1.1).
     rows = _rows(20, -0.5) + _rows(5, 5.0, converged=False)
     for index, row in enumerate(rows[20:]):
         row["work_id"] = f"nc{index}"
-    result = porobra.compare_hdp(rows, bootstrap_samples=500, seed=0)
-    assert result["comparisons"][0]["n_pairs"] == 20
-    assert result["comparisons"][0]["verdict"] == "mejora"
+    main = porobra.compare_hdp(rows, bootstrap_samples=500, seed=0)
+    assert main["comparisons"][0]["n_pairs"] == 25
+    assert main["n_works"] == 25 and main["converged_only"] is False
+    expected = np.mean([row["hdp_test_nll"] - row["finite_test_nll"] for row in rows])
+    assert main["comparisons"][0]["mean_difference"] == pytest.approx(expected)
+    sensitivity = porobra.compare_hdp(rows, bootstrap_samples=500, seed=0, converged_only=True)
+    assert sensitivity["comparisons"][0]["n_pairs"] == 20
+    assert sensitivity["n_works"] == 20 and sensitivity["converged_only"] is True
+    assert sensitivity["comparisons"][0]["verdict"] == "mejora"
 
 
 def test_estimando_que_decide_es_la_media_por_obra_no_la_ponderada():
@@ -324,14 +379,15 @@ def test_menos_de_diez_obras_no_decide():
 # --- resumen -------------------------------------------------------------------------
 
 
-def test_resumen_marca_mas_de_diez_por_ciento_sin_convergencia():
+def test_resumen_reporta_la_fraccion_que_converge_sin_mandar_duplicar_iteraciones():
+    # Enmienda 6: se reporta la fracción con R-hat de log L < 1.1; la contingencia de
+    # duplicar iteraciones ya no aplica y la convergencia no excluye obras.
     rows = _rows(18, -0.5) + _rows(2, 0.0, converged=False)
     for index, row in enumerate(rows[18:]):
         row["work_id"] = f"nc{index}"
     summary = porobra.convergence_summary(rows)
-    assert summary["n_not_converged"] == 2 and summary["fraction_not_converged"] == pytest.approx(0.1)
-    assert summary["exceeds_10_percent"] is False
-    rows.append({**rows[-1], "work_id": "nc9"})
-    flagged = porobra.convergence_summary(rows)
-    assert flagged["exceeds_10_percent"] is True
-    assert "enmienda" in flagged["action_required"]
+    assert summary["n_works"] == 20 and summary["n_converged"] == 18
+    assert summary["fraction_converged"] == pytest.approx(0.9)
+    assert summary["not_converged_work_ids"] == ["nc0", "nc1"]
+    assert "action_required" not in summary and "exceeds_10_percent" not in summary
+    assert "Enmienda 6" in summary["rule"]

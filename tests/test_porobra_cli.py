@@ -64,6 +64,17 @@ def test_corrida_escribe_directorio_nuevo_con_csv_resumen_y_manifiesto(corpus, t
     assert summary["convergence"]["n_works"] == 4
     assert [c["model_b"] for c in summary["comparisons"]["comparisons"]] == ["finite", "bigram", "unigram"]
     assert summary["comparisons"]["holm_family"]["family_size"] == 3
+    # Enmienda 6: la métrica principal usa todas las obras; la regla original es sensibilidad.
+    assert summary["comparisons"]["n_works"] == 4 and summary["comparisons"]["converged_only"] is False
+    sensitivity = summary["sensitivity_converged_only"]
+    assert sensitivity["converged_only"] is True
+    assert sensitivity["n_works"] == int(works["hdp_converged"].sum())
+    assert "Enmienda 6" in summary["preregistro"]
+    assert "media posterior" in summary["hdp_states_note"]
+    for column in ("hdp_test_nll_by_chain", "hdp_test_nll_chain_range", "hdp_predictive_rhat",
+                   "hdp_states_mean_by_chain", "hdp_states_sd_by_chain"):
+        assert column in works.columns
+    assert all(len(json.loads(value)) == 2 for value in works["hdp_test_nll_by_chain"])
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     assert len(manifest["commit"]) == 40
     assert manifest["config"]["truncation"] == 4 and manifest["config"]["n_chains"] == 2
