@@ -157,23 +157,56 @@ def test_mejor_de_varios_reinicios_es_el_de_mayor_verosimilitud():
     np.testing.assert_array_equal(best.emission_matrix, max(fits, key=lambda f: f.log_likelihood).emission_matrix)
 
 
-def test_finito_con_reinicios_usa_el_mejor_ajuste_en_validacion_y_reajuste():
+def test_baum_welch_suaviza_las_emisiones_con_alpha():
+    # Con un solo estado el paso M es exacto: emisión = (conteo + α) / (n + 12 α).
+    tokens = np.array([0, 4, 7, 0, 4, 0, 7, 7, 0, 4])
+    for alpha in (0.1, 1.0):
+        fit = porobra.baum_welch(tokens, n_states=1, seed=0, pseudocount=alpha)
+        expected = (np.bincount(tokens, minlength=12) + alpha) / (tokens.size + 12 * alpha)
+        np.testing.assert_allclose(fit.emission_matrix[0], expected, rtol=1e-10)
+
+
+def test_finito_con_reinicios_elige_k_y_alpha_en_validacion_y_reajusta():
+    # Enmienda 5: selección conjunta de (K, α) por menor NLL de validación.
     tokens, *_ = _simulate_hmm(200, 8)
     split = porobra.split_tokens(tokens)
-    result = porobra.fit_finite(tokens, split, grid=(2, 4), seed=10, n_restarts=3)
+    result = porobra.fit_finite(tokens, split, grid=(2, 4), alphas=(0.1, 1.0), seed=10, n_restarts=3)
     assert result["finite_restarts"] == 3
-    for k in (2, 4):
-        best = porobra.best_baum_welch(split.inner_train, n_states=k, seeds=(10, 11, 12))
-        expected = porobra.hmm_conditional_nll(
-            best.initial_probs, best.transition_matrix, best.emission_matrix, split.inner_train, split.validation
-        )
-        assert result["finite_k_validation_nll"][k] == pytest.approx(expected)
-    refit = porobra.best_baum_welch(split.fit, n_states=result["finite_k"], seeds=(10, 11, 12))
+    scores = {}
+    for alpha in (0.1, 1.0):
+        for k in (2, 4):
+            best = porobra.best_baum_welch(split.inner_train, n_states=k, seeds=(10, 11, 12), pseudocount=alpha)
+            scores[(k, alpha)] = porobra.hmm_conditional_nll(
+                best.initial_probs, best.transition_matrix, best.emission_matrix, split.inner_train, split.validation
+            )
+            assert result["finite_validation_nll"][alpha][k] == pytest.approx(scores[(k, alpha)])
+    assert (result["finite_k"], result["finite_alpha"]) == min(scores, key=scores.get)
+    refit = porobra.best_baum_welch(
+        split.fit, n_states=result["finite_k"], seeds=(10, 11, 12), pseudocount=result["finite_alpha"]
+    )
     assert result["finite_insample_ll_per_note"] == pytest.approx(refit.log_likelihood / split.fit.size)
+    assert result["finite_test_nll"] == pytest.approx(
+        porobra.hmm_conditional_nll(*porobra._params(refit), split.fit, split.test)
+    )
 
 
-def test_configuracion_por_defecto_usa_cinco_reinicios():
-    assert porobra.PorObraConfig().finite_restarts == 5
+def test_seleccion_conjunta_amplia_k_si_elige_el_maximo_con_cualquier_alpha():
+    # Mejor con K grande hasta 48 y con α = 0.5: la rejilla de K crece para todos los α.
+    def score(k, alpha):
+        return (-k if k <= 48 else k) + abs(alpha - 0.5)
+
+    choice = porobra.select_k_alpha((2, 4, 8, 16, 32), (0.1, 0.5, 1.0), score, max_value=512)
+    assert (choice.k, choice.alpha) == (48, 0.5)
+    assert choice.k_grid == (2, 4, 8, 16, 32, 48, 64)
+    assert choice.grid_extensions == 1 and not choice.hit_limit
+    assert set(choice.validation_nll) == {0.1, 0.5, 1.0}
+    assert all(set(by_k) == set(choice.k_grid) for by_k in choice.validation_nll.values())
+
+
+def test_configuracion_por_defecto_usa_cinco_reinicios_y_alphas_del_preregistro():
+    config = porobra.PorObraConfig()
+    assert config.finite_restarts == 5
+    assert config.finite_alphas == (0.1, 0.5, 1.0)
 
 
 def test_finito_elige_pocos_estados_con_datos_de_dos():
