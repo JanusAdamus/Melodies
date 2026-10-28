@@ -1,4 +1,4 @@
-"""Análisis por obra held-out: preregistro 2026-10-26, sección A, Aclaración 2, Enmiendas 3 y 5.
+"""Análisis por obra held-out: preregistro 2026-10-26, sección A, Aclaración 2, Enmiendas 3, 5 y 6.
 
 Por obra, partición contigua: el primer 80 % de los eventos ajusta y el último 20 % evalúa;
 dentro del 80 %, su último 20 % valida los hiperparámetros (α de los n-gramas, K del finito,
@@ -12,7 +12,9 @@ prueba, −log p(x_prueba | x_ajuste) / n_prueba, en nats, sobre las 12 clases d
   ``finite_restarts`` inicios por log-verosimilitud de entrenamiento; la prueba se puntúa
   filtrando el estado a través de la frontera ajuste/prueba.
 * HDP-HMM: predictiva posterior promediada sobre las muestras tras burn-in de todas las
-  cadenas (`heldout_nll_per_token`).
+  cadenas (`heldout_nll_per_token`), el «ensamble de cadenas» de la Enmienda 6: ninguna obra
+  se excluye por su R-hat; por cadena se reportan la NLL de prueba, el R-hat de la NLL
+  predictiva por muestra y los estados.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from src.models.hdp_hmm import (
     _forward_step_log_scales,
     heldout_nll_per_token,
     log_likelihood_rhat,
+    split_rhat,
 )
 from src.models.inference import ffbs_sample_batch, forward_log_likelihood
 from src.models.utils import EPSILON, occupied_state_count
@@ -52,7 +55,14 @@ FIT_FRACTION = 0.8
 COMPARED_MODELS = ("finite", "bigram", "unigram")
 MODELS = ("hdp",) + COMPARED_MODELS
 RHAT_THRESHOLD = 1.1
-MAX_NOT_CONVERGED_FRACTION = 0.10
+CONVERGENCE_RULE = (
+    "Enmienda 6: ninguna obra se excluye por el R-hat del HDP-HMM; se reporta la fracción con "
+    "R-hat de log L < 1.1 y la comparación restringida a esas obras es sólo sensibilidad."
+)
+HDP_STATES_NOTE = (
+    "Estados del HDP-HMM por cadena (Enmienda 6): sin convergencia entre cadenas no son una "
+    "media posterior y no se interpretan como inferencia bayesiana sobre K."
+)
 DECISION_ESTIMAND = "mean_over_works_of_work_nll_difference"
 #: Seudoconteo de la distribución inicial del finito (una sola secuencia: casi no pesa).
 INITIAL_PSEUDOCOUNT = 1e-3
@@ -407,6 +417,32 @@ def _hdp_chains(tokens, *, eta, truncation, n_chains, n_iters, burn_in, threshol
     ]
 
 
+def per_sample_test_nll(chains, fit_tokens, test_tokens) -> list[np.ndarray]:
+    """−log p(x_prueba | x_ajuste, θ_s) / n_prueba para cada muestra tras burn-in, por cadena."""
+
+    fit_tokens = np.asarray(fit_tokens, dtype=int)
+    test_tokens = np.asarray(test_tokens, dtype=int)
+    tokens = np.concatenate([fit_tokens, test_tokens])
+    return [
+        -_forward_step_log_scales(chain.posterior_samples, tokens)[:, fit_tokens.size :].sum(axis=1) / test_tokens.size
+        for chain in chains
+    ]
+
+
+def hdp_chain_diagnostics(chains, fit_tokens, test_tokens) -> dict:
+    """Diagnóstico por cadena de la Enmienda 6 (se reporta; no decide ni excluye obras)."""
+
+    by_chain = [heldout_nll_per_token([chain], fit_tokens, test_tokens) for chain in chains]
+    occupied = [chain.diagnostics.occupied_state_samples for chain in chains]
+    return {
+        "hdp_test_nll_by_chain": by_chain,
+        "hdp_test_nll_chain_range": float(max(by_chain) - min(by_chain)),
+        "hdp_predictive_rhat": split_rhat(per_sample_test_nll(chains, fit_tokens, test_tokens)),
+        "hdp_states_mean_by_chain": [float(np.mean(o)) for o in occupied],
+        "hdp_states_sd_by_chain": [float(np.std(o)) for o in occupied],
+    }
+
+
 def fit_hdp(
     tokens,
     split: TokenSplit,
@@ -458,6 +494,7 @@ def fit_hdp(
         "hdp_states_sd": float(np.std(occupied)),
         "hdp_insample_ll_per_note": float(np.mean(insample)) / split.fit.size,
         "hdp_posterior_mean_log_likelihood_per_note": float(np.mean([c.log_likelihood for c in chains])) / split.fit.size,
+        **hdp_chain_diagnostics(chains, split.fit, split.test),
     }
 
 
@@ -550,8 +587,13 @@ def _verdict(comparison: Mapping) -> str:
     return "no_hay_evidencia"
 
 
-def compare_hdp(rows: Iterable[Mapping], *, bootstrap_samples: int = 10_000, seed: int = 0) -> dict:
-    """HDP − {finito, bigrama, unigrama} sobre las obras que convergen (Aclaración 2).
+def compare_hdp(
+    rows: Iterable[Mapping], *, bootstrap_samples: int = 10_000, seed: int = 0, converged_only: bool = False
+) -> dict:
+    """HDP − {finito, bigrama, unigrama} sobre todas las obras analizadas (Aclaración 2, Enmienda 6).
+
+    Con ``converged_only`` se restringe a las obras con R-hat de log L < 1.1: es la
+    sensibilidad de la Enmienda 6 (la regla original), no decide.
 
     Decide la media por obra de la diferencia de NLL por nota (cada obra pesa lo mismo), con
     IC bootstrap por obra ajustado por Holm por pasos sobre la familia de 3. La ponderada por
@@ -560,7 +602,7 @@ def compare_hdp(rows: Iterable[Mapping], *, bootstrap_samples: int = 10_000, see
     evidencia». Menos de 10 obras en común (Enmienda 1): «no_evaluable».
     """
 
-    rows = [row for row in rows if row.get("hdp_converged")]
+    rows = [row for row in rows if row.get("hdp_converged") or not converged_only]
     generator = np.random.default_rng(seed)
     comparisons: list[dict] = []
     work_draws: dict[int, np.ndarray] = {}
@@ -621,28 +663,24 @@ def compare_hdp(rows: Iterable[Mapping], *, bootstrap_samples: int = 10_000, see
         ),
         "bootstrap_samples": int(bootstrap_samples),
         "seed": int(seed),
-        "n_works_converged": len(rows),
+        "converged_only": bool(converged_only),
+        "n_works": len(rows),
         "comparisons": comparisons,
         "holm_family": family,
     }
 
 
 def convergence_summary(rows: Sequence[Mapping]) -> dict:
+    """Fracción de obras con R-hat de log L < 1.1 (Enmienda 6: se reporta, no excluye)."""
+
     rows = list(rows)
     failed = sorted(str(row["work_id"]) for row in rows if not row.get("hdp_converged"))
-    fraction = len(failed) / len(rows) if rows else 0.0
-    exceeds = fraction > MAX_NOT_CONVERGED_FRACTION
+    n_converged = len(rows) - len(failed)
     return {
+        "rule": CONVERGENCE_RULE,
         "rhat_threshold": RHAT_THRESHOLD,
         "n_works": len(rows),
-        "n_not_converged": len(failed),
-        "fraction_not_converged": fraction,
+        "n_converged": n_converged,
+        "fraction_converged": n_converged / len(rows) if rows else math.nan,
         "not_converged_work_ids": failed,
-        "exceeds_10_percent": exceeds,
-        "action_required": (
-            "Más del 10 % de las obras no converge: el preregistro manda duplicar las iteraciones "
-            "y registrar la enmienda antes de reportar. Este resultado no es el final."
-            if exceeds
-            else None
-        ),
     }

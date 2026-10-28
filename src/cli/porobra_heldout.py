@@ -10,6 +10,8 @@ existe): ``per_work.csv``, ``summary.json`` y ``manifest.json``. El directorio s
 empezar y cada obra terminada se agrega a ``per_work.partial.jsonl``: si la corrida se
 interrumpe, lo ya calculado queda en disco. Una obra que falla se registra en
 ``analysis_failures`` del resumen y queda fuera de las comparaciones; las demás siguen.
+La comparación principal usa todas las obras analizadas (Enmienda 6);
+``sensitivity_converged_only`` la repite sólo con las que tienen R-hat de log L < 1.1.
 """
 
 from __future__ import annotations
@@ -229,7 +231,7 @@ def main(argv: list[str] | None = None) -> Path:
                                  per_work["hdp_converged"])]
 
     summary = {
-        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3 y 5",
+        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6",
         "corpus": {
             "extraction": EXTRACTION,
             "n_candidates": int(len(catalog)),
@@ -248,6 +250,10 @@ def main(argv: list[str] | None = None) -> Path:
         "analysis_failures": analysis_failures,
         "convergence": porobra.convergence_summary(records),
         "comparisons": porobra.compare_hdp(records, bootstrap_samples=args.bootstrap_samples, seed=args.stats_seed),
+        "sensitivity_converged_only": porobra.compare_hdp(
+            records, bootstrap_samples=args.bootstrap_samples, seed=args.stats_seed, converged_only=True
+        ),
+        "hdp_states_note": porobra.HDP_STATES_NOTE,
         "selected_hyperparameters": {
             "hdp_eta": _distribution(per_work["hdp_eta"]) if len(per_work) else {},
             "finite_k": _distribution(per_work["finite_k"]) if len(per_work) else {},
@@ -295,8 +301,9 @@ def main(argv: list[str] | None = None) -> Path:
     print(f"Corrida escrita en {run_dir} ({summary['wall_clock_s']} s, {len(per_work)} obras).")
     if analysis_failures:
         print(f"AVISO: {len(analysis_failures)} obra(s) fallaron en el análisis; ver analysis_failures en summary.json.")
-    if summary["convergence"]["exceeds_10_percent"]:
-        print("AVISO: " + summary["convergence"]["action_required"])
+    convergence = summary["convergence"]
+    print(f"R-hat de log L < {porobra.RHAT_THRESHOLD}: {convergence['n_converged']} de {convergence['n_works']} obras "
+          "(se reporta; no excluye obras, Enmienda 6).")
     return run_dir
 
 
