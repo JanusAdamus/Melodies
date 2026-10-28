@@ -94,6 +94,7 @@ def _pdmx(gen, tmp_path, **kwargs) -> Path:
         ("ok", [0.1, 0.3], "es mejor el otro"),
         ("too_few_paired_works", None, "no evaluable"),
         ("not_evaluable", None, "no evaluable"),
+        ("too_few_paired_works", [-0.3, -0.1], "no evaluable"),  # sin Holm, un IC no decide
     ],
 )
 def test_verdict_follows_preregistered_rule(gen, status, ci, expected):
@@ -158,6 +159,17 @@ def test_old_rule_comparisons_become_the_sensitivity_and_main_is_pending(gen, tm
     summary = json.loads((out / "generador_resumen.json").read_text(encoding="utf-8"))
     assert any("Enmienda 6" in aviso for aviso in summary["avisos"])
     assert "porobra_comparaciones.tex" in {item["tabla"] for item in summary["pendientes"]}
+
+
+def test_when_every_work_converges_both_tables_are_the_same_comparison(gen, tmp_path):
+    rows = porobra_rows()
+    rows[-1]["hdp_converged"], rows[-1]["hdp_rhat"] = True, 1.02
+    summary = porobra_summary(rows, poblacion="convergidas")  # el formato de 700acba, sin obras fuera
+    out = tmp_path / "out"
+    gen.main(["--porobra", str(write_porobra_run(tmp_path / "runs", rows=rows, summary=summary)), "--salida", str(out)])
+    assert _row(out, "porobra_comparaciones.tex", "HDP-HMM", "HMM finito")[2] == "12"
+    assert _row(out, "porobra_comparaciones_sensibilidad.tex", "HDP-HMM", "HMM finito")[2] == "12"
+    assert "coincide" in (out / "porobra_comparaciones_sensibilidad.tex").read_text(encoding="utf-8")
 
 
 def test_main_metric_without_sensitivity_leaves_it_pending(gen, tmp_path):

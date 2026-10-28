@@ -123,9 +123,9 @@ def porobra_summary(rows: list[dict], *, poblacion: str = "todas", sensibilidad:
         "convergence": {
             "rhat_threshold": 1.1,
             "n_works": len(rows),
-            "n_not_converged": 1,
-            "fraction_not_converged": 1 / len(rows),
-            "not_converged_work_ids": [rows[-1]["work_id"]],
+            "n_not_converged": len(rows) - len(converged),
+            "fraction_not_converged": (len(rows) - len(converged)) / len(rows),
+            "not_converged_work_ids": [row["work_id"] for row in rows if not row["hdp_converged"]],
             "exceeds_10_percent": False,
             "action_required": None,
         },

@@ -239,6 +239,16 @@ def test_report_numbers_are_sources_as_written(ver, tmp_path):
     assert report["n_numeros_con_fuente"] == 3
 
 
+def test_strict_mode_requires_a_citation_outside_generated_tables(ver, tmp_path):
+    thesis = tmp_path / "tesis"
+    _write(thesis / "tablas" / "t.tex", TABLE)
+    _write(thesis / "cap.tex", "La NLL es 2.209, o \\cifra{t:a.b}{2.21}.\n")
+    prov = _provenance(tmp_path, "t.tex", STANDARD[:1] + STANDARD[2:])
+    assert ver.verificar(thesis, procedencias=[prov])["errores"] == []
+    report = ver.verificar(thesis, procedencias=[prov], exigir_cita=True)
+    assert [(e["tipo"], e["archivo"], e["texto"]) for e in report["errores"]] == [("sin_cita", "cap.tex", "2.209")]
+
+
 def test_random_numbers_rarely_find_a_source(ver, tmp_path):
     import random
 
