@@ -176,32 +176,32 @@ def generate_analysis_figures(analysis: pd.DataFrame, output_dir: str | Path) ->
             plt.ylabel("Obra")
             paths.append(_save_current(output_dir / "compare_log_likelihood_gain_by_piece.png"))
 
-    if {"finite_active_states", "hdp_effective_states"}.issubset(analysis.columns):
-        comparable = analysis.dropna(subset=["finite_active_states", "hdp_effective_states"]).copy()
+    if {"finite_effective_states", "hdp_effective_states"}.issubset(analysis.columns):
+        comparable = analysis.dropna(subset=["finite_effective_states", "hdp_effective_states"]).copy()
         if not comparable.empty:
             plt.figure(figsize=(7, 6))
             if HAS_SEABORN:
                 sns.scatterplot(
                     data=comparable,
-                    x="finite_active_states",
+                    x="finite_effective_states",
                     y="hdp_effective_states",
                 )
             else:
-                plt.scatter(comparable["finite_active_states"], comparable["hdp_effective_states"])
-            low = min(comparable["finite_active_states"].min(), comparable["hdp_effective_states"].min())
-            high = max(comparable["finite_active_states"].max(), comparable["hdp_effective_states"].max())
+                plt.scatter(comparable["finite_effective_states"], comparable["hdp_effective_states"])
+            low = min(comparable["finite_effective_states"].min(), comparable["hdp_effective_states"].min())
+            high = max(comparable["finite_effective_states"].max(), comparable["hdp_effective_states"].max())
             plt.plot([low, high], [low, high], linestyle="--", color="gray")
-            plt.title("Estados activos por obra\nComparacion entre el HMM finito y el HDP-HMM truncado")
-            plt.xlabel("Estados activos del HMM finito")
+            plt.title("Estados efectivos por obra (ocupacion >= 2 %)\nComparacion entre el HMM finito y el HDP-HMM truncado")
+            plt.xlabel("Estados efectivos del HMM finito")
             plt.ylabel("Estados efectivos del HDP-HMM truncado")
             paths.append(_save_current(output_dir / "compare_state_counts_scatter.png"))
 
             top_n = min(15, len(comparable))
-            compact = comparable.sort_values("finite_active_states", ascending=False).head(top_n).copy()
+            compact = comparable.sort_values("finite_effective_states", ascending=False).head(top_n).copy()
             positions = np.arange(len(compact))
             width = 0.38
             plt.figure(figsize=(12, max(5, top_n * 0.4)))
-            plt.barh(positions - width / 2, compact["finite_active_states"], height=width, label="HMM finito", color="#ff7f0e")
+            plt.barh(positions - width / 2, compact["finite_effective_states"], height=width, label="HMM finito", color="#ff7f0e")
             plt.barh(positions + width / 2, compact["hdp_effective_states"], height=width, label="HDP-HMM truncado", color="#1f77b4")
             plt.yticks(positions, compact["title"])
             plt.gca().invert_yaxis()
@@ -211,12 +211,12 @@ def generate_analysis_figures(analysis: pd.DataFrame, output_dir: str | Path) ->
             plt.legend()
             paths.append(_save_current(output_dir / "compare_state_counts_by_piece.png"))
 
-    if {"composer", "finite_active_states"}.issubset(analysis.columns):
+    if {"composer", "finite_effective_states"}.issubset(analysis.columns):
         composer_summary = (
-            analysis.groupby("composer")[["finite_active_states"] + ([col for col in ["hdp_effective_states"] if col in analysis.columns])]
+            analysis.groupby("composer")[["finite_effective_states"] + ([col for col in ["hdp_effective_states"] if col in analysis.columns])]
             .mean(numeric_only=True)
             .reset_index()
-            .sort_values("finite_active_states", ascending=False)
+            .sort_values("finite_effective_states", ascending=False)
             .head(12)
         )
         if not composer_summary.empty:
@@ -287,12 +287,12 @@ def build_analysis_explanation(analysis: pd.DataFrame) -> str:
                 ]
             )
 
-            if {"finite_active_states", "hdp_effective_states"}.issubset(comparable.columns):
+            if {"finite_effective_states", "hdp_effective_states"}.issubset(comparable.columns):
                 lines.extend(
                     [
                         "## Complejidad del espacio latente",
                         "",
-                        f"- Estados activos medios del HMM finito: {comparable['finite_active_states'].mean():.3f}.",
+                        f"- Estados efectivos medios del HMM finito: {comparable['finite_effective_states'].mean():.3f}.",
                         f"- Estados efectivos medios del HDP-HMM truncado: {comparable['hdp_effective_states'].mean():.3f}.",
                         "",
                     ]

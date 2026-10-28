@@ -816,7 +816,7 @@ Esto es importante porque:
 `HDPHMMDiagnostics` guarda:
 
 - `log_likelihood_history`
-- `active_state_history`
+- `active_state_history` (estados con ocupación >= `occupancy_threshold`, 2 % por defecto, en cada iteración; es la columna `active_states` de la traza)
 - `beta_entropy_history`
 - `state_samples`
 - `beta_update_mode`
@@ -900,6 +900,13 @@ Esto permite cuantificar si un modelo segmenta de forma muy atomizada o mas esta
 - `diagnostics`
 - `interpretation` si se provee
 
+Dos conteos de estados, con nombres distintos:
+
+- `n_active_states` del `summary` es el estimando del preregistro, `effective_states`: media posterior, sobre las muestras tras el burn-in, del numero de estados con ocupacion >= `occupancy_threshold` (2 %). Es el mismo rotulo y el mismo estimando que en el HMM finito.
+- `n_reference_states` del `summary` es `len(result.active_states)`: los estados distintos de la muestra de referencia (`latent_states`, la de mayor log-verosimilitud tras el burn-in), sin umbral. Puede ser mayor que `n_active_states`: con 98/1/1 % de eventos la muestra de referencia visita estados con 1 % que el estimando no cuenta. Es el analogo de `n_viterbi_states` del finito.
+
+`transition_matrix_active`, `hdp_transition_heatmap.png`, `hdp_emission_heatmap.png`, `hdp_transition_graph.png` y la tabla `interpretation` usan `result.active_states`, es decir, los estados de la muestra de referencia y no los que cuenta `n_active_states`. Por eso los ejes de `transition_matrix_active` se llaman `reference_sample_state`, los titulos de los mapas de calor dicen "estados de la muestra de referencia" y `interpretation` lleva la columna `reference_share` (fraccion de eventos del estado en esa muestra). Los nombres de archivo y de las claves se conservan por compatibilidad.
+
 ### 13.5. Comparacion de modelos
 
 `compare_models(...)` arma una tabla con:
@@ -927,9 +934,9 @@ Este modulo hace el puente entre estados latentes sin nombre y lectura musical h
 
 ### 14.1. Idea
 
-Cada estado activo `z_k` se resume por:
+Cada estado `z_k` de la muestra de referencia (`result.active_states`, sin umbral de ocupacion) se resume por:
 
-- ocupacion;
+- ocupacion (`occupation`, eventos, y `reference_share`, fraccion de eventos en esa muestra);
 - permanencia;
 - emisiones mas probables;
 - sucesores mas probables;

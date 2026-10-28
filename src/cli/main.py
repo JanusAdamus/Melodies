@@ -61,7 +61,8 @@ def _summary_text(
             [
                 "Baseline HMM finito",
                 f"- Log-likelihood: {finite_result.log_likelihood:.4f}",
-                f"- Estados activos: {len(finite_result.active_states)}",
+                f"- Estados distintos en Viterbi: {len(finite_result.active_states)}",
+                f"- Estados efectivos (ocupacion >= 2 %, media posterior): {finite_result.effective_states:.2f}",
                 f"- Estados visitados: {', '.join(sorted(set(finite_result.latent_labels))[:8])}",
                 f"- Contextos modales locales: {', '.join(sorted(set(finite_result.modal_labels))[:6])}",
                 "",
@@ -72,7 +73,8 @@ def _summary_text(
             [
                 "HDP-HMM truncado",
                 f"- Log-likelihood: {hdp_result.log_likelihood:.4f}",
-                f"- Estados activos: {hdp_result.effective_states} de K={hdp_result.transition_matrix.shape[0]}",
+                f"- Estados efectivos (ocupacion >= 2 %, media posterior): {hdp_result.effective_states:.2f} de K={hdp_result.transition_matrix.shape[0]}",
+                f"- Estados distintos en la muestra de referencia: {len(hdp_result.active_states)}",
                 f"- Mejor iteracion: {hdp_result.diagnostics.best_iteration}",
                 f"- Modo de actualizacion beta: {hdp_result.diagnostics.beta_update_mode}",
                 "",

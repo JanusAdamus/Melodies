@@ -585,8 +585,8 @@ class GlobalHDPHMM:
                     "alpha0": alpha0,
                     "gamma": gamma,
                     "validation_nll_per_token": validation_nll,
-                    "best_log_likelihood": float(result.log_likelihood),
-                    "effective_states": int(result.effective_states),
+                    "posterior_mean_log_likelihood": float(result.log_likelihood),
+                    "effective_states": float(result.effective_states),
                 }
             )
             if validation_nll < best_validation_nll:
@@ -665,7 +665,7 @@ class GlobalHDPHMM:
                 "test_perplexity": math.exp(nll_per_token),
                 "n_tokens": total_tokens,
                 "n_params": int(n_params),
-                "effective_states": int(self.best_result.effective_states),
+                "effective_states": float(self.best_result.effective_states),
                 "train_time_sec": self.train_time_sec,
                 "selection_wall_clock_s": self.selection_wall_clock_s,
                 "selected_fit_wall_clock_s": self.selected_fit_wall_clock_s,

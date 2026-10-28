@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -79,33 +80,19 @@ class HDPHMMTests(unittest.TestCase):
             "fit_sequences must fit independent observation sequences",
         )
         initial_contributions_seen: list[np.ndarray] = []
-        base_rng = model.rng
-
-        class RecordingRNG:
-            record_dirichlet = False
-            last_concentration: np.ndarray | None = None
-
-            def __getattr__(self, name):
-                return getattr(base_rng, name)
-
-            def dirichlet(self, concentration, *args, **kwargs):
-                if self.record_dirichlet:
-                    self.last_concentration = np.array(concentration, copy=True)
-                return base_rng.dirichlet(concentration, *args, **kwargs)
-
-        recording_rng = RecordingRNG()
-        model.rng = recording_rng
         original_sample_initial = model._sample_initial
+        original_sample_dirichlet = hdp_hmm_module.sample_dirichlet
 
         def recording_sample_initial(state_sequences, beta):
-            recording_rng.record_dirichlet = True
-            try:
+            seen: list[np.ndarray] = []
+
+            def recording_sample_dirichlet(concentration, rng):
+                seen.append(np.array(concentration, copy=True))
+                return original_sample_dirichlet(concentration, rng)
+
+            with patch.object(hdp_hmm_module, "sample_dirichlet", recording_sample_dirichlet):
                 sampled = original_sample_initial(state_sequences, beta)
-            finally:
-                recording_rng.record_dirichlet = False
-            initial_contributions_seen.append(
-                recording_rng.last_concentration - model.alpha0 * beta - hdp_hmm_module.EPSILON
-            )
+            initial_contributions_seen.append(seen[-1] - model.alpha0 * beta)
             return sampled
 
         model._sample_initial = recording_sample_initial

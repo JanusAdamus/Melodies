@@ -1,0 +1,2 @@
+s8_criterio_b_bloques_simulada_salida_20261026.txt: 5000 permutaciones (semilla 0); regla vieja por bloques {'inconclusive': 4894, 'met_robustly': 104, 'not_met': 2}; regla agrupada {'met': 4980, 'inconclusive': 20}
+s8_criterio_b_bloques_pdmx200_salida_20261026.txt: 5000 permutaciones (semilla 0); regla vieja por bloques {'inconclusive': 4889, 'met_robustly': 109, 'not_met': 2}; regla agrupada {'met': 4969, 'inconclusive': 31}

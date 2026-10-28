@@ -1,0 +1,70 @@
+Corrida del 2026-10-26 (sólo CPU), rama fix/auditoria-hdp, código en ad9048c, con la cadena del preregistro.
+Caché: artifacts/corpus_cache_3000.jsonl (PDMX, extracción de agosto); misma obra que la sección
+«Una sola obra» de s5_beta_seed_v3_salida_20261026.txt (que usó 80/40 y no evalúa el criterio (b)).
+python scripts/auditoria_2026_10_26/hdp/s5_beta_seed_v3.py artifacts/corpus_cache_3000.jsonl --n-seeds 50 --single-work 200
+Lectura: r = -0.118 está por debajo de 0.3, pero el IC 95 % de Fisher [-0.383, 0.166] incluye
+|r| = 0.3 y la equivalencia TOST no es significativa (p = 0.095): «no hay evidencia de dependencia»,
+no «|r| < 0.3 demostrado».  Las 15 obras con 400/200 no se corrieron (≈ 50 × 15 ajustes largos).
+
+cadena: K=20, 400 iteraciones, burn-in 200
+obras (índice en el caché): [200]; eventos: [599]
+seed 7: #beta_k>0.01= 6  K medio=9.000
+seed 8: #beta_k>0.01= 5  K medio=7.150
+seed 9: #beta_k>0.01= 7  K medio=7.135
+seed 10: #beta_k>0.01= 8  K medio=6.000
+seed 11: #beta_k>0.01= 4  K medio=8.860
+seed 12: #beta_k>0.01= 9  K medio=10.840
+seed 13: #beta_k>0.01= 7  K medio=9.650
+seed 14: #beta_k>0.01= 8  K medio=6.180
+seed 15: #beta_k>0.01= 8  K medio=6.665
+seed 16: #beta_k>0.01= 4  K medio=8.130
+seed 17: #beta_k>0.01= 3  K medio=8.805
+seed 18: #beta_k>0.01= 5  K medio=8.430
+seed 19: #beta_k>0.01= 3  K medio=8.230
+seed 20: #beta_k>0.01= 3  K medio=7.590
+seed 21: #beta_k>0.01= 7  K medio=7.915
+seed 22: #beta_k>0.01= 9  K medio=6.630
+seed 23: #beta_k>0.01= 8  K medio=7.830
+seed 24: #beta_k>0.01= 5  K medio=8.845
+seed 25: #beta_k>0.01= 5  K medio=7.030
+seed 26: #beta_k>0.01= 5  K medio=8.105
+seed 27: #beta_k>0.01= 5  K medio=9.315
+seed 28: #beta_k>0.01= 9  K medio=10.400
+seed 29: #beta_k>0.01= 5  K medio=7.210
+seed 30: #beta_k>0.01= 6  K medio=6.875
+seed 31: #beta_k>0.01= 5  K medio=8.255
+seed 32: #beta_k>0.01= 7  K medio=7.455
+seed 33: #beta_k>0.01= 8  K medio=9.570
+seed 34: #beta_k>0.01= 5  K medio=7.555
+seed 35: #beta_k>0.01= 5  K medio=7.360
+seed 36: #beta_k>0.01= 4  K medio=8.490
+seed 37: #beta_k>0.01= 6  K medio=8.095
+seed 38: #beta_k>0.01= 6  K medio=8.115
+seed 39: #beta_k>0.01= 6  K medio=9.040
+seed 40: #beta_k>0.01= 3  K medio=8.345
+seed 41: #beta_k>0.01= 8  K medio=6.540
+seed 42: #beta_k>0.01= 9  K medio=8.010
+seed 43: #beta_k>0.01= 5  K medio=10.195
+seed 44: #beta_k>0.01= 7  K medio=9.465
+seed 45: #beta_k>0.01= 6  K medio=7.475
+seed 46: #beta_k>0.01= 5  K medio=9.635
+seed 47: #beta_k>0.01= 4  K medio=9.385
+seed 48: #beta_k>0.01= 5  K medio=7.865
+seed 49: #beta_k>0.01= 7  K medio=8.845
+seed 50: #beta_k>0.01= 4  K medio=8.545
+seed 51: #beta_k>0.01= 6  K medio=9.470
+seed 52: #beta_k>0.01= 5  K medio=8.180
+seed 53: #beta_k>0.01= 6  K medio=8.790
+seed 54: #beta_k>0.01= 9  K medio=8.600
+seed 55: #beta_k>0.01= 8  K medio=7.330
+seed 56: #beta_k>0.01= 8  K medio=6.840
+n semillas = 50
+Pearson r = -0.118 (p = 0.416)
+IC 95 % de Fisher para r = [-0.383, 0.166]
+TOST |r| < 0.3: p = 0.095
+Spearman rho = -0.177 (p = 0.219)
+pendiente = -0.0735 estados por componente; IC 95 % (t) = [-0.2538, 0.1068]
+IC 95 % bootstrap de la pendiente = [-0.2773, 0.1308]
+rango de #beta_k>0.01 = 3..9; efecto de la pendiente sobre ese rango = -0.441 estados, IC 95 % (t) = [-1.52, 0.64]
+K medio: media 8.205, d.e. entre semillas 1.105, rango 6.000..10.840
+veredicto: sin evidencia de dependencia ni de |r| < 0.3

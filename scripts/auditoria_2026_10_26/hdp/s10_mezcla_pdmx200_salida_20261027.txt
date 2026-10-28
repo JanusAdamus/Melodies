@@ -1,0 +1,13 @@
+cadena: K=20, 400 iteraciones, burn-in 200
+obra: C:/Melodies/artifacts/corpus_cache_3000.jsonl obra 200; semillas 1..8
+seed 1: K medio=5.91 (d.e. dentro=0.29, rango 5-6); log L medio=-903.0 (d.e. dentro=6.3)
+seed 2: K medio=9.84 (d.e. dentro=0.67, rango 8-11); log L medio=-853.6 (d.e. dentro=9.2)
+seed 3: K medio=7.81 (d.e. dentro=0.46, rango 7-9); log L medio=-861.0 (d.e. dentro=12.5)
+seed 4: K medio=7.74 (d.e. dentro=0.49, rango 6-9); log L medio=-872.5 (d.e. dentro=8.6)
+seed 5: K medio=8.00 (d.e. dentro=0.00, rango 8-8); log L medio=-861.5 (d.e. dentro=7.3)
+seed 6: K medio=6.41 (d.e. dentro=0.49, rango 6-7); log L medio=-903.5 (d.e. dentro=10.6)
+seed 7: K medio=9.00 (d.e. dentro=0.00, rango 9-9); log L medio=-841.8 (d.e. dentro=6.9)
+seed 8: K medio=7.15 (d.e. dentro=0.36, rango 7-8); log L medio=-870.8 (d.e. dentro=7.4)
+R-hat dividido, semillas 1-4 (preregistro): K = 3.506, log L = 2.589
+R-hat dividido, 8 cadenas: K = 3.732, log L = 2.836
+umbral del preregistro: R-hat de log L < 1.1
