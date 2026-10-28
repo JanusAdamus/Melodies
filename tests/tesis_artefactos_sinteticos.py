@@ -2,7 +2,11 @@
 de tablas y el verificador de cifras de la tesis sin correr modelos.
 
 * Por obra: el de ``src/cli/porobra_heldout.py`` (rama ``feat/porobra-heldout``):
-  ``per_work.csv``, ``summary.json`` y ``manifest.json``.
+  ``per_work.csv``, ``summary.json`` y ``manifest.json``.  ``formato="700acba"`` (por
+  omisión) es el de la punta actual de esa rama (α del finito por validación, Enmienda 5;
+  fallas de análisis aisladas); ``formato="ff9f998"`` el anterior.  ``poblacion`` dice
+  sobre qué obras está la comparación del resumen: ``"todas"`` (Enmienda 6) o
+  ``"convergidas"`` (regla original, la que aplica ``compare_hdp`` en 700acba).
 * PDMX: el de ``Comparacion/runner.py``: ``results_summary.csv``,
   ``headline_estimates.json``, ``pairwise_comparisons.json``, ``pareto_summary.json``,
   ``engineering_costs.csv`` y ``hdp_chain_diagnostics.json``.
@@ -52,8 +56,9 @@ def porobra_rows() -> list[dict]:
                 "hdp_states_mean": 4.0 + 0.1 * index,
                 "hdp_states_sd": 0.5,
                 "finite_k": 8,
+                "finite_alpha": 0.1 if index < 9 else 1.0,
                 "finite_k_hit_limit": False,
-                "finite_states_mean": 5.0,
+                "finite_states_mean": 5.0 + 0.05 * index,
                 "finite_states_sd": 0.25,
                 "unigram_alpha": 0.5,
                 "bigram_alpha": 1.0,
@@ -62,13 +67,11 @@ def porobra_rows() -> list[dict]:
     return rows
 
 
-def _mean_difference(rows, other) -> float:
-    kept = [row for row in rows if row["hdp_converged"]]
+def _mean_difference(kept, other) -> float:
     return sum(row["hdp_test_nll"] - row[f"{other}_test_nll"] for row in kept) / len(kept)
 
 
-def porobra_summary(rows: list[dict]) -> dict:
-    converged = [row for row in rows if row["hdp_converged"]]
+def porobra_comparisons(kept: list[dict]) -> list[dict]:
     comparisons = []
     holm = {
         "finite": _holm("ok", [-0.15, -0.05], True),
@@ -82,8 +85,8 @@ def porobra_summary(rows: list[dict]) -> dict:
                 "model_a": "hdp",
                 "model_b": other,
                 "status": "ok",
-                "n_pairs": len(converged),
-                "mean_difference": _mean_difference(rows, other),
+                "n_pairs": len(kept),
+                "mean_difference": _mean_difference(kept, other),
                 "bootstrap_95_ci": [-0.2, 0.1],
                 "token_weighted_difference": -0.09,
                 "token_weighted_bootstrap_95_ci": [-0.12, -0.06],
@@ -95,7 +98,13 @@ def porobra_summary(rows: list[dict]) -> dict:
                 "verdict": verdicts[other],
             }
         )
-    return {
+    return comparisons
+
+
+def porobra_summary(rows: list[dict], *, poblacion: str = "todas", sensibilidad: bool = True, formato: str = "700acba") -> dict:
+    converged = [row for row in rows if row["hdp_converged"]]
+    kept = rows if poblacion == "todas" else converged
+    summary = {
         "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmienda 3",
         "corpus": {
             "extraction": "melody",
@@ -125,7 +134,7 @@ def porobra_summary(rows: list[dict]) -> dict:
             "bootstrap_samples": 10000,
             "seed": 0,
             "n_works_converged": len(converged),
-            "comparisons": comparisons,
+            "comparisons": porobra_comparisons(kept),
             "holm_family": {},
         },
         "selected_hyperparameters": {
@@ -137,6 +146,17 @@ def porobra_summary(rows: list[dict]) -> dict:
         },
         "wall_clock_s": 12.5,
     }
+    if formato == "700acba":
+        summary["corpus"]["n_analysis_failures"] = 1
+        summary["analysis_failures"] = [{"work_id": "MuseTrainer:obra_falla.mxl", "error": "ValueError: sintético"}]
+        alphas = [row["finite_alpha"] for row in rows]
+        summary["selected_hyperparameters"]["finite_alpha"] = {str(a): alphas.count(a) for a in sorted(set(alphas))}
+    else:
+        for row in rows:
+            row.pop("finite_alpha", None)
+    if poblacion == "todas" and sensibilidad:
+        summary["sensitivity_converged_only"] = {"n_works_converged": len(converged), "comparisons": porobra_comparisons(converged)}
+    return summary
 
 
 def write_porobra_run(root: Path, *, name: str = "porobra_heldout_20261101_abcdef1", rows=None, summary=None) -> Path:
@@ -190,10 +210,12 @@ def pdmx_comparisons() -> list[dict]:
     ]
 
 
-def write_pdmx_run(root: Path, *, name: str = "tesis_corregida_20261101_abcdef1", comparisons=None, status="preregistered") -> Path:
+def write_pdmx_run(root: Path, *, name: str = "tesis_corregida_20261101_abcdef1", comparisons=None, status="preregistered",
+                   gaps=()) -> Path:
     run = root / name
     run.mkdir(parents=True)
-    analysis_status = {"status": status, "evaluates_preregistered_rule_B": status == "preregistered", "preregistration_gaps": []}
+    analysis_status = {"status": status, "evaluates_preregistered_rule_B": status == "preregistered",
+                       "preregistration_gaps": list(gaps)}
     fieldnames = ["model", "frac", "mean_n_train_tokens", "mean_test_nll", "runs", "n_distinct_runs",
                   "test_nll_estimand", "test_nll_ci95_low", "test_nll_ci95_high"]
     with (run / "results_summary.csv").open("w", newline="", encoding="utf-8") as handle:
