@@ -6,6 +6,7 @@ import os
 import random
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import asdict, replace
 from functools import partial
 from pathlib import Path
@@ -338,14 +339,40 @@ def prepare_corpus(
             stream = (worker(path) for path in pending)
             _consume_prepared(stream, entries, cache_handle, vocabulary, len(pending), progress_every)
         else:
-            with ProcessPoolExecutor(
-                max_workers=n_workers,
-                initializer=_silence_worker_warnings,
-            ) as pool:
-                stream = pool.map(worker, pending, chunksize=chunksize)
-                _consume_prepared(
-                    stream, entries, cache_handle, vocabulary, len(pending), progress_every
+            # pool.map entrega en orden, así que lo consumido son los primeros de `pending`.
+            done_before = len(entries)
+            try:
+                with ProcessPoolExecutor(
+                    max_workers=n_workers,
+                    initializer=_silence_worker_warnings,
+                ) as pool:
+                    stream = pool.map(worker, pending, chunksize=chunksize)
+                    _consume_prepared(
+                        stream, entries, cache_handle, vocabulary, len(pending), progress_every
+                    )
+            except (BrokenProcessPool, OSError) as error:
+                # Con la máquina ocupada el pool puede morir (BrokenProcessPool, u OSError
+                # como «[WinError 6] Controlador no válido»). La preparación es determinista:
+                # lo que falta se prepara aquí en secuencia y el resultado es el mismo. Un
+                # error de la propia preparación reaparece al repetirla en este proceso.
+                consumed = len(entries) - done_before
+                warnings.warn(
+                    f"pool de procesos caído tras {consumed}/{len(pending)} partituras ({error!r}); "
+                    "el resto se prepara en secuencia",
+                    RuntimeWarning,
+                    stacklevel=2,
                 )
+                remaining = pending[consumed:]
+                with warnings.catch_warnings():
+                    _silence_worker_warnings()
+                    _consume_prepared(
+                        (worker(path) for path in remaining),
+                        entries,
+                        cache_handle,
+                        vocabulary,
+                        len(remaining),
+                        progress_every,
+                    )
     finally:
         if cache_handle is not None:
             cache_handle.close()

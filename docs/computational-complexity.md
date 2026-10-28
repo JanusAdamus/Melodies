@@ -58,6 +58,12 @@ Exclusiones observadas en la muestra: 6 `too_short`, 2 `parse_error`, 1
 music21 y la tokeniza. El costo es **O(N)** en número de archivos, dominado por
 `music21.converter.parse` (`src/data/parsing.py:37`).
 
+Si el pool de procesos muere a mitad de la corrida (`BrokenProcessPool`, u `OSError` como
+«[WinError 6] Controlador no válido» con la máquina ocupada), las partituras sin resultado
+se preparan en secuencia en el proceso principal con un `RuntimeWarning`; la preparación
+es determinista, así que el resultado y el caché son los mismos que en serie. Un error de
+la propia preparación no se traga.
+
 Tiempos medidos sobre muestra aleatoria de PDMX:
 
 ```
