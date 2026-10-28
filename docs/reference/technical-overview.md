@@ -816,7 +816,7 @@ Esto es importante porque:
 `HDPHMMDiagnostics` guarda:
 
 - `log_likelihood_history`
-- `active_state_history`
+- `active_state_history` (estados con ocupación >= `occupancy_threshold`, 2 % por defecto, en cada iteración; es la columna `active_states` de la traza)
 - `beta_entropy_history`
 - `state_samples`
 - `beta_update_mode`

@@ -215,6 +215,7 @@ class HDPHMMDiagnostics:
     """Historias de inferencia utiles para diagnostico."""
 
     log_likelihood_history: list[float]
+    #: Estados con ocupación >= `occupancy_threshold` en cada iteración (estimando del preregistro).
     active_state_history: list[int]
     beta_entropy_history: list[float]
     state_samples: list[np.ndarray]
@@ -467,7 +468,7 @@ class TruncatedHDPHMM:
             log_likelihood = float(sequence_log_likelihoods.sum())
 
             log_likelihood_history.append(log_likelihood)
-            active_state_history.append(int(np.unique(states).size))
+            active_state_history.append(_occupied_states(states, self.n_states, self.occupancy_threshold))
             beta_entropy_history.append(-float(np.sum(beta * np.log(beta + EPSILON))))
 
             if iteration >= self.burn_in and ((iteration - self.burn_in) % self.store_every == 0):

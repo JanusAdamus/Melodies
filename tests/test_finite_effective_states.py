@@ -145,6 +145,29 @@ class SummaryLabelTests(unittest.TestCase):
         for table in (hdp.summary_dataframe(), summarize_hdp_result(hdp)):
             self.assertAlmostEqual(float(self._metrics(table)["n_active_states"]), hdp.effective_states)
 
+    def test_hdp_trace_active_states_is_the_same_estimand(self) -> None:
+        """La traza por iteración ('active_states') cuenta ocupación >= 2 %, no estados distintos."""
+
+        from Comparacion.hdp_diagnostics import build_chain_diagnostics
+        from src.models.hdp_hmm import TruncatedHDPHMM
+
+        burn_in = 30
+        hdp = TruncatedHDPHMM(n_states=20, n_iters=60, burn_in=burn_in, seed=1).fit(
+            _sequence(_TOKENS_98_1_1 * 4)
+        )
+        history = hdp.diagnostics.active_state_history
+        # store_every=1: la muestra guardada s es la iteración burn_in + s.
+        self.assertEqual(history[burn_in:], hdp.diagnostics.occupied_state_samples)
+
+        # Es la tabla "diagnostics" de build_hdp_tables y la serie de hdp_active_states.png.
+        table = hdp.diagnostics.to_dataframe()
+        self.assertAlmostEqual(float(table["active_states"].iloc[burn_in:].mean()), hdp.effective_states)
+        rows = hdp.diagnostics.trace_rows()
+        self.assertEqual([row["active_states"] for row in rows], history)
+        # 60 iteraciones: la ventana tardía de Comparacion es justo el tramo tras el burn-in.
+        chain = build_chain_diagnostics({1: rows}, min_iterations=10)["chains"]["1"]
+        self.assertAlmostEqual(float(chain["late_mean_active_states"]), hdp.effective_states)
+
 
 if __name__ == "__main__":
     unittest.main()
