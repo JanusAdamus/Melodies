@@ -158,3 +158,38 @@ nula, la NLL de validación de K ∈ {2, 4, 8, 16} queda en 3.96–4.70 nats (pe
 uniforme, 2.485) y la rejilla se amplía hasta K = 512 con 80 eventos de ajuste,
 porque los estados sin uso funcionan como suavizado. Con α ∈ {0.1, 0.5, 1} se elige
 K entre 8 y 16 con NLL de 2.35–2.40. La comparación PDMX (sección B) no cambia.
+
+## Enmienda 6, 2026-10-28 (antes de ver resultados de prueba de las corridas corregidas)
+
+Decisión de Adrián, tras consultar un consejo de revisión con tres posturas
+independientes. Sustituye la regla de convergencia de la sección A.
+
+**Motivo (sólo datos de ajuste y validación).** En una corrida de tiempos con las
+primeras 5 obras de MuseTrainer por orden de archivo, el R-hat de log L entre las
+4 cadenas fue 2.33, 1.44, 1.27, 1.48 y 1.71 con 400/200 (0 de 5 convergen) y 3.60,
+1.19, 1.06, 1.23 y 3.50 con 800/400 (1 de 5): la contingencia preregistrada
+(duplicar iteraciones) se probó y no resuelve el problema. Un diagnóstico por cadena
+sobre la validación interna (800/400, η = 3) mostró que en las obras largas las
+cadenas quedan en modos distintos que cambian la predictiva (rango entre cadenas de
+la NLL de validación: 0.056 nats/nota en la obra de 1387 notas y 0.188 en la de
+1725; R-hat de la NLL predictiva por muestra 1.33 y 1.73), mientras que en la de
+657 notas predicen casi igual (rango 0.013, R-hat 1.06). Excluir obras por la
+convergencia del HDP filtraría la comparación con una propiedad de uno solo de los
+modelos.
+
+**Regla nueva.**
+1. La métrica principal de A incluye todas las obras analizadas; ninguna se
+   excluye por la convergencia del HDP-HMM. El HDP-HMM se evalúa como
+   procedimiento: 4 cadenas (semillas 1–4), 400 iteraciones, burn-in 200, y la
+   predictiva promediada en probabilidad sobre las muestras tras burn-in de las 4
+   cadenas («ensamble de cadenas»), como el HMM finito se evalúa con el mejor de sus
+   inicios de Baum-Welch.
+2. Por obra se reportan: el R-hat de log L, el R-hat de la NLL predictiva por
+   muestra, la NLL de prueba de cada cadena por separado y su rango. En el resumen
+   se reporta la fracción de obras con R-hat de log L < 1.1.
+3. Análisis de sensibilidad (no decide): la regla original, es decir, la misma
+   comparación restringida a las obras con R-hat de log L < 1.1.
+4. El número de estados del HDP-HMM y su variación se reportan por cadena, con la
+   advertencia de que, sin convergencia entre cadenas, no son una media posterior.
+   La tesis no interpreta esos números como inferencia bayesiana sobre K.
+5. La regla de decisión de A y el estimando de la Aclaración 2 no cambian.
