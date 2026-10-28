@@ -92,6 +92,27 @@ class PreparePoolFallbackTests(unittest.TestCase):
                 self.assertEqual(len(runtime), 1)
                 self.assertIn("2/4", str(runtime[0].message))
 
+    def test_fallback_goes_through_the_single_consumer_call(self) -> None:
+        # El respaldo en secuencia no debe tener su propia llamada a _consume_prepared:
+        # si la firma cambia (D1b agregó signature y tokens), una segunda llamada se queda
+        # atrás y el respaldo termina en TypeError justo cuando el pool muere.
+        real = preprocess._consume_prepared
+        calls: list[int] = []
+
+        def spy(*args, **kwargs):
+            calls.append(1)
+            return real(*args, **kwargs)
+
+        with patch.object(preprocess, "_consume_prepared", spy):
+            result, _, cache = self._run_with(
+                BrokenProcessPool("A process in the process pool was terminated abruptly"),
+                after=2,
+                cache_name="single_call.jsonl",
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result, self.serial)
+        self.assertEqual(cache, self.serial_cache)
+
     def test_errors_of_the_preparation_itself_are_not_swallowed(self) -> None:
         with self.assertRaises(ValueError):
             self._run_with(ValueError("fallo de la preparación"), after=1, cache_name="error.jsonl")
