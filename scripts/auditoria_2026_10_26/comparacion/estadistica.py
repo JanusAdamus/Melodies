@@ -14,7 +14,7 @@ out = pairwise_model_comparisons(rows, bootstrap_samples=200, seed=0)
 c = out["comparisons"][0]
 print("pooling declarado:", out["pooling"])
 print("bloque 'comparisons' n_pairs =", c["n_pairs"], "obras:", c["canonical_work_ids"])
-print("  W entra una vez con diferencia promediada entre particiones (−1 y +1 -> 0); n_pairs suma obras de ambas particiones")
+print("  W entra una vez con diferencia promediada entre particiones (-1 y +1 -> 0); n_pairs suma obras de ambas particiones")
 
 # 2) Pareto con 3 ejes y 4 modelos: cada mejor-en-un-eje queda en la frontera aunque pierda por mucho en NLL
 cands = [dict(model="transformer", nll=1.76, fit=169, ev=5.0), dict(model="finite_hmm", nll=2.00, fit=628, ev=1.0),

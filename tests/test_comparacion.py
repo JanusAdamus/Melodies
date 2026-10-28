@@ -327,7 +327,9 @@ class ClassicalModelTests(unittest.TestCase):
         except TypeError as error:
             self.fail(str(error))
 
-        expected_score = 2 * math.log(float(model.emission_matrix[0, 0]) + 1e-12)
+        # F3: la predictiva se renormaliza sobre las 12 alturas; BOS no es objetivo.
+        musical_mass = float(model.emission_matrix[0, :12].sum())
+        expected_score = 2 * math.log(float(model.emission_matrix[0, 0]) / musical_mass)
         self.assertEqual(evaluation["summary"]["n_tokens"], 2)
         self.assertAlmostEqual(evaluation["piece_metrics"][0]["log_likelihood"], expected_score)
 
@@ -360,12 +362,22 @@ class ClassicalModelTests(unittest.TestCase):
             )
             return value
 
+        def musical_log_mass(prefix: list[int]) -> float:
+            # F3: masa de las 12 alturas como siguiente símbolo tras el prefijo.
+            base = joint_log_likelihood(prefix)
+            return math.log(
+                sum(math.exp(joint_log_likelihood([*prefix, token]) - base) for token in range(12))
+            )
+
         context_score = joint_log_likelihood([12])
         expected_score = (
             joint_log_likelihood([12, 0, 1])
             - context_score
+            - musical_log_mass([12])
+            - musical_log_mass([12, 0])
             + joint_log_likelihood([12, 1])
             - context_score
+            - musical_log_mass([12])
         )
         evaluation = model.evaluate([piece], bos_token_id=12, max_context_length=2)
 
@@ -516,6 +528,8 @@ class ComparisonRunnerTests(unittest.TestCase):
             self.assertEqual(plan["common_predictive_support"]["bos_token_id"], 12)
             self.assertEqual(plan["common_predictive_support"]["pad_token_id"], 13)
             self.assertFalse(plan["common_predictive_support"]["pad_in_scoring_support"])
+            self.assertFalse(plan["common_predictive_support"]["bos_in_scoring_support"])
+            self.assertEqual(plan["common_predictive_support"]["support_size"], 12)
             for split in plan["splits"].values():
                 self.assertEqual(split["n_pieces"], len(split["piece_ids"]))
                 self.assertEqual(split["n_canonical_groups"], len(split["canonical_work_ids"]))
@@ -551,6 +565,7 @@ class ComparisonRunnerTests(unittest.TestCase):
                     "n_tokens": sum(len(piece.tokens) for piece in pieces),
                     "n_params": 25,
                     "train_time_sec": 0.2,
+                    "selected_fit_wall_clock_s": 0.1,
                 },
                 "piece_metrics": _piece_metrics(pieces, nll=1.5),
             }
@@ -569,12 +584,13 @@ class ComparisonRunnerTests(unittest.TestCase):
                     "n_params": 25,
                     "effective_states": 2,
                     "train_time_sec": 0.3,
+                    "selected_fit_wall_clock_s": 0.2,
                 },
                 "piece_metrics": _piece_metrics(pieces, nll=1.4),
             }
             transformer_model = MagicMock()
             transformer_model.fit.return_value = {
-                "summary": {"best_validation_nll": 1.1},
+                "summary": {"best_validation_nll": 1.1, "selected_fit_wall_clock_s": 0.3},
                 "train_log": [{"train_wall_clock_s": 0.4, "validation_wall_clock_s": 0.1}],
             }
             transformer_model.evaluate.side_effect = lambda pieces: {
@@ -605,6 +621,7 @@ class ComparisonRunnerTests(unittest.TestCase):
                     "n_params": 20,
                     "count_table_size": 20,
                     "train_time_sec": 0.05,
+                    "selected_fit_wall_clock_s": 0.01,
                     "evaluation_wall_clock_s": 0.02,
                 },
                 "piece_metrics": _piece_metrics(pieces, nll=1.3),
@@ -620,7 +637,7 @@ class ComparisonRunnerTests(unittest.TestCase):
                 ) as transformer_constructor,
                 patch(
                     "Comparacion.runner._build_transformer_dataloaders",
-                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces: {
+                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces, **_: {
                         "train": train_pieces,
                         "validation": validation_pieces,
                         "test": test_pieces,
@@ -654,6 +671,9 @@ class ComparisonRunnerTests(unittest.TestCase):
             self.assertEqual(transformer_constructor.call_args.kwargs["vocab_size"], 14)
             self.assertEqual(finite_constructor.call_count, 1)
             self.assertEqual(hdp_constructor.call_count, 1)
+            # C2: ambas rejillas se amplían hasta su límite declarado.
+            self.assertEqual(finite_constructor.call_args.kwargs["max_states"], config.finite_hmm_max_states)
+            self.assertEqual(vomm_selector.call_args.kwargs["max_order"], config.vomm_max_order)
 
             output_root = Path(result["output_root"])
             required_artifacts = {
@@ -670,11 +690,18 @@ class ComparisonRunnerTests(unittest.TestCase):
             }
             self.assertTrue(required_artifacts.issubset({path.name for path in output_root.iterdir()}))
             self.assertFalse((output_root / "wilcoxon_test.json").exists())
+            vomm_audit = json.loads((output_root / "vomm_order_grid_audit.json").read_text(encoding="utf-8"))
+            self.assertEqual(vomm_audit["model"], "vomm")
+            self.assertEqual(vomm_audit["selected_values"], [2])
 
             with (output_root / "results_raw.csv").open(encoding="utf-8", newline="") as stream:
                 raw_rows = list(csv.DictReader(stream))
             self.assertEqual({row["model"] for row in raw_rows}, {"finite_hmm", "hdp_hmm", "vomm", "transformer"})
             self.assertEqual(len(raw_rows), 4)
+            # C1: la búsqueda del transformador fuera de la corrida no se inventa.
+            search_status = {row["model"]: row["full_search_status"] for row in raw_rows}
+            self.assertEqual(search_status["transformer"], "not_measured")
+            self.assertEqual(search_status["finite_hmm"], "unmeasured")
             with (output_root / "piece_metrics_raw.csv").open(encoding="utf-8", newline="") as stream:
                 piece_rows = list(csv.DictReader(stream))
             self.assertTrue(piece_rows)
@@ -704,6 +731,19 @@ class ComparisonRunnerTests(unittest.TestCase):
             pareto = json.loads((output_root / "pareto_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(pareto["predictive_cost_partial_frontier"]["status"], "ok")
             self.assertEqual(pareto["full_three_axis_frontier"]["status"], "not_evaluated")
+            # C7: cada cifra titular con el IC de su propio estimando.
+            headline = json.loads((output_root / "headline_estimates.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                {item["estimand"] for item in headline["estimates"]},
+                {"token_weighted_nll", "token_weighted_perplexity", "work_mean_nll"},
+            )
+            with (output_root / "results_summary.csv").open(encoding="utf-8", newline="") as stream:
+                summary_rows = list(csv.DictReader(stream))
+            for row in summary_rows:
+                self.assertEqual(row["test_nll_estimand"], "token_weighted_nll")
+                self.assertLessEqual(float(row["test_nll_ci95_low"]), float(row["mean_test_nll"]) + 1e-9)
+                self.assertGreaterEqual(float(row["test_nll_ci95_high"]), float(row["mean_test_nll"]) - 1e-9)
+                self.assertLessEqual(float(row["test_ppl_ci95_low"]), float(row["test_ppl_ci95_high"]))
 
             json_paths = list(output_root.glob("*.json")) + list((output_root / "splits").glob("*.json"))
             for path in json_paths:
@@ -768,7 +808,7 @@ class ComparisonRunnerTests(unittest.TestCase):
                 patch("Comparacion.runner.SmallTransformerNextTokenModel", return_value=mocks["transformer"]),
                 patch(
                     "Comparacion.runner._build_transformer_dataloaders",
-                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces: {
+                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces, **_: {
                         "train": train_pieces,
                         "validation": validation_pieces,
                         "test": test_pieces,
@@ -817,7 +857,7 @@ class ComparisonRunnerTests(unittest.TestCase):
                 patch("Comparacion.runner.SmallTransformerNextTokenModel", return_value=mocks["transformer"]),
                 patch(
                     "Comparacion.runner._build_transformer_dataloaders",
-                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces: {
+                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces, **_: {
                         "train": train_pieces,
                         "validation": validation_pieces,
                         "test": test_pieces,
@@ -857,7 +897,7 @@ class ComparisonRunnerTests(unittest.TestCase):
                 patch("Comparacion.runner.SmallTransformerNextTokenModel", return_value=mocks["transformer"]),
                 patch(
                     "Comparacion.runner._build_transformer_dataloaders",
-                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces: {
+                    side_effect=lambda config, train_pieces, validation_pieces, test_pieces, **_: {
                         "train": train_pieces,
                         "validation": validation_pieces,
                         "test": test_pieces,

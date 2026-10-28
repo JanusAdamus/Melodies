@@ -17,12 +17,17 @@ corrida con este veredicto:
 
 | Veredicto | Cuándo | Lectura |
 | --- | --- | --- |
-| `grid_informative` | la selección deja de tocar el máximo en la mayoría de repeticiones | la rejilla cubrió la capacidad útil |
-| `grid_too_small` | la mitad o más de las selecciones caen en el máximo | hay que ampliar la rejilla |
+| `grid_informative` | ninguna selección toca el máximo de la rejilla evaluada en su fila | la rejilla cubrió la capacidad útil |
+| `grid_too_small` | al menos una selección cae en el máximo (preregistro 2026-10-26, sección B) | hay que ampliar la rejilla |
 | `grid_limited_by_resources` | igual que arriba, pero con un límite de recursos documentado | el tope es de la máquina, no del modelo |
 | `no_selections` | no hubo filas de `finite_hmm` | sin evidencia |
 
 `plateau_claimed` es siempre `false`: este artefacto nunca declara una meseta.
+
+`vomm_order_grid_audit.json` aplica la misma regla al orden de la VOMM. Desde
+2026-10-26 el runner amplía ambas rejillas solo (×1.5 y ×2 del máximo) mientras
+la selección toque el máximo, hasta `finite_hmm_max_states` y `vomm_max_order`;
+si llega al límite sin dejar de tocarlo, la corrida falla con un mensaje claro.
 
 ## Escalones preespecificados
 

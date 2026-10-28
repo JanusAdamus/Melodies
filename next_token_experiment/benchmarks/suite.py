@@ -173,6 +173,13 @@ def _extract_summary_row(spec: BenchmarkRunSpec, result_dir: str | Path) -> dict
     }
 
 
+def _rows_by_representation(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.get("representation")), []).append(row)
+    return grouped
+
+
 def _build_markdown_summary(rows: list[dict[str, Any]]) -> str:
     headers = [
         "run_id",
@@ -190,19 +197,30 @@ def _build_markdown_summary(rows: list[dict[str, Any]]) -> str:
     lines = [
         "# Transformer Benchmark Summary",
         "",
-        "| " + " | ".join(headers) + " |",
-        "| " + " | ".join("---" for _ in headers) + " |",
+        # T2: cada representación tiene su alfabeto; su NLL por token no comparte escala.
+        "NLL per token is only comparable within one representation: each table below "
+        "holds a single representation.",
+        "",
     ]
-    for row in rows:
-        values = []
-        for header in headers:
-            value = row.get(header, "")
-            if isinstance(value, float):
-                values.append(f"{value:.6f}")
-            else:
-                values.append(str(value))
-        lines.append("| " + " | ".join(values) + " |")
-    lines.append("")
+    for representation, group in sorted(_rows_by_representation(rows).items()):
+        lines.extend(
+            [
+                f"## Representation: {representation}",
+                "",
+                "| " + " | ".join(headers) + " |",
+                "| " + " | ".join("---" for _ in headers) + " |",
+            ]
+        )
+        for row in group:
+            values = []
+            for header in headers:
+                value = row.get(header, "")
+                if isinstance(value, float):
+                    values.append(f"{value:.6f}")
+                else:
+                    values.append(str(value))
+            lines.append("| " + " | ".join(values) + " |")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -249,7 +267,14 @@ def collect_benchmark_suite(
 
     write_json(output_root / "run_manifest_resolved.json", {"runs": manifest_payload})
     write_json(output_root / "run_status.json", {"runs": status_rows})
-    write_json(output_root / "summary.json", {"runs": rows})
+    write_json(
+        output_root / "summary.json",
+        {
+            "runs": rows,
+            "nll_comparable_within": "representation",
+            "runs_by_representation": _rows_by_representation(rows),
+        },
+    )
     write_csv(output_root / "summary.csv", rows)
     (output_root / "summary.md").write_text(_build_markdown_summary(rows), encoding="utf-8")
 
@@ -258,6 +283,7 @@ def collect_benchmark_suite(
         "manifest": manifest_payload,
         "status_rows": status_rows,
         "summary_rows": rows,
+        "nll_comparable_within": "representation",
     }
 
 

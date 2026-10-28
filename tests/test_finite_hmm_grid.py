@@ -29,6 +29,19 @@ class FiniteHmmGridConfigTests(unittest.TestCase):
                 with self.assertRaises((ValueError, TypeError)):
                     replace(config, finite_hmm_states=invalid)
 
+    def test_grid_limits_must_cover_the_initial_grid(self) -> None:
+        config = build_default_learning_curve_config()
+        with self.assertRaises(ValueError):
+            replace(config, finite_hmm_states=(12, 24, 48), finite_hmm_max_states=24)
+        with self.assertRaises(ValueError):
+            replace(config, vomm_candidate_orders=(1, 2, 4, 8), vomm_max_order=4)
+
+    def test_cli_parses_the_grid_limits(self) -> None:
+        args = build_parser().parse_args(["--finite-hmm-max-states", "192", "--vomm-max-order", "16"])
+
+        self.assertEqual(args.finite_hmm_max_states, 192)
+        self.assertEqual(args.vomm_max_order, 16)
+
     def test_cli_parses_the_grid(self) -> None:
         args = build_parser().parse_args(["--finite-hmm-states", "48,72,96"])
 
@@ -46,10 +59,17 @@ class FiniteHmmGridAuditTests(unittest.TestCase):
         self.assertFalse(audit["informative"])
         self.assertFalse(audit["plateau_claimed"])
 
-    def test_selection_below_the_maximum_in_most_repeats_is_informative(self) -> None:
+    def test_one_selection_at_the_maximum_already_makes_the_grid_uninformative(self) -> None:
+        # Preregistro 2026-10-26, sección B: ninguna fracción puede tocar el máximo.
         audit = build_finite_hmm_grid_audit(_rows([72, 48, 96]), grid=(48, 72, 96))
 
         self.assertEqual(audit["n_at_grid_maximum"], 1)
+        self.assertEqual(audit["verdict"], "grid_too_small")
+        self.assertFalse(audit["informative"])
+
+    def test_no_selection_at_the_maximum_is_informative(self) -> None:
+        audit = build_finite_hmm_grid_audit(_rows([72, 48, 72]), grid=(48, 72, 96))
+
         self.assertEqual(audit["verdict"], "grid_informative")
         self.assertTrue(audit["informative"])
 

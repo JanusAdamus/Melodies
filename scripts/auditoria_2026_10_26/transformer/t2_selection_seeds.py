@@ -21,20 +21,23 @@ exp = replace(exp, transformer=replace(exp.transformer, d_model=32, n_layers=1, 
               hardware=replace(exp.hardware, cpu_threads=1))
 cfg = LearningCurveConfig(experiment=exp, results_root="/tmp/x")
 
-# A) Orden de lotes de entrenamiento: no depende de model_seed (ni de data_seed)
-def first_batches(model_seed):
+# A) Orden de lotes de entrenamiento. Hallazgo T2: no dependía de model_seed (ni de
+# data_seed). Tras el arreglo el loader recibe las dos semillas, como en el runner.
+def first_batches(model_seed, data_seed=1):
     _build_transformer_model(cfg, model_seed)  # el runner crea el modelo antes de los loaders
-    dl = _build_transformer_dataloaders(cfg, pieces[:20], pieces[20:25], pieces[25:])
+    dl = _build_transformer_dataloaders(
+        cfg, pieces[:20], pieces[20:25], pieces[25:], model_seed=model_seed, data_seed=data_seed
+    )
     return [tuple(b["piece_ids"]) + tuple(b["start_indices"]) for b in list(dl["train"])[:3]]
 print("[seed] orden de lotes idéntico con model_seed=1 y model_seed=2:", first_batches(1) == first_batches(2))
-print("[seed] generador del DataLoader sembrado con experiment.split.seed =", exp.split.seed)
+print("[seed] orden de lotes idéntico con data_seed=1 y data_seed=2:", first_batches(1, 1) == first_batches(1, 2))
 
 # B) Label smoothing: la 'NLL de validación' usada para early stopping y reportada no es NLL
 for prof in ("gpu_extended", "research_richer_events"):
     print(f"[ls] perfil {prof}: label_smoothing={build_profile_config(prof).transformer.label_smoothing}")
 cfg_ls = replace(cfg, experiment=replace(exp, transformer=replace(exp.transformer, label_smoothing=0.05)))
 m = _build_transformer_model(cfg_ls, 1)
-dl = _build_transformer_dataloaders(cfg_ls, pieces[:20], pieces[20:25], pieces[25:])
+dl = _build_transformer_dataloaders(cfg_ls, pieces[:20], pieces[20:25], pieces[25:], model_seed=1, data_seed=1)
 fit = m.fit(dl["train"], dl["validation"])
 ev = m.evaluate(dl["validation"])["summary"]["nll_per_token"]
 print(f"[ls] best_validation_nll (fit, con smoothing)={fit['summary']['best_validation_nll']:.4f}  NLL real en validación={ev:.4f}")

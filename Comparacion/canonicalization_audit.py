@@ -17,6 +17,8 @@ from pathlib import Path
 
 from next_token_experiment.experiment.splits import canonicalization_details
 
+from .splits import PIECE_WORK_PREFIX
+
 AUDIT_FILENAME = "canonicalization_audit.json"
 
 FINGERPRINT_POLICY = "diagnostic_only_never_automatic_identity_proof"
@@ -45,6 +47,24 @@ def _field(piece: Mapping[str, object] | object, name: str) -> object:
 
 def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _is_piece_work(record: Mapping[str, object]) -> bool:
+    return str(record["canonical_work_id"]).startswith(PIECE_WORK_PREFIX)
+
+
+def _label_identifies(record: Mapping[str, object]) -> bool:
+    return not (record["is_empty"] or record["is_generic"] or record["is_short"])
+
+
+def _isolated_without_label(record: Mapping[str, object]) -> bool:
+    """Pieza sin etiqueta útil que quedó en su propia obra «pieza:<ruta>».
+
+    Una pieza con buena etiqueta puede acabar en una obra «pieza:» porque el
+    contenido la unió con una pieza sin metadatos; su etiqueta sigue contando.
+    """
+
+    return _is_piece_work(record) and not _label_identifies(record)
 
 
 def build_canonicalization_audit(
@@ -118,10 +138,11 @@ def build_canonicalization_audit(
         for record in records
         if record["is_empty"] or not record["title"] or not record["composer"]
     ]
+    # Una obra «pieza:<ruta>» ya aísla la pieza de etiqueta genérica: no es ambigua.
     generic_labels = [
         {"piece_id": record["piece_id"], "canonical_work_id": record["canonical_work_id"]}
         for record in records
-        if record["is_generic"] or record["is_short"]
+        if (record["is_generic"] or record["is_short"]) and not _is_piece_work(record)
     ]
 
     dropped_suffixes = [
@@ -137,7 +158,7 @@ def build_canonicalization_audit(
     by_aggressive_key: dict[str, set[str]] = {}
     for record in records:
         key = str(record["aggressive_key"])
-        if not key:
+        if not key or _isolated_without_label(record):
             continue
         by_aggressive_key.setdefault(key, set()).add(str(record["canonical_work_id"]))
     near_miss_groups = [

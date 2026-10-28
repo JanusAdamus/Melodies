@@ -502,35 +502,50 @@ class SmallTransformerNextTokenModel(NextTokenModel):
             "sequence_lengths": batch["sequence_lengths"],
         }
 
-    def _comparison_logits(self, logits: torch.Tensor) -> torch.Tensor:
-        """Remove PAD from predictive normalization while retaining it as input."""
-
-        if self.pad_token_id < 0 or self.pad_token_id >= logits.size(-1):
-            raise ValueError("pad_token_id must index the model vocabulary.")
-        return torch.cat(
-            (
-                logits[..., : self.pad_token_id],
-                logits[..., self.pad_token_id + 1 :],
-            ),
-            dim=-1,
+    def _musical_token_ids(self, vocab_size: int, device: torch.device) -> torch.Tensor:
+        for token_id in (self.pad_token_id, self.bos_token_id):
+            if token_id < 0 or token_id >= vocab_size:
+                raise ValueError("pad_token_id and bos_token_id must index the model vocabulary.")
+        return torch.tensor(
+            [index for index in range(vocab_size) if index not in self.special_token_ids],
+            dtype=torch.long,
+            device=device,
         )
+
+    def _comparison_logits(self, logits: torch.Tensor) -> torch.Tensor:
+        """Keep only musical symbols in the predictive support (BOS and PAD out, F3).
+
+        BOS and PAD remain valid inputs; they are never next-token targets, so the
+        softmax is normalized over the musical symbols alone.
+        """
+
+        return logits.index_select(-1, self._musical_token_ids(logits.size(-1), logits.device))
 
     def _comparison_targets(self, target_ids: torch.Tensor) -> torch.Tensor:
         valid_targets = target_ids != -100
         if torch.any(target_ids[valid_targets] == self.pad_token_id):
             raise ValueError("PAD cannot be a next-token target.")
+        if torch.any(target_ids[valid_targets] == self.bos_token_id):
+            raise ValueError("BOS cannot be a next-token target.")
         remapped = target_ids.clone()
-        remapped[valid_targets & (target_ids > self.pad_token_id)] -= 1
+        for special_id in sorted(self.special_token_ids, reverse=True):
+            remapped[valid_targets & (target_ids > special_id)] -= 1
         return remapped
 
-    def _compute_loss(self, logits: torch.Tensor, target_ids: torch.Tensor) -> torch.Tensor:
+    def _compute_loss(
+        self,
+        logits: torch.Tensor,
+        target_ids: torch.Tensor,
+        *,
+        label_smoothing: float = 0.0,
+    ) -> torch.Tensor:
         comparison_logits = self._comparison_logits(logits)
         comparison_targets = self._comparison_targets(target_ids)
         return F.cross_entropy(
             comparison_logits.reshape(-1, comparison_logits.size(-1)),
             comparison_targets.reshape(-1),
             ignore_index=-100,
-            label_smoothing=self.spec.label_smoothing,
+            label_smoothing=label_smoothing,
         )
 
     def _optimizer_step(self) -> None:
@@ -568,10 +583,20 @@ class SmallTransformerNextTokenModel(NextTokenModel):
             with torch.set_grad_enabled(train):
                 with self._autocast_context():
                     logits = self.model(batch["input_ids"], batch["attention_mask"])
-                    raw_loss = self._compute_loss(logits, batch["target_ids"])
+                    # T1: el suavizado sólo entra en la pérdida optimizada; lo que se
+                    # reporta y decide el early stopping es la NLL sin suavizar.
+                    nll_loss = self._compute_loss(logits, batch["target_ids"])
+                    if train and self.spec.label_smoothing > 0.0:
+                        objective = self._compute_loss(
+                            logits,
+                            batch["target_ids"],
+                            label_smoothing=self.spec.label_smoothing,
+                        )
+                    else:
+                        objective = nll_loss
 
                 if train:
-                    loss = raw_loss / accumulation_steps
+                    loss = objective / accumulation_steps
                     if self.use_grad_scaler:
                         self.grad_scaler.scale(loss).backward()
                     else:
@@ -588,7 +613,7 @@ class SmallTransformerNextTokenModel(NextTokenModel):
             comparison_logits = self._comparison_logits(logits)
             valid_targets = comparison_targets[target_mask]
             valid_logits = comparison_logits[target_mask]
-            total_loss += float(raw_loss.detach().float().cpu()) * int(valid_targets.numel())
+            total_loss += float(nll_loss.detach().float().cpu()) * int(valid_targets.numel())
             total_tokens += int(valid_targets.numel())
             if valid_targets.numel() > 0:
                 predictions = torch.argmax(valid_logits, dim=-1)

@@ -1,4 +1,4 @@
-"""PPM-inspired VOMM control over musical symbols plus BOS, excluding PAD.
+"""PPM-inspired VOMM control: counts over musical symbols plus BOS, scored over musical symbols only.
 
 This lightweight diagnostic is not an IDyOM implementation.
 """
@@ -14,6 +14,8 @@ import numpy as np
 
 from next_token_experiment.data.dataset import build_evaluation_slices
 from next_token_experiment.schemas import PreparedPiece
+
+from .grid import grid_ceiling_message, next_grid_candidates
 
 
 EPSILON = 1e-12
@@ -76,6 +78,8 @@ class VariableOrderMarkovModel:
         self.selected_fit_wall_clock_s: float | None = None
         self.selected_validation_evaluation_wall_clock_s: float | None = None
         self.selection_log: list[dict[str, float | int]] = []
+        self.candidate_grid: tuple[int, ...] = (self.max_order,)
+        self.grid_extensions = 0
 
     @property
     def count_table_size(self) -> int:
@@ -113,6 +117,8 @@ class VariableOrderMarkovModel:
         self.selected_fit_wall_clock_s = None
         self.selected_validation_evaluation_wall_clock_s = None
         self.selection_log = []
+        self.candidate_grid = (self.max_order,)
+        self.grid_extensions = 0
         return self
 
     def _validated_token(self, token: object, *, field: str) -> int:
@@ -167,6 +173,12 @@ class VariableOrderMarkovModel:
             return np.full(self.vocabulary_size, 1.0 / self.vocabulary_size, dtype=float)
         return distribution / total
 
+    def predict_musical_distribution(self, context: list[int]) -> np.ndarray:
+        """Next-symbol predictive renormalized over musical symbols (BOS excluded, F3)."""
+
+        musical = self.predict_distribution(context)[: self.musical_vocabulary_size]
+        return musical / float(musical.sum())
+
     def _score_piece(self, piece: PreparedPiece, max_context_length: int) -> dict[str, object]:
         log_likelihood = 0.0
         correct = 0
@@ -177,10 +189,10 @@ class VariableOrderMarkovModel:
             context = [self.bos_token_id]
             for event_index, token in enumerate(piece.tokens[start:stop], start=start):
                 target = self._validated_musical_target(token)
-                distribution = self.predict_distribution(context)
+                distribution = self.predict_musical_distribution(context)
                 log_likelihood += math.log(max(float(distribution[target]), EPSILON))
                 correct += int(int(np.argmax(distribution)) == target)
-                one_hot = np.zeros(self.vocabulary_size, dtype=float)
+                one_hot = np.zeros(self.musical_vocabulary_size, dtype=float)
                 one_hot[target] = 1.0
                 brier_score_sum += float(np.square(distribution - one_hot).sum())
                 n_tokens += 1
@@ -261,6 +273,8 @@ class VariableOrderMarkovModel:
                 # y transformador.
                 "selected_validation_wall_clock_s": self.selected_validation_evaluation_wall_clock_s,
                 "evaluation_wall_clock_s": evaluation_wall_clock_s,
+                "candidate_grid": list(self.candidate_grid),
+                "grid_extensions": self.grid_extensions,
             },
             "piece_metrics": piece_metrics,
             "selection_log": list(self.selection_log),
@@ -277,8 +291,13 @@ def select_vomm_by_validation(
     alpha: float = 0.5,
     backoff_strength: float = 1.0,
     max_context_length: int = 128,
+    max_order: int | None = None,
 ) -> VariableOrderMarkovModel:
-    """Select a VOMM over musical symbols plus explicit BOS, with PAD excluded."""
+    """Select a VOMM over musical symbols plus explicit BOS, with PAD excluded.
+
+    With ``max_order``, the order grid grows while the selection touches its
+    maximum (C2); reaching the limit still at the maximum raises ``ValueError``.
+    """
 
     if not candidate_orders:
         raise ValueError("candidate_orders must not be empty.")
@@ -290,7 +309,11 @@ def select_vomm_by_validation(
     best_validation_nll = math.inf
     best_validation_evaluation_wall_clock_s: float | None = None
     selection_log: list[dict[str, float | int]] = []
-    for order in candidate_orders:
+    candidate_grid = list(candidate_orders)
+    pending = list(candidate_grid)
+    grid_extensions = 0
+    while pending:
+        order = pending.pop(0)
         candidate = VariableOrderMarkovModel(
             max_order=order,
             vocabulary_size=vocabulary_size,
@@ -315,6 +338,18 @@ def select_vomm_by_validation(
             best_validation_nll = validation_nll
             best_model = candidate
             best_validation_evaluation_wall_clock_s = validation_evaluation_wall_clock_s
+        if pending or max_order is None or best_model is None:
+            continue
+        if best_model.max_order == max(candidate_grid):
+            pending = [k for k in next_grid_candidates(max(candidate_grid)) if k <= max_order]
+            if not pending:
+                raise ValueError(
+                    grid_ceiling_message(
+                        family="VOMM", parameter="max_order", limit=max_order, grid=tuple(candidate_grid)
+                    )
+                )
+            candidate_grid.extend(pending)
+            grid_extensions += 1
 
     if best_model is None or best_validation_evaluation_wall_clock_s is None:
         raise ValueError("VOMM validation did not produce a candidate.")
@@ -325,4 +360,6 @@ def select_vomm_by_validation(
     best_model.selected_fit_wall_clock_s = best_model.fit_wall_clock_s
     best_model.selected_validation_evaluation_wall_clock_s = best_validation_evaluation_wall_clock_s
     best_model.selection_log = selection_log
+    best_model.candidate_grid = tuple(candidate_grid)
+    best_model.grid_extensions = grid_extensions
     return best_model

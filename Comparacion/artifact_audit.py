@@ -397,8 +397,66 @@ def audit_run(run_dir: str | Path) -> dict[str, object]:
         "status": _worst(
             str(check["status"]) for check in checks if not check.get("advisory", False)
         ),
+        "analysis_status": _analysis_status_of(root, config),
         "checks": checks,
         "counts": _counts(root, checks),
+    }
+
+
+#: Salidas donde el runner corregido escribe su analysis_status, en orden de lectura.
+_ANALYSIS_STATUS_SOURCES = ("run_summary.json", "pareto_summary.json", "pairwise_comparisons.json")
+
+
+def _recorded_analysis_status(root: Path) -> tuple[dict[str, object], str] | None:
+    for name in _ANALYSIS_STATUS_SOURCES:
+        path = root / name
+        if not path.exists():
+            continue
+        try:
+            payload = _read_json(path)
+        except json.JSONDecodeError:
+            continue
+        status = payload.get("analysis_status") if isinstance(payload, Mapping) else None
+        if isinstance(status, Mapping):
+            return dict(status), name
+    return None
+
+
+def _analysis_status_of(root: Path, config: Mapping[str, object] | None) -> dict[str, object]:
+    """Aclaración 2: sólo evalúa la regla de B la corrida que el runner corregido
+    declaró así; una corrida sin VOMM es exploratoria.
+
+    El estado se lee de lo que la corrida registró, con sus huecos frente al
+    preregistro.  Una corrida sin ``analysis_status`` es anterior al runner
+    corregido (y al preregistro): no calcula el estimando que decide ni su IC de
+    Holm, así que no evalúa la regla de B aunque traiga el VOMM.
+    """
+
+    include_vomm = None if config is None else config.get("include_vomm_control")
+    if include_vomm is False:
+        return {
+            "status": "exploratory",
+            "evaluates_preregistered_rule_B": False,
+            "reason": "run_without_vomm: the six preregistered comparisons of B include the vomm",
+            "source": "config.json",
+        }
+    recorded = _recorded_analysis_status(root)
+    if recorded is not None:
+        status, source = recorded
+        return {"preregistration_gaps": [], **status, "source": source}
+    if include_vomm is None:
+        return {
+            "status": "unknown",
+            "evaluates_preregistered_rule_B": None,
+            "reason": "config_without_include_vomm_control",
+            "source": None,
+        }
+    return {
+        "status": "predates_corrected_runner",
+        "evaluates_preregistered_rule_B": False,
+        "reason": "no_analysis_status_recorded: the run was written before the preregistration "
+        "and the corrected runner, so it has no work-mean estimand with its Holm CI",
+        "source": None,
     }
 
 

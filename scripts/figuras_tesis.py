@@ -27,6 +27,7 @@ from __future__ import annotations
 import csv
 import json
 import statistics
+import sys
 import textwrap
 from collections import defaultdict
 from pathlib import Path
@@ -39,6 +40,11 @@ import numpy as np
 from matplotlib.lines import Line2D
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+# La NLL por obra del panel A es la misma función que usa la comparación pareada.
+from Comparacion.statistics import MIN_PAIRED_WORKS, _work_nll_means, _work_totals  # noqa: E402
+
 ARTIFACTS = REPO_ROOT / "artifacts"
 COMPARACION = ARTIFACTS / "Comparacion"
 OUTPUT_DIR = ARTIFACTS / "figuras"
@@ -190,10 +196,26 @@ def leer_summary(corrida: str) -> list[dict]:
         return list(csv.DictReader(handle))
 
 
+#: C7: la perplejidad que se reporta es exp de la NLL ponderada por token, con el IC
+#: bootstrap por obra de su propio estimando; la desviación entre corridas no lo es.
+COLUMNAS_C7 = ("token_weighted_ppl", "test_ppl_ci95_low", "test_ppl_ci95_high")
+
+
+def leer_summary_c7(corrida: str) -> list[dict]:
+    filas = leer_summary(corrida)
+    faltan = [c for c in COLUMNAS_C7 if not filas or c not in filas[0]]
+    if faltan:
+        raise ValueError(
+            f"{corrida}: results_summary.csv no trae {', '.join(faltan)}; "
+            "regenérala con el runner corregido (C7)."
+        )
+    return filas
+
+
 def ppl_en_frac_1(corrida: str) -> dict[str, float]:
     return {
-        row["model"]: float(row["mean_test_ppl"])
-        for row in leer_summary(corrida)
+        row["model"]: float(row["token_weighted_ppl"])
+        for row in leer_summary_c7(corrida)
         if float(row["frac"]) == 1.0
     }
 
@@ -203,17 +225,43 @@ def leer_pareadas(corrida: str) -> list[dict]:
         return json.load(handle)["comparisons"]
 
 
+def leer_pareto(corrida: str) -> dict:
+    """Frontera tal como la decidió el runner: Holm, Enmienda 1 y Aclaración 2."""
+
+    with open(COMPARACION / corrida / "pareto_summary.json", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    parcial = payload.get("predictive_cost_partial_frontier", {})
+    if parcial.get("nll_estimand") != "mean_over_works_of_work_nll_difference":
+        raise ValueError(
+            f"{corrida}: pareto_summary.json no trae la frontera de la regla preregistrada "
+            "(media por obra con IC de Holm); regenérala con el runner corregido."
+        )
+    return {**parcial, "analysis_status": payload.get("analysis_status", {})}
+
+
 def leer_diagnostico(nombre: str) -> dict:
     with open(ARTIFACTS / nombre, encoding="utf-8") as handle:
         return json.load(handle)
 
 
 def costos_ajuste(corrida: str) -> dict[str, float]:
+    """Segundos del ajuste seleccionado, frac = 1.0, media por modelo.
+
+    ``fit_wall_clock_s`` mezcla la selección completa de los clásicos con un solo
+    ajuste del transformador (C1), así que no se usa: la figura compara ajuste
+    seleccionado contra ajuste seleccionado.
+    """
     por_modelo = defaultdict(list)
     with open(COMPARACION / corrida / "engineering_costs.csv", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
+        lector = csv.DictReader(handle)
+        if "selected_fit_wall_clock_s" not in (lector.fieldnames or []):
+            raise ValueError(
+                f"{corrida}: engineering_costs.csv no trae selected_fit_wall_clock_s; "
+                "sin él no hay costo comparable entre familias."
+            )
+        for row in lector:
             if float(row["frac"]) == 1.0:
-                por_modelo[row["model"]].append(float(row["fit_wall_clock_s"]))
+                por_modelo[row["model"]].append(float(row["selected_fit_wall_clock_s"]))
     return {k: statistics.mean(v) for k, v in por_modelo.items()}
 
 
@@ -223,23 +271,28 @@ def costos_ajuste(corrida: str) -> dict[str, float]:
 def figura_curva_aprendizaje() -> None:
     """One panel, direct labels, and the slope written where the curve ends."""
     datos = defaultdict(list)
-    for row in leer_summary(ORIGINAL):
+    for row in leer_summary_c7(ORIGINAL):
         datos[row["model"]].append(
             (
                 float(row["mean_n_train_tokens"]),
-                float(row["mean_test_ppl"]),
-                float(row["std_test_ppl"]),
+                float(row["token_weighted_ppl"]),
+                float(row["test_ppl_ci95_low"]),
+                float(row["test_ppl_ci95_high"]),
             )
         )
 
     fig, ax = plt.subplots(figsize=(ANCHO_DOBLE * 0.72, 3.0))
 
     marcas = None
-    for modelo in ORDEN:
+    dibujado = {}
+    # Una corrida sin VOMM (exploratoria) dibuja solo los modelos que trae.
+    for modelo in [m for m in ORDEN if datos.get(m)]:
         puntos = sorted(datos[modelo])
+        dibujado[modelo] = puntos
         x = np.array([p[0] for p in puntos]) / 1000.0
         y = np.array([p[1] for p in puntos])
-        err = np.array([p[2] for p in puntos])
+        # IC asimétrico: exp de los extremos del IC de la NLL ponderada (C7).
+        err = np.array([[p[1] - p[2] for p in puntos], [p[3] - p[1] for p in puntos]])
         marcas = x
         ax.errorbar(
             x, y, yerr=err,
@@ -269,21 +322,23 @@ def figura_curva_aprendizaje() -> None:
 
     # Recta, no en arco: el arco de la versión anterior cruzaba la curva del
     # transformer y parecía señalarla a ella.
-    ax.annotate(
-        "topado en K ≤ 48",
-        xy=(marcas[1], datos["finite_hmm"][1][1]),
-        xytext=(marcas[0] * 1.02, 6.85),
-        fontsize=6.5, color=GRIS_TEXTO, ha="left", va="center",
-        arrowprops=dict(arrowstyle="-", color=GRIS, linewidth=0.5),
-    )
+    if len(dibujado.get("finite_hmm", [])) > 1:
+        ax.annotate(
+            "topado en K ≤ 48",
+            xy=(marcas[1], dibujado["finite_hmm"][1][1]),
+            xytext=(marcas[0] * 1.02, 6.85),
+            fontsize=6.5, color=GRIS_TEXTO, ha="left", va="center",
+            arrowprops=dict(arrowstyle="-", color=GRIS, linewidth=0.5),
+        )
 
     titular(
         fig,
         "Solo el transformer aprovecha el corpus completo",
-        "Barras: desviación estándar de 6 corridas; VOMM es determinista, 3. "
-        "Porcentaje: cambio de 10 % a 100 %.",
+        "Perplejidad: exp de la NLL ponderada por token. Barras: IC 95 % bootstrap por obra "
+        "de ese estimando (C7). Porcentaje: cambio de 10 % a 100 %.",
     )
     guardar(fig, "fig1_curva_aprendizaje")
+    return dibujado
 
 
 def figura_capacidad_hmm() -> None:
@@ -399,6 +454,9 @@ def figura_sensibilidades() -> None:
     rejilla = ppl_en_frac_1("sens_hmm_grid")
     split17 = ppl_en_frac_1("sens_split17")
     split29 = ppl_en_frac_1("sens_split29")
+    corridas = (original, stride, rejilla, split17, split29)
+    # Una corrida sin VOMM (exploratoria) dibuja solo los modelos de las cinco.
+    modelos = [m for m in ORDEN if all(m in c for c in corridas)]
 
     # Los tres paneles comparten forma, eje y escala: fila por modelo, el mismo
     # eje de perplejidad. Así el lector compara la magnitud de las tres
@@ -409,11 +467,17 @@ def figura_sensibilidades() -> None:
         gridspec_kw={"wspace": 0.14},
     )
     ax_a, ax_b, ax_c = axes
-    y = np.arange(len(ORDEN))
-    std_intra = 0.047  # peor desviación entre semillas, de results_summary.csv
+    y = np.arange(len(modelos))
+    # Vara de medir leída del artefacto: el semiancho del IC de C7 más ancho en
+    # frac = 1.0. El 0.047 escrito a mano antes no salía de ninguna fila del resumen.
+    std_intra = max(
+        (float(r["test_ppl_ci95_high"]) - float(r["test_ppl_ci95_low"])) / 2.0
+        for r in leer_summary_c7(ORIGINAL)
+        if float(r["frac"]) == 1.0
+    )
 
     def mancuerna(ax, antes, despues, titulo, nota):
-        for i, modelo in enumerate(ORDEN):
+        for i, modelo in enumerate(modelos):
             a, b = antes[modelo], despues[modelo]
             cambia = abs(b - a) > 1e-9
             color = COLORS[modelo] if cambia else GRIS
@@ -443,7 +507,7 @@ def figura_sensibilidades() -> None:
     # Panel C: la semilla es una etiqueta nominal, no un eje. La versión
     # anterior unía las tres semillas con una línea, que dibujaba una tendencia
     # donde solo hay tres réplicas de la misma partición.
-    for i, modelo in enumerate(ORDEN):
+    for i, modelo in enumerate(modelos):
         valores = [original[modelo], split17[modelo], split29[modelo]]
         color = COLORS[modelo]
         ax_c.plot([min(valores), max(valores)], [i, i], color=color,
@@ -457,9 +521,9 @@ def figura_sensibilidades() -> None:
                     "semillas 7, 17, 29;  cifra: recorrido", y=1.06)
 
     ax_a.set_yticks(y)
-    ax_a.set_yticklabels([ETIQUETAS[m] for m in ORDEN])
+    ax_a.set_yticklabels([ETIQUETAS[m] for m in modelos])
     ax_a.invert_yaxis()
-    ax_a.set_ylim(len(ORDEN) - 0.25, -0.75)
+    ax_a.set_ylim(len(modelos) - 0.25, -0.75)
     for ax in axes:
         ax.set_xlabel("Perplejidad de prueba")
         ax.spines["left"].set_visible(False)
@@ -468,10 +532,11 @@ def figura_sensibilidades() -> None:
     # Vara de medir: sin ella, el lector no sabe si 0.62 es mucho. Es el ruido
     # entre semillas de la Fig. 1, dibujado en la misma escala que los cambios.
     x0 = ax_a.get_xlim()[0] + 0.15
-    ax_a.plot([x0, x0 + 2 * std_intra], [3.42, 3.42], color="#222222",
+    y_vara = len(modelos) - 0.58
+    ax_a.plot([x0, x0 + 2 * std_intra], [y_vara, y_vara], color="#222222",
               linewidth=1.4, solid_capstyle="butt", clip_on=False)
-    ax_a.text(x0 + 2 * std_intra + 0.10, 3.42,
-              "±0.047: ruido entre semillas",
+    ax_a.text(x0 + 2 * std_intra + 0.10, y_vara,
+              f"±{std_intra:.3f}: semiancho del IC 95 % más ancho",
               fontsize=6.0, color=GRIS_TEXTO, va="center", ha="left",
               clip_on=False)
 
@@ -481,30 +546,64 @@ def figura_sensibilidades() -> None:
     titular(
         fig,
         "Cada parámetro mueve a un modelo; la partición los mueve a todos",
-        "frac = 1.0, media de 6 corridas. Un parámetro por panel; escala compartida.",
+        "frac = 1.0, perplejidad ponderada por token (C7). Un parámetro por panel; "
+        "escala compartida.",
         y=1.24,
     )
     guardar(fig, "fig3_sensibilidades")
+    return modelos
 
 
 def figura_comparaciones_pareadas() -> None:
     """Original in black, the four sensitivities as one grey band of agreement."""
     corridas = [ORIGINAL, "sens_stride128", "sens_hmm_grid", "sens_split17", "sens_split29"]
 
+    # Aclaración 2: decide la media por obra con su IC de Holm por pasos
+    # (work_mean_holm_decision_ci). Un par sin datos en alguna corrida (status
+    # distinto de ok o sin IC) no se dibuja y se nombra en la línea de método.
+    def evaluable(c: dict) -> bool:
+        return (
+            c.get("status") == "ok"
+            and c.get("mean_difference") is not None
+            and c.get("work_mean_holm_decision_ci") is not None
+        )
+
     por_par = defaultdict(list)
+    sin_datos = set()
     for corrida in corridas:
         for c in leer_pareadas(corrida):
-            por_par[(c["model_a"], c["model_b"])].append((corrida, c))
+            par = (c["model_a"], c["model_b"])
+            if "work_mean_holm_decision_ci" not in c:
+                raise ValueError(
+                    f"{corrida}: pairwise_comparisons.json no trae work_mean_holm_decision_ci; "
+                    "regenérala con el runner corregido (Aclaración 2)."
+                )
+            if evaluable(c):
+                por_par[par].append((corrida, c))
+            else:
+                sin_datos.add(par)
+    pares = [par for par in por_par if par not in sin_datos and len(por_par[par]) == len(corridas)]
+    sin_datos |= set(por_par) - set(pares)
 
     fig, ax = plt.subplots(figsize=(ANCHO_DOBLE * 0.86, 3.0))
-    pares = list(por_par)
-    peor_p = max(c["p_value_holm"] for entradas in por_par.values() for _, c in entradas)
+    valores_p = [
+        c["p_value_holm"] for par in pares for _, c in por_par[par] if c.get("p_value_holm") is not None
+    ]
+    peor_p = max(valores_p) if valores_p else None
+    excluyen = sum(
+        1
+        for par in pares
+        for _, c in por_par[par]
+        if c["work_mean_holm_decision_ci"][0] > 0 or c["work_mean_holm_decision_ci"][1] < 0
+    )
+    intervalos_original = {}
 
     etiquetas_y = []
     for i, par in enumerate(pares):
         entradas = por_par[par]
         sensibilidades = [c for corrida, c in entradas if corrida != ORIGINAL]
         original = next(c for corrida, c in entradas if corrida == ORIGINAL)
+        intervalos_original[par] = list(original["work_mean_holm_decision_ci"])
 
         # La diferencia es A − B y la negativa favorece a A, así que el ganador
         # del par da el color. La versión anterior pintaba todo de negro y
@@ -515,7 +614,7 @@ def figura_comparaciones_pareadas() -> None:
         color = COLORS[ganador]
         etiquetas_y.append(f"{ETIQUETAS[a]}  −  {ETIQUETAS[b]}")
 
-        extremos = [c["bootstrap_95_ci"] for c in sensibilidades]
+        extremos = [c["work_mean_holm_decision_ci"] for c in sensibilidades]
         ax.plot([min(lo for lo, _ in extremos), max(hi for _, hi in extremos)],
                 [i, i], color=color, linewidth=4.0, alpha=0.20,
                 solid_capstyle="round", zorder=1)
@@ -523,7 +622,7 @@ def figura_comparaciones_pareadas() -> None:
             ax.plot([c["mean_difference"]], [i], marker="|", markersize=5,
                     markeredgewidth=0.8, color=color, alpha=0.75, zorder=2)
 
-        lo, hi = original["bootstrap_95_ci"]
+        lo, hi = original["work_mean_holm_decision_ci"]
         ax.plot([lo, hi], [i, i], color=color, linewidth=1.1, zorder=3)
         ax.plot([original["mean_difference"]], [i], marker="o", markersize=3.6,
                 color=color, zorder=4)
@@ -533,7 +632,7 @@ def figura_comparaciones_pareadas() -> None:
     ax.set_yticklabels(etiquetas_y)
     ax.invert_yaxis()
     ax.set_ylim(len(pares) - 0.4, -1.35)
-    ax.set_xlabel("Diferencia de NLL por token (modelo A − modelo B)")
+    ax.set_xlabel("Media por obra de la diferencia de NLL (modelo A − modelo B)")
     ax.tick_params(axis="y", length=0)
     ax.spines["left"].set_visible(False)
 
@@ -545,7 +644,7 @@ def figura_comparaciones_pareadas() -> None:
     # Fuera del área de datos: antes tapaba la última fila.
     handles = [
         Line2D([], [], color="#444444", marker="o", markersize=3.6, linewidth=1.1,
-               label="Corrida original, IC 95 %"),
+               label="Corrida original, IC de Holm"),
         Line2D([], [], color="#444444", linewidth=4.0, alpha=0.25,
                label="Rango de los IC de las 4 sensibilidades"),
         Line2D([], [], color="#444444", marker="|", markersize=5, linewidth=0,
@@ -556,60 +655,57 @@ def figura_comparaciones_pareadas() -> None:
     ax.legend(handles=handles, loc="lower right", handlelength=1.6,
               labelspacing=0.35, borderaxespad=0.4)
 
+    total = len(pares) * len(corridas)
+    obras = sorted({int(c["n_pairs"]) for par in pares for _, c in por_par[par]})
+    texto_obras = f"{obras[0]}" if len(obras) == 1 else f"{obras[0]}–{obras[-1]}" if obras else "0"
+    texto_p = f"peor p de Wilcoxon-Holm, {peor_p:.3f}" if peor_p is not None else "sin p de Wilcoxon-Holm"
+    texto_sin = (
+        " Sin datos, no dibujados: "
+        + ", ".join(f"{ETIQUETAS.get(a, a)} − {ETIQUETAS.get(b, b)}" for a, b in sorted(sin_datos))
+        + "."
+        if sin_datos
+        else ""
+    )
     titular(
         fig,
-        "Ninguna de las 30 comparaciones cruza el cero",
-        f"414 obras, 6 pares × 5 corridas. IC 95 % por bootstrap; peor p de Wilcoxon-Holm, "
-        f"{peor_p:.3f}. El color marca al modelo favorecido.",
+        f"{excluyen} de {total} comparaciones excluyen el cero tras Holm",
+        f"{texto_obras} obras, {len(pares)} pares × {len(corridas)} corridas. Media por obra; "
+        f"IC bootstrap por obra ajustado por Holm por pasos; {texto_p}. "
+        f"El color marca al modelo favorecido.{texto_sin}",
     )
     guardar(fig, "fig4_comparaciones_pareadas")
+    return {"pares": pares, "sin_datos": sorted(sin_datos), "intervalos_original": intervalos_original}
 
 
-def figura_pareto() -> None:
-    """The two-axis Pareto frontier, computed rather than asserted.
+def figura_pareto() -> dict:
+    """The two-axis Pareto frontier exactly as the runner decided it.
 
-    VOMM fits faster than the transformer, so the transformer is not the
-    cheapest model; it dominates the two HMM, which is a narrower and true
-    claim. The frontier is derived here so the figure cannot overstate it.
+    The frontier is read from ``pareto_summary.json``, never recomputed: there
+    the NLL axis is decided by the paired work-mean difference with its Holm
+    step-down CI, pairs with fewer than 10 common works fall back to the
+    marginals (Enmienda 1), and cost carries its own uncertainty band. A point
+    comparison here would drop a model that the preregistered rule keeps.
     """
-    costos = costos_ajuste(ORIGINAL)
-    filas = [r for r in leer_summary(ORIGINAL) if float(r["frac"]) == 1.0]
-    nll = {r["model"]: float(r["mean_test_nll"]) for r in filas}
-    nll_std = {r["model"]: float(r["std_test_nll"]) for r in filas}
-
-    def dominado(modelo: str) -> bool:
-        """True if some other model is at least as cheap and at least as good."""
-        return any(
-            otro != modelo
-            and costos[otro] <= costos[modelo]
-            and nll[otro] <= nll[modelo]
-            for otro in ORDEN
-        )
-
-    frontera = sorted((m for m in ORDEN if not dominado(m)), key=lambda m: costos[m])
+    pareto = leer_pareto(ORIGINAL)
+    candidatos = {c["model"]: c for c in pareto["candidates"]}
+    en_frontera_json = [c["model"] for c in pareto["frontier"]]
+    modelos = [m for m in ORDEN if m in candidatos] + sorted(set(candidatos) - set(ORDEN))
+    costos = {m: float(candidatos[m]["mean_selected_fit_wall_clock_s"]) for m in modelos}
+    nll = {m: float(candidatos[m]["work_mean_test_nll"]) for m in modelos}
+    ic = {m: candidatos[m]["work_mean_test_nll_interval"] for m in modelos}
+    sin_decidir = [list(item["pair"]) for item in pareto.get("nll_paired_pairs_skipped", [])]
 
     fig, ax = plt.subplots(figsize=(ANCHO_DOBLE * 0.70, 2.7))
 
-    # Escalera, no segmento: la recta de la versión anterior interpolaba entre
-    # VOMM y el transformer y prometía configuraciones intermedias que no
-    # existen. La frontera real de Pareto es escalonada.
-    escalon_x, escalon_y = [], []
-    for i, m in enumerate(frontera):
-        if i:
-            escalon_x.append(costos[m])
-            escalon_y.append(nll[frontera[i - 1]])
-        escalon_x.append(costos[m])
-        escalon_y.append(nll[m])
-    ax.plot(escalon_x, escalon_y, color=GRIS, linewidth=0.9, dashes=(4, 2), zorder=1)
-
-    for modelo in ORDEN:
-        en_frontera = modelo in frontera
-        color = COLORS[modelo]
+    for modelo in modelos:
+        en_frontera = modelo in en_frontera_json
+        color = COLORS.get(modelo, GRIS)
         # Los dominados conservan su color y pierden peso: bajar a gris les
         # quitaba la identidad que el resto del capítulo les asigna.
         ax.errorbar(
-            costos[modelo], nll[modelo], yerr=nll_std[modelo],
-            color=color, marker=MARKERS[modelo],
+            costos[modelo], nll[modelo],
+            yerr=[[nll[modelo] - float(ic[modelo][0])], [float(ic[modelo][1]) - nll[modelo]]],
+            color=color, marker=MARKERS.get(modelo, "o"),
             markersize=7.0 if en_frontera else 5.0,
             alpha=1.0 if en_frontera else 0.45,
             elinewidth=0.8, capsize=1.5, zorder=4,
@@ -621,9 +717,9 @@ def figura_pareto() -> None:
             "transformer": ((0, -12), "center", "top"),
             "hdp_hmm": ((9, 3), "left", "center"),
             "finite_hmm": ((9, -3), "left", "center"),
-        }[modelo]
+        }.get(modelo, ((9, 0), "left", "center"))
         ax.annotate(
-            f"{ETIQUETAS[modelo]}, {costos[modelo]:.0f} s",
+            f"{ETIQUETAS.get(modelo, modelo)}, {costos[modelo]:.0f} s",
             xy=(costos[modelo], nll[modelo]), xytext=desvio,
             textcoords="offset points", fontsize=6.8, ha=ha, va=va,
             color=color if en_frontera else GRIS_TEXTO,
@@ -632,56 +728,124 @@ def figura_pareto() -> None:
 
     ax.set_xscale("log")
     ax.margins(x=0.38, y=0.30)
-    # Marcas en los costos medidos: con solo 10² y 10³ rotulados, los 41 s y los
-    # 169 s en que descansa la afirmación no se podían leer de la figura. Los
-    # dos HMM cuestan casi lo mismo, así que una sola marca los cubre.
-    marcas = [round(costos["vomm"]), round(costos["transformer"]),
-              round(costos["finite_hmm"])]
+    # Marcas en los costos medidos, leídos del artefacto.
+    marcas = sorted({round(v) for v in costos.values()})
     ax.set_xticks(marcas)
     ax.set_xticklabels([f"{v:.0f}" for v in marcas])
     ax.minorticks_off()
     ax.get_xaxis().set_major_formatter(mpl.ticker.ScalarFormatter())
-    ax.set_xlabel("Segundos de ajuste, frac = 1.0 (escala logarítmica)")
-    ax.set_ylabel("NLL de prueba por token")
+    ax.set_xlabel("Segundos del ajuste seleccionado, frac = 1.0 (escala logarítmica)")
+    ax.set_ylabel("NLL de prueba, media por obra")
 
-    ax.annotate(
-        "frontera de Pareto",
-        xy=(costos[frontera[-1]], nll[frontera[0]]),
-        xytext=(-14, -8), textcoords="offset points", fontsize=6.3,
-        color=GRIS_TEXTO, ha="right", va="top",
+    dominados = [m for m in modelos if m not in en_frontera_json]
+    nombres = lambda ms: ", ".join(ETIQUETAS.get(m, m) for m in ms) or "ninguno"
+    exploratoria = pareto.get("analysis_status", {}).get("status") == "exploratory"
+    texto_sin = (
+        " Pares que no deciden por la pareada (marginales): "
+        + "; ".join(" − ".join(ETIQUETAS.get(m, m) for m in par) for par in sin_decidir)
+        + "."
+        if sin_decidir
+        else ""
     )
-    ax.text(0.99, 0.34, "dominados", transform=ax.transAxes, fontsize=6.3,
-            color=GRIS_TEXTO, ha="right", va="top")
-
     titular(
         fig,
-        "El transformer domina a los dos HMM",
-        "frac = 1.0, media de 6 corridas; barras: desviación estándar del NLL. "
-        "Transformer en GPU, clásicos en CPU.",
+        f"En la frontera: {nombres([m for m in modelos if m in en_frontera_json])}; "
+        f"dominados: {nombres(dominados)}" + (" (corrida exploratoria)" if exploratoria else ""),
+        "frac = 1.0. Frontera de pareto_summary.json: en NLL decide la media por obra de la "
+        "diferencia pareada con IC de Holm; barras: IC 95 % bootstrap por obra. "
+        + ("Dispositivos distintos entre modelos. " if pareto.get("devices_differ") else "")
+        + texto_sin,
     )
     guardar(fig, "fig5_pareto_prediccion_costo")
+    return {"frontera": [m for m in modelos if m in en_frontera_json], "pares_sin_decidir": sin_decidir}
 
 
-def figura_unidad_de_analisis() -> None:
-    """Why the two estimands order the same pair oppositely."""
-    agregado = defaultdict(lambda: defaultdict(list))
+#: Campos de pairwise_comparisons.json que fig6 dibuja (Aclaración 2: decide la
+#: media por obra; la ponderada por token es secundaria; ambas con su IC de Holm).
+CAMPOS_FIG6 = (
+    "mean_difference",
+    "work_mean_holm_decision_ci",
+    "work_mean_holm_rejects_zero",
+    "token_weighted_difference",
+    "token_weighted_holm_decision_ci",
+    "token_weighted_holm_rejects_zero",
+)
+
+
+def _ganador_hdp_menos_vomm(diferencia: float, rechaza: bool) -> str:
+    """HDP − VOMM > 0 favorece al VOMM; sin rechazo de Holm es empate."""
+    if not rechaza:
+        return "empate"
+    return "VOMM" if diferencia > 0 else "HDP-HMM"
+
+
+def figura_unidad_de_analisis() -> dict | None:
+    """Los dos estimandos de HDP-HMM − VOMM, tal como los dejó la comparación pareada.
+
+    Panel B dibuja la media por obra (decide) y la ponderada por token
+    (secundaria) con sus IC de Holm por pasos, leídos de
+    ``pairwise_comparisons.json``; el título y los rótulos salen de los rechazos
+    de Holm, no de un texto fijo.  Panel A es descriptivo: la misma diferencia por
+    obra (Σll/Σn de cada obra, media de corridas) por cuartil de longitud.
+    """
+    with open(COMPARACION / ORIGINAL / "pairwise_comparisons.json", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    comparacion, signo = None, 1.0
+    for c in payload["comparisons"]:
+        if (c["model_a"], c["model_b"]) in {("hdp_hmm", "vomm"), ("vomm", "hdp_hmm")}:
+            faltan = [k for k in CAMPOS_FIG6 if k not in c]
+            if faltan:
+                raise ValueError(
+                    f"{ORIGINAL}: pairwise_comparisons.json no trae {', '.join(faltan)}; "
+                    "regenérala con el runner corregido (Aclaración 2)."
+                )
+            comparacion = c
+            signo = 1.0 if c["model_a"] == "hdp_hmm" else -1.0
+    if (
+        comparacion is not None
+        and comparacion.get("status") == "ok"
+        and int(comparacion.get("n_pairs") or 0) < MIN_PAIRED_WORKS
+    ):
+        # Enmienda 1: con menos obras en común el par no decide, aunque un
+        # pairwise_comparisons.json anterior le haya dado IC de Holm.
+        motivo = f"too_few_paired_works, n = {int(comparacion.get('n_pairs') or 0)}"
+        comparacion = None
+    elif comparacion is None:
+        motivo = "el par no está en pairwise_comparisons.json"
+    elif any(comparacion[k] is None for k in CAMPOS_FIG6):
+        motivo = (
+            comparacion.get("reason")
+            or comparacion.get("work_mean_holm_status")
+            or comparacion.get("status")
+        )
+    if comparacion is None or any(comparacion[k] is None for k in CAMPOS_FIG6):
+        # Consola en ASCII: con la salida redirigida en Windows (cp1252) "−" no se codifica.
+        print(f"  fig6_unidad_de_analisis omitida: HDP-HMM - VOMM no evaluable ({motivo})")
+        return None
+
+    def orientado(intervalo) -> list[float]:
+        bajo, alto = (signo * float(v) for v in intervalo)
+        return [min(bajo, alto), max(bajo, alto)]
+
+    por_obra = signo * float(comparacion["mean_difference"])
+    por_evento = signo * float(comparacion["token_weighted_difference"])
+    ic_obra = orientado(comparacion["work_mean_holm_decision_ci"])
+    ic_evento = orientado(comparacion["token_weighted_holm_decision_ci"])
+    ganadores = [
+        _ganador_hdp_menos_vomm(por_obra, bool(comparacion["work_mean_holm_rejects_zero"])),
+        _ganador_hdp_menos_vomm(por_evento, bool(comparacion["token_weighted_holm_rejects_zero"])),
+    ]
+    n_obras = int(comparacion["n_pairs"])
+
+    # Panel A: la misma NLL por obra que la comparación, sobre sus mismas obras.
     with open(COMPARACION / ORIGINAL / "piece_metrics_raw.csv", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            if row["frac"] != "1.0":
-                continue
-            agregado[row["canonical_work_id"]][row["model"]].append(
-                (float(row["nll_per_token"]), int(row["n_tokens"]))
-            )
-
-    obras = []
-    for por_modelo in agregado.values():
-        if not {"vomm", "hdp_hmm"} <= set(por_modelo):
-            continue
-        v = statistics.mean(x[0] for x in por_modelo["vomm"])
-        h = statistics.mean(x[0] for x in por_modelo["hdp_hmm"])
-        obras.append((statistics.mean(x[1] for x in por_modelo["vomm"]), h - v))
-
-    obras.sort()
+        filas = [row for row in csv.DictReader(handle) if float(row["frac"]) == 1.0]
+    nll = _work_nll_means(filas)
+    longitud = _work_totals(filas)[0].get(("vomm", 1.0), {})
+    obras = sorted(
+        (longitud[w][1], nll[("hdp_hmm", 1.0)][w] - nll[("vomm", 1.0)][w])
+        for w in comparacion["canonical_work_ids"]
+    )
     n = len(obras)
     cortes = [0, n // 4, n // 2, 3 * n // 4, n]
     medias, etiquetas, ics, tamanos = [], [], [], []
@@ -689,22 +853,15 @@ def figura_unidad_de_analisis() -> None:
         trozo = obras[cortes[i] : cortes[i + 1]]
         diferencias = [d for _, d in trozo]
         medias.append(statistics.mean(diferencias))
-        # El hallazgo del panel es un cambio de signo en el último cuartil. Sin
-        # incertidumbre, el lector no puede saber si ese signo se sostiene.
         ics.append(ic_bootstrap(diferencias))
         tamanos.append(len(trozo))
-        # Bordes semiabiertos: rotular cada trozo con su propio mínimo y máximo
-        # repetía el valor de corte en dos barras y abría un hueco falso entre
-        # el tercer cuartil y el cuarto.
+        # Bordes semiabiertos: el valor de corte no se repite en dos barras.
         inferior = int(min(t for t, _ in trozo))
         if i < 3:
             superior = int(min(t for t, _ in obras[cortes[i + 1] : cortes[i + 2]]))
             etiquetas.append(f"{inferior}–{superior}")
         else:
             etiquetas.append(f"{inferior}–{int(max(t for t, _ in trozo))}")
-
-    por_obra = statistics.mean(d for _, d in obras)
-    por_token = sum(d * t for t, d in obras) / sum(t for t, _ in obras)
 
     fig, (ax, ax2) = plt.subplots(
         1, 2, figsize=(ANCHO_DOBLE * 0.90, 2.7),
@@ -719,52 +876,86 @@ def figura_unidad_de_analisis() -> None:
                       [hi - m for m, (_, hi) in zip(medias, ics)]],
                 fmt="none", ecolor="#222222", elinewidth=0.8, capsize=2, zorder=5)
     ax.axhline(0, color="#000000", linewidth=0.7)
-    piso = min(lo for lo, _ in ics)
-    techo = max(hi for _, hi in ics)
-    ax.set_ylim(piso - 0.016, techo + 0.016)
+    piso = min(0.0, min(lo for lo, _ in ics))
+    techo = max(0.0, max(hi for _, hi in ics))
+    margen = 0.12 * (techo - piso or 1.0)
+    ax.set_ylim(piso - margen, techo + margen)
     ax.set_xticks(x)
     ax.set_xticklabels([f"{e}\nn = {t}" for e, t in zip(etiquetas, tamanos)])
     ax.set_xlabel("Longitud de la obra (tokens; cuartiles de igual número de obras)")
     ax.set_ylabel("NLL, HDP-HMM − VOMM")
-    ax.text(0.5, techo + 0.010, "gana VOMM", fontsize=6.5,
-            color=COLORS["vomm"], ha="center", va="center")
-    ax.text(3.0, piso - 0.010, "gana HDP-HMM", fontsize=6.5,
-            color=COLORS["hdp_hmm"], ha="center", va="center")
-    # El IC del primer cuartil y el del cuarto cruzan el cero, así que el título
-    # dice "se desvanece" y no "se invierte": el signo del cuarto cuartil no
-    # está resuelto y las barras de error dejan verlo sin necesidad de glosa.
-    subtitulo_panel(ax, "La ventaja de VOMM se desvanece en las obras largas")
+    ax.text(0.02, 0.97, "↑ favorece a VOMM", transform=ax.transAxes, fontsize=6.5,
+            color=COLORS["vomm"], ha="left", va="top")
+    ax.text(0.02, 0.03, "↓ favorece a HDP-HMM", transform=ax.transAxes, fontsize=6.5,
+            color=COLORS["hdp_hmm"], ha="left", va="bottom")
+    subtitulo_panel(ax, "Diferencia por obra según su longitud",
+                    "descriptivo: IC 95 % bootstrap por cuartil, sin ajuste de Holm")
     etiqueta_panel(ax, "A", dy=1.22)
 
-    ax2.barh([0, 1], [por_obra, por_token], 0.42,
-             color=[COLORS["vomm"], COLORS["hdp_hmm"]], edgecolor="white", linewidth=0.5)
+    color_de = {"VOMM": COLORS["vomm"], "HDP-HMM": COLORS["hdp_hmm"], "empate": GRIS}
+    valores = [por_obra, por_evento]
+    intervalos = [ic_obra, ic_evento]
+    ax2.barh([0, 1], valores, 0.42, color=[color_de[g] for g in ganadores],
+             edgecolor="white", linewidth=0.5)
+    ax2.errorbar(valores, [0, 1],
+                 xerr=[[v - lo for v, (lo, _) in zip(valores, intervalos)],
+                       [hi - v for v, (_, hi) in zip(valores, intervalos)]],
+                 fmt="none", ecolor="#222222", elinewidth=0.8, capsize=2, zorder=5)
     ax2.axvline(0, color="#000000", linewidth=0.7)
     ax2.set_yticks([0, 1])
-    ax2.set_yticklabels(["Unidad:\nla obra", "Unidad:\nel evento"])
+    ax2.set_yticklabels(["Unidad:\nla obra\n(decide)", "Unidad:\nel evento\n(secundaria)"])
     ax2.invert_yaxis()
     ax2.set_xlabel("NLL, HDP-HMM − VOMM")
-    ax2.set_xlim(-0.020, 0.075)
+    izquierda = min(0.0, *(lo for lo, _ in intervalos))
+    derecha = max(0.0, *(hi for _, hi in intervalos))
+    ancho = derecha - izquierda or 1.0
+    # Margen a la derecha para los rótulos, que arrancan tras el extremo del IC.
+    xlim = (izquierda - 0.08 * ancho, derecha + 0.60 * ancho)
+    ax2.set_xlim(*xlim)
     ax2.tick_params(axis="y", length=0)
     ax2.spines["left"].set_visible(False)
-    # Ambas etiquetas arrancan a la derecha del cero: a la izquierda chocarían
-    # con los rótulos del eje.
-    for yi, (valor, ganador) in enumerate([(por_obra, "VOMM"), (por_token, "HDP-HMM")]):
-        ax2.text(max(valor, 0.0) + 0.004, yi,
-                 f"{valor:+.4f}\ngana {ganador}", va="center",
-                 ha="left", fontsize=6.5, linespacing=1.4)
-    subtitulo_panel(ax2, "y con ella, la respuesta")
+    for yi, (valor, (_, alto), ganador) in enumerate(zip(valores, intervalos, ganadores)):
+        texto = "empate tras Holm" if ganador == "empate" else f"gana {ganador}"
+        ax2.text(max(alto, 0.0) + 0.04 * ancho, yi, f"{valor:+.4f}\n{texto}",
+                 va="center", ha="left", fontsize=6.5, linespacing=1.4)
+    subtitulo_panel(ax2, "Los dos estimandos, con IC de Holm")
     etiqueta_panel(ax2, "B", dx=-0.30, dy=1.22)
 
-    titular(
-        fig,
-        "VOMM gana por obra y pierde por evento",
-        "414 obras, frac = 1.0. IC 95 % por bootstrap.",
-        y=1.18,
+    def veredicto(ganador: str) -> str:
+        return "empate tras Holm" if ganador == "empate" else f"gana {ganador}"
+
+    exploratoria = payload.get("analysis_status", {}).get("status") == "exploratory"
+    titulo = (
+        f"Por obra: {veredicto(ganadores[0])}; por evento: {veredicto(ganadores[1])}"
+        + (" (corrida exploratoria)" if exploratoria else "")
     )
+    metodo = (
+        f"{n_obras} obras en común, frac = 1.0. Media por obra (decide) y NLL ponderada por "
+        "token (secundaria) de pairwise_comparisons.json, con IC bootstrap por obra ajustado "
+        "por Holm por pasos sobre la familia preregistrada."
+    )
+    titular(fig, titulo, metodo, y=1.18)
     guardar(fig, "fig6_unidad_de_analisis")
+    return {
+        "por_obra": por_obra,
+        "por_evento": por_evento,
+        "ic_por_obra": ic_obra,
+        "ic_por_evento": ic_evento,
+        "ganadores": ganadores,
+        "n_obras": n_obras,
+        "media_panel_a": statistics.mean(d for _, d in obras),
+        "xlim": xlim,
+        "titulo": titulo,
+        "metodo": metodo,
+    }
 
 
 def main() -> None:
+    # Un carácter que la consola no codifica (p. ej. cp1252 con la salida redirigida)
+    # se reemplaza en vez de abortar el script a mitad de las figuras.
+    reconfigurar = getattr(sys.stdout, "reconfigure", None)
+    if reconfigurar is not None:
+        reconfigurar(errors="replace")
     aplicar_estilo()
     print(f"figuras -> {OUTPUT_DIR}")
     figura_curva_aprendizaje()

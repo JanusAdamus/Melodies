@@ -150,6 +150,31 @@ class CanonicalizationAuditTests(unittest.TestCase):
         self.assertEqual(audit["n_canonical_works"], 2)
         self.assertEqual(audit["dropped_suffixes"], [])
 
+    def test_a_labelled_piece_inside_a_piece_work_still_reports_near_misses(self) -> None:
+        # B tiene buena etiqueta, pero comparte contenido con G (sin metadatos) y la
+        # unión tomó «pieza:g.mxl» como raíz.  B sigue siendo un casi-choque con A.
+        pieces = [
+            _piece("a.mxl", "Ständchen", "Schubert"),
+            {**_piece("b.mxl", "Standchen", "Schubert"), "canonical_work_id": "pieza:g.mxl"},
+            {**_piece("g.mxl", "Untitled", ""), "canonical_work_id": "pieza:g.mxl"},
+        ]
+        audit = build_canonicalization_audit(pieces)
+
+        near = {group["aggressive_key"]: group["canonical_work_ids"] for group in audit["near_miss_groups"]}
+        self.assertEqual(near, {"schubertstandchen": ["pieza:g.mxl", "schubert ständchen"]})
+        self.assertIn("schubert ständchen", audit["review_required"])
+        self.assertIn("pieza:g.mxl", audit["review_required"])
+
+    def test_generic_pieces_isolated_as_piece_works_are_not_near_misses(self) -> None:
+        pieces = [
+            {**_piece("g.mxl", "Untitled", ""), "canonical_work_id": "pieza:g.mxl"},
+            {**_piece("h.mxl", "Untitled", ""), "canonical_work_id": "pieza:h.mxl"},
+        ]
+        audit = build_canonicalization_audit(pieces)
+
+        self.assertEqual(audit["near_miss_groups"], [])
+        self.assertEqual(audit["generic_labels"], [])
+
     def test_group_with_disagreeing_fingerprints_is_suspicious(self) -> None:
         pieces = [
             _piece("a", "Untitled", "Anon", tokens=[60, 62, 64, 65, 67]),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import math
 from numbers import Integral
 from pathlib import Path
 
@@ -27,6 +28,9 @@ class LearningCurveConfig:
     data_seeds: tuple[int, ...] = (1, 2, 3)
     model_seeds: tuple[int, ...] = (1, 2)
     finite_hmm_states: tuple[int, ...] = (12, 24, 48)
+    #: C2: la rejilla crece (×1.5, ×2) mientras la selección toque su máximo; al
+    #: llegar a este límite sin dejar de tocarlo, la corrida falla.
+    finite_hmm_max_states: int = 384
     finite_hmm_max_iterations: int = 100
     finite_hmm_tolerance: float = 1e-4
     # Truncacion de limite debil (Ishwaran & James 2001). El piloto ocupa 9-15 estados sea
@@ -42,10 +46,20 @@ class LearningCurveConfig:
     )
     include_vomm_control: bool = True
     vomm_candidate_orders: tuple[int, ...] = (1, 2, 4, 8)
+    vomm_max_order: int = 32
     bootstrap_samples: int = 10000
     bootstrap_seed: int = 17
     boundary_tolerance: int = 1
     structural_annotations_path: str | None = None
+    #: Partición de la corrida original (su directorio, su splits/, test_pieces.json,
+    #: val_pieces.json, un execution_plan.json o {partición: [ids]}); sólo se lee.
+    #: Si se da, el manifiesto, el plan y run_summary.json reportan la diferencia;
+    #: si no, declaran que no se reportó (preregistro B).
+    reference_splits_path: str | None = None
+    #: C1: búsqueda de arquitectura/hiperparámetros del transformador hecha fuera
+    #: de esta corrida. Sin declararla, su costo queda como no medido.
+    transformer_search_wall_clock_s: float | None = None
+    transformer_search_device: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.include_vomm_control, bool):
@@ -70,6 +84,12 @@ class LearningCurveConfig:
             raise ValueError("finite_hmm_states must not contain duplicates.")
         if list(self.finite_hmm_states) != sorted(self.finite_hmm_states):
             raise ValueError("finite_hmm_states must be sorted in increasing order.")
+        for name, limit, grid in (
+            ("finite_hmm_max_states", self.finite_hmm_max_states, self.finite_hmm_states),
+            ("vomm_max_order", self.vomm_max_order, self.vomm_candidate_orders),
+        ):
+            if isinstance(limit, bool) or not isinstance(limit, Integral) or int(limit) < max(grid):
+                raise ValueError(f"{name} must be an integer of at least the initial grid maximum.")
         if (
             isinstance(self.finite_hmm_max_iterations, bool)
             or not isinstance(self.finite_hmm_max_iterations, Integral)
@@ -94,6 +114,16 @@ class LearningCurveConfig:
             or int(self.boundary_tolerance) < 0
         ):
             raise ValueError("boundary_tolerance must be a nonnegative integer.")
+        if self.transformer_search_wall_clock_s is not None:
+            seconds = self.transformer_search_wall_clock_s
+            if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds < 0:
+                raise ValueError("transformer_search_wall_clock_s must be a finite nonnegative number.")
+            if not isinstance(self.transformer_search_device, str) or not self.transformer_search_device.strip():
+                raise ValueError("transformer_search_wall_clock_s requires transformer_search_device.")
+        if self.reference_splits_path is not None and (
+            not isinstance(self.reference_splits_path, str) or not self.reference_splits_path.strip()
+        ):
+            raise ValueError("reference_splits_path must be a nonblank string or None.")
         if self.structural_annotations_path is not None:
             if not isinstance(self.structural_annotations_path, str):
                 raise TypeError("structural_annotations_path must be a string or None.")

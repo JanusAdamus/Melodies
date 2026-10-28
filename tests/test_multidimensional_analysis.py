@@ -221,16 +221,15 @@ class PairedInferenceTests(unittest.TestCase):
     def test_holm_adjustment_has_exact_values_for_three_distinct_raw_p_values(self) -> None:
         """Catches wrong rank factors, pair mapping, monotonicity, or capping logic."""
 
+        # Diez obras en común: el mínimo para entrar a los pasos de Holm (Enmienda 1).
         rows = [
-            {"model": "alpha", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 1.0},
-            {"model": "alpha", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 1.0},
-            {"model": "alpha", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 1.0},
-            {"model": "beta", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 2.0},
-            {"model": "beta", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 3.0},
-            {"model": "beta", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 4.0},
-            {"model": "gamma", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 4.0},
-            {"model": "gamma", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 6.0},
-            {"model": "gamma", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 8.0},
+            {"model": model, "canonical_work_id": f"w{index}", "frac": 1.0, "test_nll": nll(index)}
+            for index in range(1, 11)
+            for model, nll in (
+                ("alpha", lambda i: 1.0),
+                ("beta", lambda i: 1.0 + i),
+                ("gamma", lambda i: 2.0 + 2.0 * i),
+            )
         ]
         scripted_results = [
             SimpleNamespace(statistic=4.0, pvalue=0.8),
@@ -256,13 +255,11 @@ class PairedInferenceTests(unittest.TestCase):
     def test_actual_wilcoxon_is_used_for_nonzero_canonical_work_differences(self) -> None:
         """Catches replacing the SciPy integration with only scripted test behavior."""
 
+        # Diez obras en común: el mínimo para entrar a los pasos de Holm (Enmienda 1).
         rows = [
-            {"model": "alpha", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 0.0},
-            {"model": "alpha", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 0.0},
-            {"model": "alpha", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 0.0},
-            {"model": "beta", "canonical_work_id": "w1", "frac": 1.0, "test_nll": 1.0},
-            {"model": "beta", "canonical_work_id": "w2", "frac": 1.0, "test_nll": 2.0},
-            {"model": "beta", "canonical_work_id": "w3", "frac": 1.0, "test_nll": 3.0},
+            {"model": model, "canonical_work_id": f"w{index}", "frac": 1.0, "test_nll": nll}
+            for index in range(1, 11)
+            for model, nll in (("alpha", 0.0), ("beta", float(index)))
         ]
 
         result = pairwise_model_comparisons(rows, bootstrap_samples=8, seed=5)
@@ -270,8 +267,9 @@ class PairedInferenceTests(unittest.TestCase):
 
         self.assertEqual(comparison["wilcoxon_status"], "ok")
         self.assertEqual(comparison["wilcoxon_statistic"], 0.0)
-        self.assertEqual(comparison["p_value"], 0.25)
-        self.assertEqual(comparison["p_value_holm"], 0.25)
+        # p exacto bilateral con 10 diferencias del mismo signo: 2 / 2**10.
+        self.assertAlmostEqual(comparison["p_value"], 2 / 1024)
+        self.assertAlmostEqual(comparison["p_value_holm"], 2 / 1024)
 
     def test_missing_and_nonfinite_rows_do_not_fabricate_pairs(self) -> None:
         """Catches imputing absent work metrics or treating partial fractions as full data."""

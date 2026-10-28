@@ -67,8 +67,8 @@ diagnosticos secundarios cuando la familia expone distribuciones completas.
 En `frac=1.0`, `pairwise_comparisons.json` forma todos los pares disponibles.
 Promedia primero dentro de `(modelo, obra canonica)`, calcula la diferencia de
 NLL `modelo_a - modelo_b`, un intervalo bootstrap pareado del 95 %, Wilcoxon
-cuando hay suficientes diferencias no nulas y correccion Holm para los valores
-p validos.
+cuando hay suficientes diferencias no nulas y correccion Holm sobre la familia
+completa de pares (un par no evaluable cuenta como p = 1; ver `holm_family`).
 
 `engineering_costs.csv` conserva por corrida tiempo de ajuste, tiempo de
 evaluacion, dispositivo, piezas/eventos de entrenamiento y las medidas de

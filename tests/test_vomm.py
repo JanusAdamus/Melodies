@@ -199,15 +199,18 @@ class VariableOrderMarkovModelTests(unittest.TestCase):
         self.assertIn("brier_score", first_piece)
         self.assertIn("accuracy", second_piece)
         self.assertIn("brier_score", second_piece)
-        self.assertAlmostEqual(summary["test_nll_per_token"], -math.log(0.7 * 0.6 * 0.1) / 3.0)
+        # F3: cada predictiva se renormaliza sobre los símbolos musicales {0, 1}.
+        p_first, p_second, p_third = 0.7 / 0.9, 0.6 / 0.7, 0.1 / 0.9
+        brier = (8.0 / 81.0, 2.0 / 49.0, 128.0 / 81.0)
+        self.assertAlmostEqual(summary["test_nll_per_token"], -math.log(p_first * p_second * p_third) / 3.0)
         self.assertAlmostEqual(summary["accuracy"], 2.0 / 3.0)
-        self.assertAlmostEqual(summary["brier_score"], 0.62)
-        self.assertAlmostEqual(first_piece["nll_per_token"], -math.log(0.7 * 0.6) / 2.0)
+        self.assertAlmostEqual(summary["brier_score"], sum(brier) / 3.0)
+        self.assertAlmostEqual(first_piece["nll_per_token"], -math.log(p_first * p_second) / 2.0)
         self.assertAlmostEqual(first_piece["accuracy"], 1.0)
-        self.assertAlmostEqual(first_piece["brier_score"], 0.20)
-        self.assertAlmostEqual(second_piece["nll_per_token"], -math.log(0.1))
+        self.assertAlmostEqual(first_piece["brier_score"], (brier[0] + brier[1]) / 2.0)
+        self.assertAlmostEqual(second_piece["nll_per_token"], -math.log(p_third))
         self.assertAlmostEqual(second_piece["accuracy"], 0.0)
-        self.assertAlmostEqual(second_piece["brier_score"], 1.46)
+        self.assertAlmostEqual(second_piece["brier_score"], brier[2])
 
     def test_validation_selection_rejects_zero_token_sets(self) -> None:
         """Catches selecting an order from a vacuous zero-token NLL."""
@@ -236,7 +239,8 @@ class VariableOrderMarkovModelTests(unittest.TestCase):
                 max_context_length=3,
             )
 
-        expected_validation_nll = -math.log((71.0 / 105.0) * (37.0 / 63.0) * (71.0 / 105.0)) / 3.0
+        # F3: la masa de BOS (37/315 en cada paso) se excluye y se renormaliza.
+        expected_validation_nll = -math.log((213.0 / 278.0) * (185.0 / 278.0) * (213.0 / 278.0)) / 3.0
         self.assertEqual(model.selected_order, 1)
         self.assertEqual(model.max_order, 1)
         self.assertEqual(model.bos_token_id, 2)

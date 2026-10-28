@@ -41,8 +41,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from Comparacion.classical_models import FiniteGlobalHMM
 from Comparacion.config import build_default_learning_curve_config
-from Comparacion.runner import _build_grouped_fixed_splits
-from Comparacion.splits import build_nested_training_subsets
+from Comparacion.splits import build_grouped_fixed_splits, build_nested_training_subsets
 from next_token_experiment.data.preprocess import prepare_corpus
 from next_token_experiment.data.tokenizer import build_tokenizer
 
@@ -110,7 +109,7 @@ def main() -> int:
         cache_path=corpus_cache,
         sample_seed=args.corpus_sample_seed,
     )
-    fixed_splits = _build_grouped_fixed_splits(
+    fixed_splits = build_grouped_fixed_splits(
         preparation.pieces,
         test_fraction=config.test_fraction,
         validation_fraction=config.validation_fraction,

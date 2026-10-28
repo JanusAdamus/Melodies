@@ -56,7 +56,17 @@ def lag_one_autocorrelation(values: Sequence[float]) -> float | None:
     return numerator / denominator
 
 
+def _reject_mixed_chains(rows: Sequence[Mapping[str, object]]) -> None:
+    iterations = [row.get("iteration") for row in rows if row.get("iteration") is not None]
+    if len(iterations) != len(set(iterations)):
+        raise ValueError(
+            "a chain repeats iteration numbers: rows from distinct chains or cells were "
+            "concatenated; group traces by (split_seed, data_seed, frac, model_seed) first"
+        )
+
+
 def _chain_diagnostics(rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    _reject_mixed_chains(rows)
     log_likelihoods = [row.get("log_likelihood") for row in rows]
     active_states = [row.get("active_states") for row in rows]
     finite_log_likelihoods = _finite(log_likelihoods)
@@ -159,22 +169,144 @@ def build_chain_diagnostics(
     }
 
 
-def write_chain_traces(
-    traces_by_seed: Mapping[int, Sequence[Mapping[str, object]]], output_root: str | Path
-) -> list[str]:
-    """Escribe hdp_trace_SEED.csv, una traza por semilla de modelo."""
+#: Del veredicto más preocupante al menos preocupante; el global es el peor por celda.
+_VERDICT_SEVERITY = (
+    "no_evidence",
+    "chains_too_short",
+    "drift_detected",
+    # Semillas de una misma celda que eligieron hiperparámetros distintos y cuyas
+    # cadenas discrepan: posible multimodalidad de la selección.  No se suaviza a
+    # «una sola cadena» por haberlas separado por posterior.
+    "selected_hyperparameters_disagree",
+    "chains_disagree",
+    "single_chain_no_cross_chain_evidence",
+    "stable_within_the_observed_window",
+)
 
+_CELL_KEYS = ("split_seed", "data_seed", "frac")
+
+
+def _in_burn_in(row: Mapping[str, object], burn_in: int) -> bool:
+    return int(row["iteration"]) <= burn_in
+
+
+#: Hiperparámetros que definen la posterior; cada model_seed los elige en validación.
+_POSTERIOR_KEYS = ("alpha", "alpha0", "gamma", "kappa", "eta", "n_states_truncation")
+
+
+def build_cell_chain_diagnostics(
+    trace_rows: Sequence[Mapping[str, object]],
+    *,
+    burn_in: int,
+    min_iterations: int,
+) -> dict[str, object]:
+    """Diagnóstico por celda (split_seed, data_seed, frac) y posterior, sin burn-in.
+
+    Cada ``model_seed`` elige sus hiperparámetros en validación; dos semillas que
+    eligen hiperparámetros distintos muestrean posteriores distintas.  Por eso una
+    cadena es una ``model_seed`` dentro de (celda, hiperparámetros seleccionados) y
+    sólo se comparan cadenas de la misma posterior.  Celdas distintas nunca se
+    concatenan (H7).
+    """
+
+    groups: dict[
+        tuple[tuple[object, ...], tuple[object, ...]], dict[int, list[Mapping[str, object]]]
+    ] = {}
+    chains_by_cell: dict[tuple[object, ...], dict[int, list[Mapping[str, object]]]] = {}
+    for row in trace_rows:
+        if _in_burn_in(row, burn_in):
+            continue
+        cell_key = tuple(row.get(name) for name in _CELL_KEYS)
+        posterior_key = tuple(row.get(name) for name in _POSTERIOR_KEYS)
+        groups.setdefault((cell_key, posterior_key), {}).setdefault(row["model_seed"], []).append(row)
+        chains_by_cell.setdefault(cell_key, {}).setdefault(row["model_seed"], []).append(row)
+
+    posteriors_by_cell: dict[tuple[object, ...], set[tuple[object, ...]]] = {}
+    for cell_key, posterior_key in groups:
+        posteriors_by_cell.setdefault(cell_key, set()).add(posterior_key)
+    mixed_cells = [
+        dict(zip(_CELL_KEYS, cell_key))
+        for cell_key, posteriors in sorted(posteriors_by_cell.items(), key=lambda item: tuple(map(str, item[0])))
+        if len(posteriors) > 1
+    ]
+
+    cell_reports = [
+        {
+            "cell": dict(zip(_CELL_KEYS, cell_key)),
+            "posterior": {
+                name: value
+                for name, value in zip(_POSTERIOR_KEYS, posterior_key)
+                if value is not None
+            },
+            "diagnostics": build_chain_diagnostics(chains, min_iterations=min_iterations),
+        }
+        for (cell_key, posterior_key), chains in sorted(
+            groups.items(), key=lambda item: (tuple(map(str, item[0][0])), tuple(map(str, item[0][1])))
+        )
+    ]
+    # En una celda mixta las cadenas no estiman la misma posterior, pero que las
+    # semillas discrepen entre sí es evidencia que el veredicto global no puede
+    # perder: se contrastan todas las semillas de la celda y, si discrepan, la celda
+    # cuenta como «selected_hyperparameters_disagree».
+    mixed_reports = []
+    for cell in mixed_cells:
+        cell_key = tuple(cell[name] for name in _CELL_KEYS)
+        diagnostics = build_chain_diagnostics(chains_by_cell[cell_key], min_iterations=min_iterations)
+        cross = diagnostics["cross_chain"]
+        disagree = cross["log_likelihood_agree"] is False or cross["active_states_agree"] is False
+        mixed_reports.append(
+            {
+                "cell": cell,
+                "verdict": (
+                    "selected_hyperparameters_disagree" if disagree else "selected_hyperparameters_agree"
+                ),
+                "diagnostics": diagnostics,
+            }
+        )
+    verdict_counts: dict[str, int] = {}
+    for report in cell_reports:
+        verdict = str(report["diagnostics"]["verdict"])
+        verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+    for report in mixed_reports:
+        if report["verdict"] == "selected_hyperparameters_disagree":
+            verdict_counts[report["verdict"]] = verdict_counts.get(report["verdict"], 0) + 1
+    present = [verdict for verdict in _VERDICT_SEVERITY if verdict in verdict_counts]
+    return {
+        "status": "ok" if cell_reports else "diagnostics_inconclusive",
+        "verdict": present[0] if present else "no_evidence",
+        "verdict_counts": verdict_counts,
+        "unit": "chain = model_seed within (split_seed, data_seed, frac) and selected hyperparameters",
+        "posterior_keys": list(_POSTERIOR_KEYS),
+        # Celdas donde las semillas eligieron hiperparámetros distintos: sus cadenas
+        # no se comparan entre sí, y hay menos evidencia entre cadenas por posterior.
+        "cells_with_mixed_selected_hyperparameters": mixed_cells,
+        "mixed_cell_cross_posterior_diagnostics": mixed_reports,
+        "burn_in_excluded": int(burn_in),
+        "min_iterations": int(min_iterations),
+        # n_cells: celdas (split_seed, data_seed, frac) distintas; cada celda puede
+        # tener varios grupos (celda, posterior) en «cells».
+        "n_cells": len(chains_by_cell),
+        "n_cell_posterior_groups": len(cell_reports),
+        "cells": cell_reports,
+        "convergence_claimed": False,
+        "policy": POLICY,
+    }
+
+
+def write_cell_traces(
+    trace_rows: Sequence[Mapping[str, object]], output_root: str | Path, *, burn_in: int
+) -> str | None:
+    """Escribe hdp_traces.csv en formato largo, con la marca ``in_burn_in``."""
+
+    if not trace_rows:
+        return None
+    rows = [{**row, "in_burn_in": _in_burn_in(row, burn_in)} for row in trace_rows]
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
-    written: list[str] = []
-    for seed, rows in sorted(traces_by_seed.items()):
-        if not rows:
-            continue
-        fieldnames = list(dict.fromkeys(key for row in rows for key in row))
-        path = root / f"hdp_trace_{seed}.csv"
-        with path.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-        written.append(str(path))
-    return written
+    path = root / "hdp_traces.csv"
+    fieldnames = list(dict.fromkeys(key for row in rows for key in row))
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return str(path)
