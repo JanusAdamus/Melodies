@@ -193,3 +193,16 @@ modelos.
    advertencia de que, sin convergencia entre cadenas, no son una media posterior.
    La tesis no interpreta esos números como inferencia bayesiana sobre K.
 5. La regla de decisión de A y el estimando de la Aclaración 2 no cambian.
+
+## Aclaración 7, 2026-10-28 (exposición a datos de prueba antes de las Enmiendas 5 y 6)
+
+Para que el lector juzgue las Enmiendas 5 y 6: las corridas de tiempos que las
+motivaron (5 primeras obras de MuseTrainer por orden de archivo, 400/200 y 800/400)
+calcularon y guardaron la NLL de prueba de esas 5 obras en sus archivos de salida,
+fuera del repo. Para decidir las enmiendas se miraron sólo las columnas de
+validación, R-hat, η elegido, estados y tiempos, y el diagnóstico por cadena usó
+sólo el ajuste interno y la validación; la NLL de prueba de esas obras no se
+inspeccionó. Esas 5 obras forman parte del corpus de la corrida definitiva. Antes,
+el smoke de PDMX (50 partituras, 7 obras de prueba, 3 épocas, carpeta
+`artifacts/Comparacion/smoke_pdmx50_20261028_984dfde`) sí mostró NLL de prueba de la
+sección B; no motivó ningún cambio a la sección B.
