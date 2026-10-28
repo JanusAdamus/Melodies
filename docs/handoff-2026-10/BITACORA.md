@@ -85,3 +85,13 @@ Una entrada por tarea cerrada (ver PROMPT_CLAUDE.md, «Bitácora»).
 - C1, C2, C5, C7, H7, F3, T1, T2: las pruebas de cada commit de la rama (`tests/test_bos_support.py`, `next_token_experiment/tests/test_label_smoothing.py`, `next_token_experiment/tests/test_benchmark_representations.py`, `tests/test_hdp_cell_diagnostics.py`, `tests/test_headline_estimates.py`, `tests/test_pareto_uncertainty.py`, `tests/test_grid_ceiling.py`, `tests/test_cost_scope.py`) fallan o no importan sobre la base previa c8c49a0 y pasan en la rama.
 - Puntos (a)-(f) y notas 3 y 4 de esta bitácora: commit 4a64c48, pruebas en `tests/test_integracion_particiones.py` (vistas en rojo). Archivos nuevos por corrida: `splits/manifest.json`, `checkpoint_inputs.json`; `execution_plan.json` lleva `split_sha256` y se escribe también en corridas completas; columna `train_subset_sha256` en `results_raw.csv` y `piece_metrics_raw.csv`.
 - Abierto: revisión adversarial (2 subagentes) y merge a `fix/auditoria-tesis`; nota 1 (burn-in del diagnóstico del HDP) depende de cómo quede `fix/auditoria-hdp`; nota 5 (títulos de `scripts/figuras_tesis.py`, p. ej. «media de 6 corridas») queda para la Fase 3.
+
+## 2026-10-28, integración de la Fase 1 (computadora con GPU)
+
+- Mezcladas en `fix/auditoria-tesis` (revisión adversarial limpia en ambas): `fix/auditoria-comparacion` 0c1be88 → f3228ba (conflicto sólo en esta bitácora; suite `394 passed, 3 skipped`) y `fix/auditoria-d1b` a2a8ddc → 207a0fb (conflicto de imports en `scripts/diagnostico_finite_hmm_k.py`; suite `428 passed, 3 skipped`).
+- `fix/auditoria-hdp` sigue en revisión (2 hallazgos medios en corrección: rótulo de «estados activos» y respaldo del pool de `prepare_corpus`). Se mezcla al quedar limpia; el orden previsto hdp → comparacion → d1b se cambió para no esperar.
+- Rama `fix/integracion-fase1` (desde 207a0fb + hdp 941c524, conflicto en `prepare_corpus` resuelto pasando la firma de d1b al respaldo): la comparación califica al HDP con la predictiva posterior (promedio sobre muestras tras burn-in, soporte de 12 alturas) en lugar del plug-in de las medias (2d3b515 prueba, dee896d arreglo).
+- Hashes de insumos (mismo método que PDMX, tarea 0; se excluye `.git`):
+  - MuseTrainer `external/library` (9128876): 76 archivos, `ce1911287b93783bebd8054532653b2de234ebd624aec94920094a8ea59d89db`; sólo `scores/`: 69 archivos, `789f4c55ef69e605f6f654113f9ef8cdd6316e47275986d833249d3c8bdf57b8`.
+  - SymbTr `external/SymbTr` (246bbe3): 8818 archivos, `bf81cbc9e9f76136fa218db3c8f3d1193813b05369e02f226105aa64acf0a04f`; sólo `MusicXML/`: 2200 archivos, `18d3e9ae90219f523aeedcf026becbd3f6d172051f779893d5ef39ce9ff4923d`.
+- Tarea 1.4 en curso en `feat/porobra-heldout` (desde `fix/integracion-fase1`).
