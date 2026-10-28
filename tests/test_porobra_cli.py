@@ -93,3 +93,49 @@ def test_en_paralelo_da_lo_mismo_que_en_serie(corpus, tmp_path):
 def test_muestra_de_symbtr_estratificada_por_makam(corpus):
     paths = porobra_heldout.symbtr_paths(corpus["symbtr"], n=2, seed=7)
     assert sorted(p.name.split("--")[0] for p in paths) == ["hicaz", "rast"]
+
+
+def test_rechaza_un_minimo_de_eventos_menor_que_el_del_preregistro(corpus, tmp_path):
+    # La partición exige 20 eventos: aceptar --min-events 10 sólo aplazaba el fallo al análisis.
+    with pytest.raises(SystemExit):
+        _run(corpus, tmp_path, "--min-events", "10")
+    assert not list(tmp_path.iterdir())
+
+
+def test_una_obra_que_falla_no_tumba_la_corrida(corpus, tmp_path, monkeypatch):
+    original = porobra_heldout.porobra.analyze_work
+
+    def fragile(work_id, tokens, config):
+        if work_id.endswith("a.musicxml"):
+            raise ValueError("fallo simulado")
+        return original(work_id, tokens, config)
+
+    monkeypatch.setattr(porobra_heldout.porobra, "analyze_work", fragile)
+    run_dir = _run(corpus, tmp_path, "--n-workers", "1")
+    works = pd.read_csv(run_dir / "per_work.csv")
+    assert len(works) == 3 and not works["work_id"].str.endswith("a.musicxml").any()
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    failed = summary["analysis_failures"]
+    assert [item["work_id"] for item in failed] == ["MuseTrainer:a.musicxml"]
+    assert "ValueError" in failed[0]["error"] and "fallo simulado" in failed[0]["error"]
+    assert summary["corpus"]["n_analyzed"] == 3
+    assert summary["convergence"]["n_works"] == 3
+
+
+def test_resultados_parciales_quedan_en_disco_si_la_corrida_se_interrumpe(corpus, tmp_path, monkeypatch):
+    original = porobra_heldout.porobra.analyze_work
+    calls = []
+
+    def interrupted(work_id, tokens, config):
+        calls.append(work_id)
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+        return original(work_id, tokens, config)
+
+    monkeypatch.setattr(porobra_heldout.porobra, "analyze_work", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        _run(corpus, tmp_path, "--n-workers", "1")
+    (run_dir,) = tmp_path.iterdir()
+    lines = (run_dir / "per_work.partial.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["work_id"] for line in lines] == [calls[0]]
+    assert not (run_dir / "summary.json").exists()
