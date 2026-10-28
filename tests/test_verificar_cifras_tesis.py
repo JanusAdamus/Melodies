@@ -64,12 +64,59 @@ def test_reference_like_commands_are_ignored(ver):
     assert {rule for _, rule in _ignored(ver, tex)} == {"argumento_estructural"}
 
 
-def test_display_math_is_ignored_and_inline_math_is_counted(ver):
-    tex = "Antes 1.25\n\\begin{equation}\nx = 3.5 + 2\n\\end{equation}\n\\[ y = 7 \\]\ny en línea $K = 12$ con $x_{t-1}$ y $\\beta_2$."
-    assert _texts(ver, tex) == ["1.25", "12"]
-    rules = dict(_ignored(ver, tex))
-    assert rules["3.5"] == "ecuacion" and rules["7"] == "ecuacion"
+def test_display_math_ignores_only_lone_digit_constants(ver):
+    # en display se leen los decimales, los enteros de más de una cifra y todo lo que sigue a
+    # una relación; un dígito suelto (\frac{1}{2}, 2\pi, + 2) es una constante
+    tex = ("Antes 1.25\n\\begin{equation}\nx = 3.5 + 2 \\frac{1}{2}\\pi\n\\end{equation}\n\\[ y = 7 \\]\n"
+           "\\begin{align}\nz &\\approx -0.437 \\\\ w &= 100\n\\end{align}\n"
+           "y en línea $K = 12$ con $x_{t-1}$ y $\\beta_2$.")
+    assert _texts(ver, tex) == ["1.25", "3.5", "7", "-0.437", "100", "12"]
+    assert [(t, r) for t, r in _ignored(ver, tex) if r == "ecuacion"] == [("2", "ecuacion"), ("1", "ecuacion"), ("2", "ecuacion")]
     assert ("1", "subindice") in _ignored(ver, tex) and ("2", "subindice") in _ignored(ver, tex)
+
+
+@pytest.mark.parametrize(
+    ("tex", "expected"),
+    [
+        # (a) un resultado guardado en una macro se lee en su definición, también en el preámbulo
+        ("\\newcommand{\\nllhdp}{9.876}\nEl HDP-HMM obtiene \\nllhdp{} nats por nota.\n", ["9.876"]),
+        ("\\renewcommand*{\\nllhdp}[1][0.5]{#1 y 9.876}\n", ["0.5", "9.876"]),
+        ("\\def\\ganancia{0.437}\nLa ganancia es \\ganancia.\n", ["0.437"]),
+        ("\\documentclass[12pt]{book}\n\\newcommand\\nllhdp{9.876}\n\\newcommand{\\cifra}[2]{#2}\n"
+         "\\renewcommand{\\arraystretch}{1.2}\n\\begin{document}\nTexto.\n\\end{document}\n", ["9.876"]),
+        # (b) argumentos opcionales con texto
+        ("\\begin{table}\\caption[El HDP mejora en 0.437 nats]{Resultados.}\\end{table}\n", ["0.437"]),
+        ("\\section[Mejora de 0.437 nats]{Resultados}\nTexto.\n", ["0.437"]),
+        ("\\begin{description}\\item[0.437 nats] gana el HDP.\\end{description}\n", ["0.437"]),
+        # (c) texto visible de un enlace
+        ("Ver \\href{https://x.org/9}{una mejora de 0.437 nats}.\n", ["0.437"]),
+        ("Ver \\hyperref[sec:r2]{la mejora de 0.437 nats}.\n", ["0.437"]),
+        # (d) el contenido de una caja
+        ("El valor es \\raisebox{0pt}[1ex][0pt]{9.876} nats.\n", ["9.876"]),
+        ("El valor es \\scalebox{1}{9.876} y \\rotatebox{90}{3.5} y \\parbox[t]{5cm}{0.25}.\n", ["9.876", "3.5", "0.25"]),
+        # (e) «37x», «37 ms», «12 GB»: unidad pegada
+        ("El transformador es 37x más lento y tarda 120ms con 12GB.\n", ["37", "120", "12"]),
+        # (g) «37 pt» en prosa no es una longitud
+        ("El HDP gana por 37 pt sobre el finito y por 2pt más (o 5cm).\n", ["37", "2", "5"]),
+        # (h) display
+        ("La diferencia es\n\\[ \\Delta_{\\mathrm{NLL}} = -0.437 \\]\nnats.\n", ["-0.437"]),
+        ("\\begin{equation}\\Delta = -0.437\\end{equation}\n", ["-0.437"]),
+    ],
+)
+def test_results_hidden_in_latex_constructs_are_read(ver, tex, expected):
+    assert _texts(ver, tex) == expected
+
+
+def test_structural_optional_arguments_and_lengths_stay_ignored(ver):
+    tex = ("\\begin{figure}[htbp]\\centering\\includegraphics[width=0.8\\textwidth]{f2}\\end{figure}\n"
+           "Línea\\\\[2pt] \\begin{minipage}[t]{0.45\\textwidth}x\\end{minipage} \\linebreak[4] \\footnote[3]{nota}\n"
+           "\\setlength\\parindent{0pt} \\makebox[3cm][l]{x} \\begin{enumerate}[start=3]\\item uno\\end{enumerate}\n"
+           "\\kern2pt \\vskip 1em \\cite[p.~23]{fox} \\hspace*{1.5em} \\newcommand{\\x}[2]{#1#2}\n")
+    assert _texts(ver, tex) == []
+
+
+def test_identifiers_with_letters_after_digits_stay_identifiers(ver):
+    assert _texts(ver, "El commit 984dfde, el modelo 3D, el 1er paso y la matriz 3x3.\n") == []
 
 
 def test_structural_references_are_ignored(ver):
@@ -92,12 +139,45 @@ def test_a_result_after_a_reference_is_not_swallowed(ver, tex, expected):
     assert _texts(ver, tex) == expected
 
 
+BIB = {1989: {"rabiner"}, 2011: {"fox", "sudderth"}}
+
+
 def test_citation_years_and_dates_are_ignored(ver):
     tex = ("Según Fox et al., 2011 y Fox et al. (2011), Rabiner (1989), (Fox, 2011), (Fox y Sudderth, 2011; Rabiner, 1989a); "
            "el 26 de octubre de 2026 y el 2026-10-26.")
-    assert _texts(ver, tex) == []
-    rules = {rule for _, rule in _ignored(ver, tex)}
-    assert rules == {"anio_de_cita", "fecha"}
+    result = ver.extraer_numeros(tex, bib=BIB)
+    assert result.numeros == []
+    assert {item.regla for item in result.ignorados} == {"anio_de_cita", "fecha"}
+
+
+@pytest.mark.parametrize(
+    ("tex", "expected"),
+    [
+        # (f) un año de cita a mano sólo se ignora si la bibliografía tiene ese autor en ese año
+        ("Se analizaron todas las obras de PDMX (1999) en la corrida.", ["1999"]),
+        ("Se usaron muchas iteraciones (Gibbs, 1999).", ["1999"]),
+        ("Según Rabiner (1999) y (Fox, 1989).", ["1999", "1989"]),
+        ("Según Rabiner (1989) y (Fox, 2011).", []),
+    ],
+)
+def test_a_handwritten_citation_year_needs_the_bibliography(ver, tex, expected):
+    assert [n.texto for n in ver.extraer_numeros(tex, bib=BIB).numeros] == expected
+    assert [n.texto for n in ver.extraer_numeros(tex).numeros] == [t for t in ("1999", "1989", "2011") if t in tex]
+
+
+def test_the_bibliography_is_read_from_the_thesis(ver, tmp_path):
+    thesis = tmp_path / "tesis"
+    _write(thesis / "refs.bib", "@book{rabiner89,\n  author = {Rabiner, Lawrence R. and Juang, B.-H.},\n"
+                                "  title = {Tutorial 2},\n  year = {1989}\n}\n@article{x, author = {Emily B. Fox}, date = {2011-03}}\n")
+    _write(thesis / "cap.tex", "Según Rabiner (1989), Juang (1989) y (Fox, 2011), pero PDMX (1999).\n")
+    report = ver.verificar(thesis)
+    assert _errors(report) == [("sin_fuente", "1999")]
+
+
+def test_a_number_marked_structural_is_ignored(ver):
+    result = ver.extraer_numeros("Usamos $\\alpha = \\estructural{0.05}$ y 0.437.")
+    assert [n.texto for n in result.numeros] == ["0.437"]
+    assert ("0.05", "marcado_estructural") in [(i.texto, i.regla) for i in result.ignorados]
 
 
 @pytest.mark.parametrize("tex", ["Se usaron 1837 tokens de entrenamiento.", "En MuseTrainer, 1999 obras pasaron el filtro."])
@@ -129,6 +209,11 @@ def test_pending_markers_are_listed_not_counted(ver):
 def test_only_the_document_body_is_scanned(ver):
     tex = "\\documentclass[12pt]{book}\n\\setcounter{tocdepth}{2}\n\\begin{document}\nResultado 2.5\n\\end{document}"
     assert _texts(ver, tex) == ["2.5"]
+
+
+def test_strict_mode_catches_a_macro_and_an_optional_argument(ver, tmp_path):
+    report = _check(ver, tmp_path, "\\newcommand{\\nllhdp}{2.209}\n\\section[Mejora de 2.209 nats]{R}\n", exigir_cita=True)
+    assert _errors(report) == [("sin_cita", "2.209"), ("sin_cita", "2.209")]
 
 
 def test_cifra_attaches_its_citation(ver):

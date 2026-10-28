@@ -91,6 +91,7 @@ def _pdmx(gen, tmp_path, **kwargs) -> Path:
         ("ok", [-0.3, -0.1], "mejora"),
         ("ok", [-0.1, 0.2], "no hay evidencia"),
         ("ok", [-0.1, 0.0], "no hay evidencia"),  # la regla pide extremo superior < 0, estricto
+        ("ok", [0.0, 0.2], "no hay evidencia"),  # y extremo inferior > 0, estricto
         ("ok", [0.1, 0.3], "es mejor el otro"),
         ("too_few_paired_works", None, "no evaluable"),
         ("not_evaluable", None, "no evaluable"),
@@ -99,6 +100,11 @@ def _pdmx(gen, tmp_path, **kwargs) -> Path:
 )
 def test_verdict_follows_preregistered_rule(gen, status, ci, expected):
     assert gen.veredicto(status, ci) == expected
+
+
+def test_an_inverted_interval_is_not_a_verdict(gen):
+    with pytest.raises(ValueError, match="extremo"):
+        gen.veredicto("ok", [0.3, -0.1])
 
 
 # --- por obra ----------------------------------------------------------------------------
@@ -283,11 +289,30 @@ def test_pdmx_comparisons_are_oriented_transformer_minus_classical(gen, tmp_path
     assert _row(out, "pdmx_comparaciones.tex", "Transformador", "HMM finito")[2:] == [
         "30", "$-$0.100", "[$-$0.200, $-$0.050]", "mejora", "$-$0.050", "[$-$0.070, $-$0.030]", "0.010"]
     # el par con menos de 10 obras queda «no evaluable», nunca con veredicto
-    assert _row(out, "pdmx_comparaciones.tex", "Transformador", "VOMM")[5].startswith("no evaluable")
+    assert _row(out, "pdmx_comparaciones.tex", "Transformador", "VOMM")[5] == "no evaluable (pocas obras en común)"
     # HDP − transformador = 0.17 con IC [0.1, 0.25] → transformador − HDP mejora
     assert _row(out, "pdmx_comparaciones.tex", "Transformador", "HDP-HMM")[5] == "mejora"
     # entre clásicos se conserva la orientación del artefacto: finito − VOMM < 0
     assert _row(out, "pdmx_comparaciones.tex", "HMM finito", "VOMM")[3:6] == ["$-$0.050", "[$-$0.080, $-$0.010]", "mejora"]
+
+
+def test_pdmx_oriented_interval_that_crosses_zero_is_no_evidence(gen, tmp_path):
+    # finito − transformador con IC asimétrico [-0.1, 0.3]: transformador − finito es
+    # [-0.3, 0.1], que cruza el 0; sin work_mean_holm_rejects_zero que lo delate
+    comparisons = pdmx_comparisons()
+    comparisons[1].update(mean_difference=0.10, work_mean_holm_decision_ci=[-0.1, 0.3], work_mean_holm_ci=[-0.1, 0.3])
+    del comparisons[1]["work_mean_holm_rejects_zero"]
+    out = _pdmx(gen, tmp_path, comparisons=comparisons)
+    assert _row(out, "pdmx_comparaciones.tex", "Transformador", "HMM finito")[4:6] == ["[$-$0.300, 0.100]", "no hay evidencia"]
+
+
+def test_pdmx_verdict_uses_the_decision_interval_not_the_holm_interval(gen, tmp_path):
+    # el IC de Holm sin la corrección de decisión excluye el 0; el de decisión no: decide éste
+    comparisons = pdmx_comparisons()
+    comparisons[2].update(work_mean_holm_ci=[-0.08, -0.01], work_mean_holm_decision_ci=[-0.08, 0.01],
+                          work_mean_holm_rejects_zero=False)
+    out = _pdmx(gen, tmp_path, comparisons=comparisons)
+    assert _row(out, "pdmx_comparaciones.tex", "HMM finito", "VOMM")[4:6] == ["[$-$0.080, 0.010]", "no hay evidencia"]
 
 
 def test_pdmx_rejects_zero_must_agree_with_decision_interval(gen, tmp_path):
