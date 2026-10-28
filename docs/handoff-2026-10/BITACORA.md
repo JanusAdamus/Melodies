@@ -95,3 +95,13 @@ Una entrada por tarea cerrada (ver PROMPT_CLAUDE.md, «Bitácora»).
   - MuseTrainer `external/library` (9128876): 76 archivos, `ce1911287b93783bebd8054532653b2de234ebd624aec94920094a8ea59d89db`; sólo `scores/`: 69 archivos, `789f4c55ef69e605f6f654113f9ef8cdd6316e47275986d833249d3c8bdf57b8`.
   - SymbTr `external/SymbTr` (246bbe3): 8818 archivos, `bf81cbc9e9f76136fa218db3c8f3d1193813b05369e02f226105aa64acf0a04f`; sólo `MusicXML/`: 2200 archivos, `18d3e9ae90219f523aeedcf026becbd3f6d172051f779893d5ef39ce9ff4923d`.
 - Tarea 1.4 en curso en `feat/porobra-heldout` (desde `fix/integracion-fase1`).
+
+## 2026-10-28, pausa (Adrián apaga la computadora): cómo retomar
+
+- `fix/auditoria-tesis`: integradas hdp, comparacion y d1b; la comparación califica al HDP con la predictiva posterior (984dfde; suite `512 passed, 3 skipped`). Enmiendas 5 (suavizado del finito por validación, fcde76c) y 6 (HDP por obra como ensamble de cadenas, sin excluir obras, 220b49f), Aclaración 7 (datos de prueba expuestos, 927caf2). Cherry-pick de bb9e6de (huella de caché sin rutas, 88833f6): sus pruebas pasan (4); la suite completa tras el cherry-pick NO se terminó.
+- Ramas de septiembre archivadas con etiquetas `archivo/<rama>` en origin (codex/prepare-experimental-runs, codex/r4-r5-resource-evidence, fix/r4-r5-evidence-integration, codex/transformer-research-track). Borrar esas ramas en origin quedó pendiente (el modo automático bloqueó el borrado; Adrián lo hace o lo autoriza).
+- Tarea 1.4 `feat/porobra-heldout` (52b0778, en origin): Enmiendas 5 y 6 implementadas; workflow `wf_8bee1217-f9f` detenido en la ronda 4 (corrector). Hallazgos medios pendientes de la ronda 3: exposición de la prueba sin declarar (el corrector agregó su propia «Aclaración 7» en la rama, que choca con la de tesis 927caf2: al mezclar, quedarse con una sola) y falta una auditoría de la corrida por obra para la 1.5 (9bdd453 la agrega). Retomar con el mismo script y `resumeFromRunId`.
+- `feat/generador-tesis` (1395f55): generador de tablas y verificador de cifras, suite `621 passed`; falta la revisión adversarial final, después de mezclar la 1.4.
+- Pruebas de tiempos (scratchpad, fuera del repo): 5 obras de MuseTrainer, 400/200: 848 s con 5 procesos; R-hat 0/5 < 1.1; 800/400: 1256 s, 1/5. Smoke PDMX 50 partituras: 2 min 49 s, auditoría `passed` (`artifacts/Comparacion/smoke_pdmx50_20261028_984dfde`).
+- La tesis (JanusAdamus/Tesis) la corrige Codex después; no tocarla.
+- Siguiente: terminar la 1.4 → mezclar → revisión final del generador → 1.5 → Parada 1.
