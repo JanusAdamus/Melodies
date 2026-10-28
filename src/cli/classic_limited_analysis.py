@@ -153,6 +153,30 @@ def _build_detailed_report(analysis_df: pd.DataFrame, figure_paths: list[Path]) 
     ties = int((comparable["ll_gain_hdp_minus_finite"] == 0).sum())
     best_piece = comparable.iloc[0]
     most_compact = comparable.sort_values("hdp_effective_states", ascending=True).iloc[0]
+    n_pieces = len(comparable)
+    finite_states_mean = comparable["finite_effective_states"].mean()
+    hdp_states_mean = comparable["hdp_effective_states"].mean()
+
+    # Las conclusiones salen de los números de esta corrida, no de frases fijas.
+    if wins == n_pieces:
+        above_diagonal = f"En esta corrida, las {n_pieces} obras quedan por encima de la diagonal."
+    elif wins == 0:
+        above_diagonal = "En esta corrida, ninguna obra queda por encima de la diagonal."
+    else:
+        above_diagonal = f"En esta corrida, {wins} de {n_pieces} obras quedan por encima de la diagonal."
+    states_means = f"({hdp_states_mean:.3f} frente a {finite_states_mean:.3f})"
+    if hdp_states_mean < finite_states_mean:
+        states_pattern = f"En esta corrida, el HDP-HMM truncado usa en promedio menos estados efectivos que el HMM finito {states_means}."
+    elif hdp_states_mean > finite_states_mean:
+        states_pattern = f"En esta corrida, el HDP-HMM truncado usa en promedio mas estados efectivos que el HMM finito {states_means}."
+    else:
+        states_pattern = f"En esta corrida, ambos modelos usan en promedio el mismo numero de estados efectivos {states_means}."
+    if wins > losses:
+        fit_pattern = f"el HDP-HMM truncado ajusta mejor en {wins} de {n_pieces} obras"
+    elif wins < losses:
+        fit_pattern = f"el HMM finito ajusta mejor en {losses} de {n_pieces} obras"
+    else:
+        fit_pattern = f"ningun modelo domina: el HDP-HMM truncado mejora en {wins} obras y empeora en {losses} de {n_pieces}"
 
     figure_names = {path.name for path in figure_paths}
 
@@ -173,8 +197,8 @@ def _build_detailed_report(analysis_df: pd.DataFrame, figure_paths: list[Path]) 
         f"La ganancia media de log-verosimilitud fue {comparable['ll_gain_hdp_minus_finite'].mean():.3f} y la mediana {comparable['ll_gain_hdp_minus_finite'].median():.3f}.",
         f"La media de log-verosimilitud del HMM finito fue {comparable['finite_log_likelihood'].mean():.3f}, frente a {comparable['hdp_log_likelihood'].mean():.3f} para el HDP-HMM truncado.",
         f"Con el mismo estimando (estados con ocupacion >= 2 %, media posterior), el HMM finito uso en promedio {comparable['finite_effective_states'].mean():.3f} estados y el HDP-HMM truncado {comparable['hdp_effective_states'].mean():.3f}.",
-        f"La mayor ganancia se observo en '{best_piece['title']}' con una mejora de {best_piece['ll_gain_hdp_minus_finite']:.3f}.",
-        f"La obra con menor numero de estados efectivos en el HDP-HMM truncado fue '{most_compact['title']}' con {int(most_compact['hdp_effective_states'])} estados.",
+        f"La mayor ganancia se observo en '{best_piece['title']}' con un valor de {best_piece['ll_gain_hdp_minus_finite']:.3f} (HDP menos finito).",
+        f"La obra con menor numero de estados efectivos en el HDP-HMM truncado fue '{most_compact['title']}' con {most_compact['hdp_effective_states']:.3f} estados.",
         "",
         "## Lectura de las figuras",
         "",
@@ -187,7 +211,7 @@ def _build_detailed_report(analysis_df: pd.DataFrame, figure_paths: list[Path]) 
                 "",
                 "Cada punto representa una obra. El eje horizontal muestra la log-verosimilitud del HMM finito y el vertical la del HDP-HMM truncado.",
                 "La diagonal gris marca el empate entre modelos. Los puntos por encima de esa linea favorecen al HDP-HMM truncado.",
-                "En esta corrida, todos los puntos quedan por encima de la diagonal, lo que indica una ventaja sistematica del modelo truncado en ajuste probabilistico.",
+                above_diagonal,
                 "",
             ]
         )
@@ -198,7 +222,7 @@ def _build_detailed_report(analysis_df: pd.DataFrame, figure_paths: list[Path]) 
                 "### `compare_log_likelihood_boxplot.png`",
                 "",
                 "Esta figura resume la distribucion de log-verosimilitud por modelo. Valores menos negativos implican mejor ajuste.",
-                "El desplazamiento del bloque correspondiente al HDP-HMM truncado hacia valores mas altos refuerza la conclusion de que la mejora no depende de una sola obra atipica.",
+                "Compara la posicion de los dos bloques para ver si la diferencia entre modelos se sostiene en el conjunto de obras o depende de pocas obras atipicas.",
                 "",
             ]
         )
@@ -210,7 +234,7 @@ def _build_detailed_report(analysis_df: pd.DataFrame, figure_paths: list[Path]) 
                 "",
                 "Aqui se muestra la ganancia obra por obra definida como `HDP-HMM truncado - HMM finito`.",
                 "Las barras positivas indican una ventaja del modelo truncado. La magnitud de cada barra ayuda a identificar en que obras la flexibilidad del espacio latente aporta mas.",
-                "En este experimento, ninguna obra presenta ganancia negativa, y las mayores diferencias aparecen en versiones simplificadas de `Para Elisa` y en `Greensleeves`.",
+                f"En esta corrida hay {wins} obras con ganancia positiva, {ties} empates y {losses} con ganancia negativa.",
                 "",
             ]
         )
@@ -220,9 +244,9 @@ def _build_detailed_report(analysis_df: pd.DataFrame, figure_paths: list[Path]) 
             [
                 "### `compare_state_counts_scatter.png`",
                 "",
-                "Este diagrama compara el numero de estados activos del HMM finito con los estados efectivos del HDP-HMM truncado.",
+                "Este diagrama compara los estados efectivos (ocupacion >= 2 %) del HMM finito con los del HDP-HMM truncado.",
                 "La diagonal gris marca igualdad de complejidad. Los puntos por debajo de la diagonal indican que el HDP-HMM truncado usa menos estados que el HMM finito.",
-                "La figura muestra que la mejora de ajuste no depende de inflar el numero de estados, sino de distribuirlos de manera mas eficiente.",
+                states_pattern,
                 "",
             ]
         )
@@ -234,7 +258,7 @@ def _build_detailed_report(analysis_df: pd.DataFrame, figure_paths: list[Path]) 
                 "",
                 "Esta grafica presenta, para cada obra, la comparacion directa del numero de estados utilizados por ambos modelos.",
                 "Sirve para leer la complejidad latente en escala de obra individual y no solo como promedio global.",
-                "La pauta dominante es que el HMM finito necesita mas estados activos, mientras que el HDP-HMM truncado logra mejor ajuste con una representacion mas compacta.",
+                states_pattern,
                 "",
             ]
         )
@@ -246,7 +270,7 @@ def _build_detailed_report(analysis_df: pd.DataFrame, figure_paths: list[Path]) 
                 "",
                 "Esta figura resume, por compositor, el numero medio de estados usados por cada modelo en el subconjunto analizado.",
                 "En un corpus pequeno debe leerse con cautela, porque pocas obras pueden sesgar el promedio.",
-                "Aun asi, sirve como una vista complementaria para verificar si la mayor compacidad del HDP-HMM truncado tambien se mantiene cuando se agrupan resultados por autor.",
+                "Aun asi, sirve como una vista complementaria para verificar si la diferencia de estados efectivos entre modelos se mantiene cuando se agrupan resultados por autor.",
                 "",
             ]
         )
@@ -255,9 +279,9 @@ def _build_detailed_report(analysis_df: pd.DataFrame, figure_paths: list[Path]) 
         [
             "## Interpretacion general",
             "",
-            "El patron conjunto de tablas y figuras es coherente: el HDP-HMM truncado mejora el ajuste sobre todas las obras consideradas y, al mismo tiempo, mantiene una complejidad posterior contenida.",
-            "Esto sugiere que el truncamiento en `K=12` no esta actuando como una restriccion agresiva en este subconjunto, sino como una cota computacional suficiente para capturar la variabilidad latente relevante.",
-            "La lectura debe seguir siendo prudente: se trata de un subconjunto pequeno y la log-verosimilitud no reemplaza criterios musicologicos mas finos. Aun asi, el resultado es metodologicamente estable y consistente con la motivacion del modelo truncado.",
+            f"En log-verosimilitud, {fit_pattern}.",
+            states_pattern,
+            "La lectura debe ser prudente: se trata de un subconjunto pequeno, la log-verosimilitud es de ajuste y no predictiva, y no reemplaza criterios musicologicos mas finos.",
         ]
     )
     return "\n".join(lines)
@@ -344,7 +368,7 @@ def main() -> None:
             summary_rows.append({"Metrica": "Ganancia mediana", "Valor": comparison_table["Ganancia HDP menos finito"].median()})
             summary_rows.append({"Metrica": "Media log-verosimilitud HMM finito", "Valor": comparison_table["Log-verosimilitud HMM finito"].mean()})
             summary_rows.append({"Metrica": "Media log-verosimilitud HDP-HMM truncado", "Valor": comparison_table["Log-verosimilitud HDP-HMM truncado"].mean()})
-            summary_rows.append({"Metrica": "Estados activos medios HMM finito", "Valor": comparison_table["Estados activos HMM finito"].mean()})
+            summary_rows.append({"Metrica": "Estados efectivos medios HMM finito", "Valor": comparison_table["Estados efectivos HMM finito"].mean()})
             summary_rows.append({"Metrica": "Estados efectivos medios HDP-HMM truncado", "Valor": comparison_table["Estados efectivos HDP-HMM truncado"].mean()})
             summary_df = pd.DataFrame(summary_rows)
             _write_text(output_dir / "analysis" / "resumen_global.tex", _latex_table(summary_df))
