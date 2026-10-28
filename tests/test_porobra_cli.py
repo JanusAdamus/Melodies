@@ -13,7 +13,7 @@ from next_token_experiment.tests.test_pipeline import write_scale_score
 from src.cli import porobra_heldout
 
 FAST = ["--truncation", "4", "--chains", "2", "--iters", "8", "--burn-in", "4", "--k-grid", "2,4",
-        "--etas", "1,3", "--bootstrap-samples", "200", "--occupancy-samples", "10"]
+        "--etas", "1,3", "--bootstrap-samples", "200", "--occupancy-samples", "10", "--finite-restarts", "2"]
 
 
 def _melody(seed: int, n: int) -> list[int]:
@@ -68,6 +68,8 @@ def test_corrida_escribe_directorio_nuevo_con_csv_resumen_y_manifiesto(corpus, t
     assert len(manifest["commit"]) == 40
     assert manifest["config"]["truncation"] == 4 and manifest["config"]["n_chains"] == 2
     assert manifest["config"]["chain_seeds"] == [1, 2]
+    assert manifest["config"]["finite_restarts"] == 2
+    assert set(works["finite_restarts"]) == {2}
     assert len(manifest["inputs"]["files"]) == 7  # 5 de MuseTrainer + 2 de la muestra de SymbTr
     assert all(len(item["sha256"]) == 64 for item in manifest["inputs"]["files"])
     assert "numpy" in manifest["versions"] and "music21" in manifest["versions"]

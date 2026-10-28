@@ -149,6 +149,33 @@ def test_baum_welch_es_reproducible():
     np.testing.assert_array_equal(left.transition_matrix, right.transition_matrix)
 
 
+def test_mejor_de_varios_reinicios_es_el_de_mayor_verosimilitud():
+    tokens, *_ = _simulate_hmm(300, 7)
+    fits = [porobra.baum_welch(tokens, n_states=8, seed=seed) for seed in (3, 4, 5, 6)]
+    best = porobra.best_baum_welch(tokens, n_states=8, seeds=(3, 4, 5, 6))
+    assert best.log_likelihood == max(fit.log_likelihood for fit in fits)
+    np.testing.assert_array_equal(best.emission_matrix, max(fits, key=lambda f: f.log_likelihood).emission_matrix)
+
+
+def test_finito_con_reinicios_usa_el_mejor_ajuste_en_validacion_y_reajuste():
+    tokens, *_ = _simulate_hmm(200, 8)
+    split = porobra.split_tokens(tokens)
+    result = porobra.fit_finite(tokens, split, grid=(2, 4), seed=10, n_restarts=3)
+    assert result["finite_restarts"] == 3
+    for k in (2, 4):
+        best = porobra.best_baum_welch(split.inner_train, n_states=k, seeds=(10, 11, 12))
+        expected = porobra.hmm_conditional_nll(
+            best.initial_probs, best.transition_matrix, best.emission_matrix, split.inner_train, split.validation
+        )
+        assert result["finite_k_validation_nll"][k] == pytest.approx(expected)
+    refit = porobra.best_baum_welch(split.fit, n_states=result["finite_k"], seeds=(10, 11, 12))
+    assert result["finite_insample_ll_per_note"] == pytest.approx(refit.log_likelihood / split.fit.size)
+
+
+def test_configuracion_por_defecto_usa_cinco_reinicios():
+    assert porobra.PorObraConfig().finite_restarts == 5
+
+
 def test_finito_elige_pocos_estados_con_datos_de_dos():
     tokens, *_ = _simulate_hmm(500, 4)
     result = porobra.fit_finite(tokens, porobra.split_tokens(tokens), grid=(2, 4, 8), seed=0)
@@ -182,7 +209,9 @@ def test_analisis_de_una_obra_es_determinista_y_completo():
     config = porobra.PorObraConfig(k_grid=(2, 4), **FAST_HDP)
     first = porobra.analyze_work("obra", tokens, config)
     second = porobra.analyze_work("obra", tokens, config)
-    assert first == second
+    timing = [key for key in first if key.endswith("wall_clock_s")]
+    assert timing == ["hdp_wall_clock_s", "wall_clock_s"]
+    assert {k: v for k, v in first.items() if k not in timing} == {k: v for k, v in second.items() if k not in timing}
     for model in porobra.MODELS:
         assert math.isfinite(first[f"{model}_test_nll"])
     assert first["n_events"] == 60 and first["n_fit"] == 48 and first["n_test"] == 12
