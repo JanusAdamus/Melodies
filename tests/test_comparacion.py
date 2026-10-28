@@ -24,6 +24,7 @@ from Comparacion.runner import (
 from Comparacion.resource_monitor import RESOURCE_FIELD_NAMES
 from Comparacion.splits import build_fixed_splits, build_nested_training_subsets
 from next_token_experiment.schemas import CorpusPreparationResult, PreparedPiece
+from src.models.hdp_hmm import PosteriorSample
 from src.models.inference import forward_log_likelihood
 
 
@@ -426,7 +427,17 @@ class ClassicalModelTests(unittest.TestCase):
                 token_probability = 0.8 if self.alpha == 1.0 else 0.2
                 emission = np.full((1, 13), (1.0 - token_probability) / 12.0)
                 emission[0, 0] = token_probability
+                sample = PosteriorSample(
+                    iteration=0,
+                    log_likelihood=-self.alpha,
+                    initial_probs=np.array([1.0]),
+                    transition_matrix=np.array([[1.0]]),
+                    emission_matrix=emission,
+                    beta=np.array([1.0]),
+                    states=np.array([0]),
+                )
                 return SimpleNamespace(
+                    posterior_samples=[sample],
                     posterior_initial_mean=np.array([1.0]),
                     posterior_transition_mean=np.array([[1.0]]),
                     posterior_emission_mean=emission,

@@ -9,7 +9,7 @@ import numpy as np
 from next_token_experiment.data.dataset import build_evaluation_slices
 from next_token_experiment.schemas import PreparedPiece
 from src.data.observations import PITCH_CLASS_NAMES, ObservationSequence
-from src.models.hdp_hmm import TruncatedHDPHMM
+from src.models.hdp_hmm import TruncatedHDPHMM, heldout_nll_per_token
 from src.models.utils import length_buckets
 
 from .grid import grid_ceiling_message, next_grid_candidates
@@ -502,15 +502,17 @@ class GlobalHDPHMM:
         selected_result = result if result is not None else self.best_result
         if selected_result is None:
             raise ValueError("Model must be fitted before scoring.")
+        # Predictiva posterior (preregistro A): p(x | BOS) ≈ (1/S) Σ_s p(x | BOS, θ_s) sobre
+        # las muestras tras burn-in, renormalizada sobre las alturas (BOS fuera, F3).
         log_likelihood = 0.0
         scored_event_indices: list[int] = []
         for start, stop in build_evaluation_slices(len(piece.tokens), max_context_length):
-            log_likelihood += conditional_log_likelihood(
-                initial_probs=selected_result.posterior_initial_mean,
-                transition_matrix=selected_result.posterior_transition_mean,
-                emission_matrix=selected_result.posterior_emission_mean,
-                context_token=bos_token_id,
-                target_tokens=[int(token) for token in piece.tokens[start:stop]],
+            targets = np.asarray(piece.tokens[start:stop], dtype=int)
+            log_likelihood -= targets.size * heldout_nll_per_token(
+                [selected_result],
+                fit_tokens=np.array([bos_token_id]),
+                test_tokens=targets,
+                support=range(bos_token_id),
             )
             scored_event_indices.extend(range(start, stop))
         return log_likelihood, scored_event_indices
