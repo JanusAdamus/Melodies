@@ -11,7 +11,9 @@ empezar y cada obra terminada se agrega a ``per_work.partial.jsonl``: si la corr
 interrumpe, lo ya calculado queda en disco. Una obra que falla se registra en
 ``analysis_failures`` del resumen y queda fuera de las comparaciones; las demás siguen.
 La comparación principal usa todas las obras analizadas (Enmienda 6);
-``sensitivity_converged_only`` la repite sólo con las que tienen R-hat de log L < 1.1.
+``sensitivity_converged_only`` la repite sólo con las que tienen R-hat de log L < 1.1 y
+``sensitivity_without_exposed`` sin las obras con la prueba expuesta (Aclaración 7). Al final
+escribe ``porobra_audit.json`` (``src.analysis.porobra_audit``).
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from src.analysis import porobra
+from src.analysis import porobra, porobra_audit
 from src.analysis.library_batch import prepare_corpus
 from src.data.library_catalog import iter_musicxml_files
 from src.data.multicorpus import parse_symbtr_filename, stratified_symbtr_sample
@@ -231,7 +233,7 @@ def main(argv: list[str] | None = None) -> Path:
                                  per_work["hdp_converged"])]
 
     summary = {
-        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6",
+        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaración 7",
         "corpus": {
             "extraction": EXTRACTION,
             "n_candidates": int(len(catalog)),
@@ -252,6 +254,15 @@ def main(argv: list[str] | None = None) -> Path:
         "comparisons": porobra.compare_hdp(records, bootstrap_samples=args.bootstrap_samples, seed=args.stats_seed),
         "sensitivity_converged_only": porobra.compare_hdp(
             records, bootstrap_samples=args.bootstrap_samples, seed=args.stats_seed, converged_only=True
+        ),
+        "test_exposure": {
+            "exposed_work_ids": list(porobra.TEST_EXPOSED_WORK_IDS),
+            "exposed_in_run": sorted(set(porobra.TEST_EXPOSED_WORK_IDS) & set(per_work["work_id"])),
+            "note": porobra.TEST_EXPOSURE_NOTE,
+        },
+        "sensitivity_without_exposed": porobra.compare_hdp(
+            records, bootstrap_samples=args.bootstrap_samples, seed=args.stats_seed,
+            exclude_work_ids=porobra.TEST_EXPOSED_WORK_IDS,
         ),
         "hdp_states_note": porobra.HDP_STATES_NOTE,
         "selected_hyperparameters": {
@@ -298,7 +309,10 @@ def main(argv: list[str] | None = None) -> Path:
         "outputs": {name: _sha256(run_dir / name) for name in ("per_work.csv", "summary.json")},
     }
     (run_dir / "manifest.json").write_text(json.dumps(_jsonable(manifest), indent=2, ensure_ascii=False), encoding="utf-8")
+    audit = porobra_audit.audit_run_directory(run_dir)
+    (run_dir / porobra_audit.AUDIT_FILENAME).write_text(json.dumps(_jsonable(audit), indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Corrida escrita en {run_dir} ({summary['wall_clock_s']} s, {len(per_work)} obras).")
+    print(f"Auditoría: {audit['status']} ({porobra_audit.AUDIT_FILENAME}).")
     if analysis_failures:
         print(f"AVISO: {len(analysis_failures)} obra(s) fallaron en el análisis; ver analysis_failures en summary.json.")
     convergence = summary["convergence"]

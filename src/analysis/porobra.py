@@ -64,6 +64,20 @@ HDP_STATES_NOTE = (
     "media posterior y no se interpretan como inferencia bayesiana sobre K."
 )
 DECISION_ESTIMAND = "mean_over_works_of_work_nll_difference"
+#: Aclaración 7: obras de MuseTrainer cuya NLL de prueba se calculó (corridas de tiempos y
+#: smokes del 2026-10-28) antes de escribir las Enmiendas 5 y 6. Siguen en la métrica
+#: principal; la comparación se repite sin ellas como sensibilidad.
+TEST_EXPOSED_WORK_IDS = (
+    "MuseTrainer:12_Variations_of_Twinkle_Twinkle_Little_Star.mxl",
+    "MuseTrainer:Arabesque_L._66_No._1_in_E_Major.mxl",
+    "MuseTrainer:Ave_Maria_D839_-_Schubert_-_Solo_Piano_Arrg..mxl",
+    "MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl",
+    "MuseTrainer:Bach_Toccata_and_Fugue_in_D_Minor_Piano_solo.mxl",
+)
+TEST_EXPOSURE_NOTE = (
+    "Aclaración 7: la NLL de prueba de estas obras se calculó antes de las Enmiendas 5 y 6; "
+    "siguen en la métrica principal y sensitivity_without_exposed repite la comparación sin ellas (no decide)."
+)
 #: Seudoconteo de la distribución inicial del finito (una sola secuencia: casi no pesa).
 INITIAL_PSEUDOCOUNT = 1e-3
 
@@ -588,7 +602,12 @@ def _verdict(comparison: Mapping) -> str:
 
 
 def compare_hdp(
-    rows: Iterable[Mapping], *, bootstrap_samples: int = 10_000, seed: int = 0, converged_only: bool = False
+    rows: Iterable[Mapping],
+    *,
+    bootstrap_samples: int = 10_000,
+    seed: int = 0,
+    converged_only: bool = False,
+    exclude_work_ids: Iterable[str] = (),
 ) -> dict:
     """HDP − {finito, bigrama, unigrama} sobre todas las obras analizadas (Aclaración 2, Enmienda 6).
 
@@ -600,9 +619,12 @@ def compare_hdp(
     notas de prueba y Wilcoxon (con Holm) son secundarias. Regla: «mejora» si el extremo
     superior del IC de Holm es < 0; «es_mejor_el_otro» si el inferior es > 0; si no, «no hay
     evidencia». Menos de 10 obras en común (Enmienda 1): «no_evaluable».
+    ``exclude_work_ids`` quita esas obras (sensibilidad de la Aclaración 7).
     """
 
-    rows = [row for row in rows if row.get("hdp_converged") or not converged_only]
+    rows = list(rows)
+    excluded = sorted({str(row["work_id"]) for row in rows} & {str(work) for work in exclude_work_ids})
+    rows = [row for row in rows if (row.get("hdp_converged") or not converged_only) and str(row["work_id"]) not in excluded]
     generator = np.random.default_rng(seed)
     comparisons: list[dict] = []
     work_draws: dict[int, np.ndarray] = {}
@@ -664,6 +686,7 @@ def compare_hdp(
         "bootstrap_samples": int(bootstrap_samples),
         "seed": int(seed),
         "converged_only": bool(converged_only),
+        "excluded_work_ids": excluded,
         "n_works": len(rows),
         "comparisons": comparisons,
         "holm_family": family,
