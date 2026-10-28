@@ -101,6 +101,7 @@ def analyze_catalog_piece(
             {
                 "finite_log_likelihood": finite_result.log_likelihood,
                 "finite_active_states": len(finite_result.active_states),
+                "finite_effective_states": finite_result.effective_states,
                 "finite_top_labels": _top_labels(finite_result.latent_labels),
                 "finite_top_modes": _top_labels(finite_result.modal_labels),
             }

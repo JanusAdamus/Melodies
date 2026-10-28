@@ -1,0 +1,226 @@
+cadena: K=20, 400 iteraciones, burn-in 200
+obra: C:/Melodies/artifacts/corpus_cache_3000.jsonl obra 200; eventos: 599
+CONTROL NEGATIVO: β congelado en el primer sorteo (no es el muestreador de la tesis)
+200 ajustes en 230.2 s con 10 procesos
+obras (bloque 0): semillas 0..49
+seed 0: #beta_k>0.01= 5  K medio=8.000
+seed 1: #beta_k>0.01= 9  K medio=11.130
+seed 2: #beta_k>0.01= 7  K medio=9.010
+seed 3: #beta_k>0.01= 7  K medio=8.990
+seed 4: #beta_k>0.01= 6  K medio=7.820
+seed 5: #beta_k>0.01= 6  K medio=7.090
+seed 6: #beta_k>0.01= 7  K medio=8.095
+seed 7: #beta_k>0.01= 6  K medio=7.005
+seed 8: #beta_k>0.01= 5  K medio=6.465
+seed 9: #beta_k>0.01= 7  K medio=9.320
+seed 10: #beta_k>0.01= 8  K medio=8.740
+seed 11: #beta_k>0.01= 4  K medio=3.000
+seed 12: #beta_k>0.01= 9  K medio=9.915
+seed 13: #beta_k>0.01= 7  K medio=10.000
+seed 14: #beta_k>0.01= 8  K medio=8.315
+seed 15: #beta_k>0.01= 8  K medio=10.795
+seed 16: #beta_k>0.01= 4  K medio=6.345
+seed 17: #beta_k>0.01= 3  K medio=5.265
+seed 18: #beta_k>0.01= 5  K medio=3.000
+seed 19: #beta_k>0.01= 3  K medio=5.675
+seed 20: #beta_k>0.01= 3  K medio=5.000
+seed 21: #beta_k>0.01= 7  K medio=8.545
+seed 22: #beta_k>0.01= 9  K medio=9.580
+seed 23: #beta_k>0.01= 8  K medio=7.125
+seed 24: #beta_k>0.01= 5  K medio=7.120
+seed 25: #beta_k>0.01= 5  K medio=7.625
+seed 26: #beta_k>0.01= 5  K medio=8.145
+seed 27: #beta_k>0.01= 5  K medio=5.025
+seed 28: #beta_k>0.01= 9  K medio=11.520
+seed 29: #beta_k>0.01= 5  K medio=5.050
+seed 30: #beta_k>0.01= 6  K medio=6.980
+seed 31: #beta_k>0.01= 5  K medio=6.085
+seed 32: #beta_k>0.01= 7  K medio=7.385
+seed 33: #beta_k>0.01= 8  K medio=9.995
+seed 34: #beta_k>0.01= 5  K medio=7.900
+seed 35: #beta_k>0.01= 5  K medio=6.390
+seed 36: #beta_k>0.01= 4  K medio=7.090
+seed 37: #beta_k>0.01= 6  K medio=7.895
+seed 38: #beta_k>0.01= 6  K medio=8.000
+seed 39: #beta_k>0.01= 6  K medio=6.780
+seed 40: #beta_k>0.01= 3  K medio=5.995
+seed 41: #beta_k>0.01= 8  K medio=8.490
+seed 42: #beta_k>0.01= 9  K medio=11.805
+seed 43: #beta_k>0.01= 5  K medio=6.995
+seed 44: #beta_k>0.01= 7  K medio=7.330
+seed 45: #beta_k>0.01= 6  K medio=8.485
+seed 46: #beta_k>0.01= 5  K medio=6.050
+seed 47: #beta_k>0.01= 4  K medio=6.815
+seed 48: #beta_k>0.01= 5  K medio=6.715
+seed 49: #beta_k>0.01= 7  K medio=7.995
+obras (bloque 1): semillas 50..99
+seed 50: #beta_k>0.01= 4  K medio=6.395
+seed 51: #beta_k>0.01= 6  K medio=8.000
+seed 52: #beta_k>0.01= 5  K medio=7.010
+seed 53: #beta_k>0.01= 6  K medio=8.345
+seed 54: #beta_k>0.01= 9  K medio=10.015
+seed 55: #beta_k>0.01= 8  K medio=10.080
+seed 56: #beta_k>0.01= 8  K medio=10.005
+seed 57: #beta_k>0.01=10  K medio=10.760
+seed 58: #beta_k>0.01= 7  K medio=8.935
+seed 59: #beta_k>0.01= 7  K medio=8.990
+seed 60: #beta_k>0.01= 6  K medio=8.655
+seed 61: #beta_k>0.01= 9  K medio=10.265
+seed 62: #beta_k>0.01= 6  K medio=6.000
+seed 63: #beta_k>0.01= 5  K medio=6.895
+seed 64: #beta_k>0.01= 9  K medio=10.205
+seed 65: #beta_k>0.01= 6  K medio=9.015
+seed 66: #beta_k>0.01= 6  K medio=7.950
+seed 67: #beta_k>0.01= 3  K medio=5.005
+seed 68: #beta_k>0.01= 6  K medio=7.270
+seed 69: #beta_k>0.01= 6  K medio=9.280
+seed 70: #beta_k>0.01= 7  K medio=8.410
+seed 71: #beta_k>0.01= 7  K medio=8.470
+seed 72: #beta_k>0.01= 8  K medio=10.525
+seed 73: #beta_k>0.01= 3  K medio=5.710
+seed 74: #beta_k>0.01= 6  K medio=7.315
+seed 75: #beta_k>0.01= 9  K medio=8.765
+seed 76: #beta_k>0.01=11  K medio=10.395
+seed 77: #beta_k>0.01= 7  K medio=8.620
+seed 78: #beta_k>0.01= 5  K medio=7.355
+seed 79: #beta_k>0.01= 7  K medio=7.230
+seed 80: #beta_k>0.01= 9  K medio=10.085
+seed 81: #beta_k>0.01= 8  K medio=9.995
+seed 82: #beta_k>0.01= 6  K medio=7.170
+seed 83: #beta_k>0.01= 7  K medio=9.000
+seed 84: #beta_k>0.01= 6  K medio=7.435
+seed 85: #beta_k>0.01= 6  K medio=8.975
+seed 86: #beta_k>0.01= 5  K medio=7.025
+seed 87: #beta_k>0.01= 7  K medio=8.835
+seed 88: #beta_k>0.01= 3  K medio=5.085
+seed 89: #beta_k>0.01= 6  K medio=9.090
+seed 90: #beta_k>0.01= 3  K medio=4.795
+seed 91: #beta_k>0.01= 6  K medio=7.960
+seed 92: #beta_k>0.01= 6  K medio=7.890
+seed 93: #beta_k>0.01= 5  K medio=6.990
+seed 94: #beta_k>0.01= 7  K medio=7.630
+seed 95: #beta_k>0.01= 6  K medio=7.155
+seed 96: #beta_k>0.01= 9  K medio=9.570
+seed 97: #beta_k>0.01= 7  K medio=8.470
+seed 98: #beta_k>0.01= 7  K medio=8.560
+seed 99: #beta_k>0.01= 9  K medio=9.750
+obras (bloque 2): semillas 100..149
+seed 100: #beta_k>0.01= 7  K medio=7.040
+seed 101: #beta_k>0.01= 4  K medio=6.995
+seed 102: #beta_k>0.01= 6  K medio=7.990
+seed 103: #beta_k>0.01= 4  K medio=5.140
+seed 104: #beta_k>0.01= 4  K medio=8.035
+seed 105: #beta_k>0.01= 6  K medio=7.275
+seed 106: #beta_k>0.01= 8  K medio=6.660
+seed 107: #beta_k>0.01= 5  K medio=7.995
+seed 108: #beta_k>0.01= 3  K medio=6.000
+seed 109: #beta_k>0.01= 9  K medio=9.040
+seed 110: #beta_k>0.01= 7  K medio=10.035
+seed 111: #beta_k>0.01= 6  K medio=7.230
+seed 112: #beta_k>0.01= 8  K medio=7.860
+seed 113: #beta_k>0.01= 5  K medio=8.030
+seed 114: #beta_k>0.01= 4  K medio=8.685
+seed 115: #beta_k>0.01=10  K medio=10.620
+seed 116: #beta_k>0.01= 3  K medio=4.790
+seed 117: #beta_k>0.01= 4  K medio=6.775
+seed 118: #beta_k>0.01= 4  K medio=5.000
+seed 119: #beta_k>0.01= 5  K medio=7.000
+seed 120: #beta_k>0.01= 7  K medio=10.045
+seed 121: #beta_k>0.01= 5  K medio=4.835
+seed 122: #beta_k>0.01= 5  K medio=6.535
+seed 123: #beta_k>0.01= 4  K medio=6.035
+seed 124: #beta_k>0.01= 8  K medio=8.885
+seed 125: #beta_k>0.01= 5  K medio=9.880
+seed 126: #beta_k>0.01= 6  K medio=8.300
+seed 127: #beta_k>0.01= 9  K medio=7.930
+seed 128: #beta_k>0.01= 4  K medio=6.155
+seed 129: #beta_k>0.01= 5  K medio=6.965
+seed 130: #beta_k>0.01= 4  K medio=7.595
+seed 131: #beta_k>0.01= 7  K medio=9.290
+seed 132: #beta_k>0.01= 6  K medio=7.780
+seed 133: #beta_k>0.01= 6  K medio=7.085
+seed 134: #beta_k>0.01= 6  K medio=6.750
+seed 135: #beta_k>0.01= 5  K medio=9.915
+seed 136: #beta_k>0.01= 5  K medio=6.605
+seed 137: #beta_k>0.01= 4  K medio=4.000
+seed 138: #beta_k>0.01= 6  K medio=7.445
+seed 139: #beta_k>0.01= 6  K medio=7.800
+seed 140: #beta_k>0.01= 8  K medio=2.000
+seed 141: #beta_k>0.01= 7  K medio=8.730
+seed 142: #beta_k>0.01= 8  K medio=9.055
+seed 143: #beta_k>0.01= 7  K medio=7.970
+seed 144: #beta_k>0.01= 7  K medio=8.485
+seed 145: #beta_k>0.01= 6  K medio=8.330
+seed 146: #beta_k>0.01= 6  K medio=6.960
+seed 147: #beta_k>0.01=10  K medio=10.115
+seed 148: #beta_k>0.01= 6  K medio=7.940
+seed 149: #beta_k>0.01= 4  K medio=7.195
+obras (bloque 3): semillas 150..199
+seed 150: #beta_k>0.01= 8  K medio=9.880
+seed 151: #beta_k>0.01= 4  K medio=5.790
+seed 152: #beta_k>0.01= 4  K medio=6.545
+seed 153: #beta_k>0.01= 4  K medio=6.105
+seed 154: #beta_k>0.01= 5  K medio=7.905
+seed 155: #beta_k>0.01= 6  K medio=6.230
+seed 156: #beta_k>0.01= 6  K medio=6.025
+seed 157: #beta_k>0.01= 7  K medio=6.855
+seed 158: #beta_k>0.01= 6  K medio=5.325
+seed 159: #beta_k>0.01= 6  K medio=8.705
+seed 160: #beta_k>0.01= 5  K medio=8.410
+seed 161: #beta_k>0.01= 8  K medio=9.945
+seed 162: #beta_k>0.01= 4  K medio=5.995
+seed 163: #beta_k>0.01=10  K medio=10.500
+seed 164: #beta_k>0.01= 8  K medio=10.000
+seed 165: #beta_k>0.01= 7  K medio=2.000
+seed 166: #beta_k>0.01= 7  K medio=7.860
+seed 167: #beta_k>0.01= 9  K medio=9.895
+seed 168: #beta_k>0.01= 5  K medio=7.960
+seed 169: #beta_k>0.01= 8  K medio=9.425
+seed 170: #beta_k>0.01= 8  K medio=7.750
+seed 171: #beta_k>0.01= 5  K medio=7.230
+seed 172: #beta_k>0.01= 3  K medio=8.835
+seed 173: #beta_k>0.01= 6  K medio=5.520
+seed 174: #beta_k>0.01= 7  K medio=6.835
+seed 175: #beta_k>0.01= 7  K medio=10.345
+seed 176: #beta_k>0.01= 5  K medio=6.025
+seed 177: #beta_k>0.01= 4  K medio=8.000
+seed 178: #beta_k>0.01= 6  K medio=7.000
+seed 179: #beta_k>0.01= 6  K medio=9.395
+seed 180: #beta_k>0.01= 5  K medio=9.335
+seed 181: #beta_k>0.01= 4  K medio=4.965
+seed 182: #beta_k>0.01= 7  K medio=7.975
+seed 183: #beta_k>0.01= 7  K medio=10.155
+seed 184: #beta_k>0.01= 6  K medio=7.305
+seed 185: #beta_k>0.01= 5  K medio=5.695
+seed 186: #beta_k>0.01= 5  K medio=6.920
+seed 187: #beta_k>0.01= 8  K medio=8.895
+seed 188: #beta_k>0.01= 6  K medio=7.020
+seed 189: #beta_k>0.01=10  K medio=11.135
+seed 190: #beta_k>0.01= 5  K medio=8.670
+seed 191: #beta_k>0.01= 8  K medio=8.855
+seed 192: #beta_k>0.01= 9  K medio=8.535
+seed 193: #beta_k>0.01= 7  K medio=8.740
+seed 194: #beta_k>0.01= 6  K medio=9.045
+seed 195: #beta_k>0.01= 8  K medio=9.000
+seed 196: #beta_k>0.01= 4  K medio=6.060
+seed 197: #beta_k>0.01= 7  K medio=8.535
+seed 198: #beta_k>0.01= 7  K medio=6.945
+seed 199: #beta_k>0.01= 9  K medio=9.630
+== descriptivo por bloque (estabilidad; no decide) ==
+semillas 0..49: r = 0.800, IC 95 % [0.671, 0.882], TOST p = 1.000
+semillas 50..99: r = 0.888, IC 95 % [0.809, 0.935], TOST p = 1.000
+semillas 100..149: r = 0.462, IC 95 % [0.211, 0.656], TOST p = 0.905
+semillas 150..199: r = 0.537, IC 95 % [0.304, 0.709], TOST p = 0.977
+== todas las semillas juntas: semillas 0..199 ==
+n semillas = 200
+Pearson r = 0.675 (p = 5.72e-28)
+IC 95 % de Fisher para r = [0.592, 0.744]
+TOST |r| < 0.3: p = 1.000
+Spearman rho = 0.710 (p = 5.86e-32)
+pendiente = 0.6713 estados por componente; IC 95 % (t) = [0.5685, 0.7740]
+IC 95 % bootstrap de la pendiente = [0.5746, 0.7626]
+rango de #beta_k>0.01 = 3..11; efecto de la pendiente sobre ese rango = 5.370 estados, IC 95 % (t) = [4.55, 6.19]
+K medio: media 7.799, d.e. entre semillas 1.735, rango 2.000..11.805
+veredicto: dependencia
+TOST |r| < 0.3 con todas las semillas (más cifras): p = 1
+decisión del criterio (b): not_met

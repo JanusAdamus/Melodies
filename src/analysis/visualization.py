@@ -167,7 +167,7 @@ def generate_finite_figures(result: FiniteHMMResult, output_dir: str | Path) -> 
         plot_heatmap(
             transition_active,
             active_labels,
-            "Matriz de transicion activa del HMM finito",
+            "Transiciones del HMM finito: estados de la ruta de Viterbi",
             output_dir / "finite_transition_heatmap.png",
             cmap="Oranges",
             annotate=True,
@@ -176,7 +176,7 @@ def generate_finite_figures(result: FiniteHMMResult, output_dir: str | Path) -> 
             emission_active,
             active_labels,
             result.observations.vocabulary,
-            "Emisiones del HMM finito",
+            "Emisiones del HMM finito: estados de la ruta de Viterbi",
             output_dir / "finite_emission_heatmap.png",
         ),
         plot_transition_graph(
@@ -206,7 +206,7 @@ def generate_hdp_figures(result: HDPHMMResult, output_dir: str | Path) -> list[P
         plot_heatmap(
             transition_active,
             active_labels,
-            "Matriz de transicion activa del HDP-HMM truncado",
+            "Transiciones del HDP-HMM: estados de la muestra de referencia",
             output_dir / "hdp_transition_heatmap.png",
             cmap="Blues",
             annotate=True,
@@ -215,7 +215,7 @@ def generate_hdp_figures(result: HDPHMMResult, output_dir: str | Path) -> list[P
             emission_active,
             active_labels,
             result.observations.vocabulary,
-            "Emisiones por estado activo del HDP-HMM",
+            "Emisiones del HDP-HMM: estados de la muestra de referencia",
             output_dir / "hdp_emission_heatmap.png",
         ),
         plot_transition_graph(

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import linear_sum_assignment
+from scipy.special import logsumexp
 
 from src.data.observations import ObservationSequence
 
@@ -13,20 +16,172 @@ from .utils import (
     contiguous_segments,
     count_emissions,
     count_transitions,
-    dirichlet_logpdf,
-    normalize,
-    sample_truncated_stick_breaking,
+    occupied_state_count,
+    sample_dirichlet,
     set_random_seed,
-    stick_breaking_from_v,
 )
 
-try:
-    from scipy.optimize import minimize
+#: Valor de `beta_update_mode`: β | m ~ Dir(γ/K + Σ_j m̄_jk) con mesas m por CRT (Fox et al., 2011).
+BETA_UPDATE_MODE = "crt_auxiliary_gibbs"
 
-    SCIPY_AVAILABLE = True
-except Exception:  # pragma: no cover - cubierto por fallback cuando scipy no esta.
-    minimize = None
-    SCIPY_AVAILABLE = False
+
+def _sample_crt(counts: np.ndarray, concentration: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Mesas de un restaurante chino: m = Σ_{i<n} Bernoulli(c / (c + i)), celda a celda."""
+
+    counts = np.asarray(counts, dtype=int)
+    concentration = np.broadcast_to(np.asarray(concentration, dtype=float), counts.shape)
+    flat_counts = counts.ravel()
+    occupied = np.flatnonzero(flat_counts)
+    tables = np.zeros(flat_counts.size, dtype=int)
+    if occupied.size == 0:
+        return tables.reshape(counts.shape)
+    customers = flat_counts[occupied]
+    cell = np.repeat(np.arange(occupied.size), customers)
+    position = np.arange(cell.size) - np.repeat(np.cumsum(customers) - customers, customers)
+    rate = concentration.ravel()[occupied][cell]
+    # El primer cliente siempre abre mesa; escribirlo aparte evita 0/0 si c subdesborda.
+    probability = np.where(position == 0, 1.0, rate / (rate + np.maximum(position, 1)))
+    opened = rng.random(cell.size) < probability
+    tables[occupied] = np.bincount(cell, weights=opened, minlength=occupied.size).astype(int)
+    return tables.reshape(counts.shape)
+
+
+def _alignment_permutation(states: np.ndarray, reference: np.ndarray, n_states: int) -> np.ndarray:
+    """Permutación etiqueta vieja -> etiqueta de la referencia que maximiza coincidencias (húngaro)."""
+
+    overlap = np.zeros((n_states, n_states), dtype=float)
+    np.add.at(overlap, (states, reference), 1.0)
+    rows, columns = linear_sum_assignment(-overlap)
+    permutation = np.empty(n_states, dtype=int)
+    permutation[rows] = columns
+    return permutation
+
+
+@dataclass(frozen=True)
+class PosteriorSample:
+    """Una muestra posterior tras burn-in, con etiquetas alineadas a la de referencia."""
+
+    iteration: int
+    log_likelihood: float
+    initial_probs: np.ndarray
+    transition_matrix: np.ndarray
+    emission_matrix: np.ndarray
+    beta: np.ndarray
+    states: np.ndarray
+
+    def relabel(self, permutation: np.ndarray) -> "PosteriorSample":
+        inverse = np.argsort(permutation)
+        return PosteriorSample(
+            iteration=self.iteration,
+            log_likelihood=self.log_likelihood,
+            initial_probs=self.initial_probs[inverse],
+            transition_matrix=self.transition_matrix[np.ix_(inverse, inverse)],
+            emission_matrix=self.emission_matrix[inverse],
+            beta=self.beta[inverse],
+            states=permutation[self.states],
+        )
+
+
+_occupied_states = occupied_state_count
+
+
+def _forward_step_log_scales(
+    samples: list[PosteriorSample],
+    tokens: np.ndarray,
+    support: np.ndarray | None = None,
+) -> np.ndarray:
+    """log c_t = log p(x_t | x_<t, θ_s) para cada muestra s (forward escalado en lote).
+
+    Con `support`, cada paso se divide entre p(x_t ∈ support | x_<t, θ_s): la predictiva
+    de un paso renormalizada sobre esos símbolos. El filtrado no cambia.
+    """
+
+    initial = np.stack([sample.initial_probs for sample in samples])
+    transition = np.stack([sample.transition_matrix for sample in samples])
+    full_emission = np.stack([sample.emission_matrix for sample in samples])
+    emission = full_emission[:, :, tokens]
+    support_mass = None if support is None else full_emission[:, :, support].sum(axis=2)
+    log_scales = np.empty((len(samples), tokens.size), dtype=float)
+    predicted = initial
+    for step in range(tokens.size):
+        joint = predicted * emission[:, :, step]
+        scale = joint.sum(axis=1)
+        with np.errstate(divide="ignore"):
+            log_scales[:, step] = np.log(scale)
+            if support_mass is not None:
+                log_scales[:, step] -= np.log(np.sum(predicted * support_mass, axis=1))
+        filtered = joint / np.where(scale > 0.0, scale, 1.0)[:, None]
+        predicted = np.einsum("sk,skj->sj", filtered, transition)
+    return log_scales
+
+
+def heldout_nll_per_token(
+    results: "HDPHMMResult | Sequence[HDPHMMResult]",
+    fit_tokens: np.ndarray,
+    test_tokens: np.ndarray,
+    support: Sequence[int] | None = None,
+) -> float:
+    """−log p(x_prueba | x_ajuste) / n_prueba con la predictiva posterior del HDP-HMM.
+
+    `fit_tokens` es la parte de la obra con la que se ajustaron `results` (una o varias
+    cadenas) y `test_tokens` su continuación. Para cada muestra θ_s se calcula
+    p(x_prueba | x_ajuste, θ_s), filtrando el estado oculto a través de la frontera, y
+    se promedia en probabilidad sobre todas las muestras de todas las cadenas:
+    p(x_prueba | x_ajuste) ≈ (1/S) Σ_s p(x_prueba | x_ajuste, θ_s).
+    Con `fit_tokens` vacío es la predictiva de x_prueba sin contexto.
+    Con `support` (índices del vocabulario, p. ej. las 12 alturas sin BOS), cada
+    predictiva de un paso se renormaliza sobre esos símbolos antes de multiplicarse,
+    como `Comparacion.classical_models.conditional_log_likelihood`.
+    """
+
+    chains = [results] if isinstance(results, HDPHMMResult) else list(results)
+    fit_tokens = np.asarray(fit_tokens, dtype=int)
+    test_tokens = np.asarray(test_tokens, dtype=int)
+    if test_tokens.size == 0:
+        raise ValueError("La parte de prueba no puede estar vacía.")
+    if not chains or any(not chain.posterior_samples for chain in chains):
+        raise ValueError("Se requiere al menos una cadena con muestras posteriores.")
+    support_indices = None if support is None else np.unique(np.asarray(list(support), dtype=int))
+    if support_indices is not None and not np.all(np.isin(test_tokens, support_indices)):
+        raise ValueError("Todo símbolo de prueba debe estar en el soporte de evaluación.")
+    tokens = np.concatenate([fit_tokens, test_tokens])
+    per_sample = [
+        _forward_step_log_scales(chain.posterior_samples, tokens, support_indices)[:, fit_tokens.size :].sum(axis=1)
+        for chain in chains
+    ]
+    log_predictive = np.concatenate(per_sample)
+    return -float(logsumexp(log_predictive) - np.log(log_predictive.size)) / test_tokens.size
+
+
+def split_rhat(chains: Sequence[Sequence[float]]) -> float:
+    """R-hat dividido (Gelman et al., BDA3, §11.4) de una cantidad escalar entre cadenas.
+
+    Cada cadena (todas del mismo largo, >= 4) se parte en dos mitades (si el largo es impar se
+    descarta el valor central); con m mitades de largo n, W = media de las varianzas dentro,
+    B = n · varianza de las medias y R-hat = sqrt(((n - 1)/n · W + B/n) / W).
+    """
+
+    values = [np.asarray(chain, dtype=float) for chain in chains]
+    if len(values) < 2:
+        raise ValueError("R-hat requiere al menos dos cadenas.")
+    if len({value.size for value in values}) != 1 or values[0].size < 4:
+        raise ValueError("Las cadenas deben tener el mismo largo, al menos 4.")
+    half = values[0].size // 2
+    halves = np.stack([part for value in values for part in (value[:half], value[-half:])])
+    within = halves.var(axis=1, ddof=1).mean()
+    between = half * halves.mean(axis=1).var(ddof=1)
+    if within == 0.0:
+        return 1.0 if between == 0.0 else float("inf")
+    return float(np.sqrt(((half - 1) / half * within + between / half) / within))
+
+
+def log_likelihood_rhat(results: Sequence["HDPHMMResult"]) -> float:
+    """R-hat dividido de log p(x | θ_t) sobre las muestras tras burn-in de varias cadenas.
+
+    Es el diagnóstico de convergencia del preregistro (R-hat < 1.1 entre las 4 cadenas).
+    """
+
+    return split_rhat([[sample.log_likelihood for sample in result.posterior_samples] for result in results])
 
 
 def _count_segmented_transitions(
@@ -60,13 +215,19 @@ class HDPHMMDiagnostics:
     """Historias de inferencia utiles para diagnostico."""
 
     log_likelihood_history: list[float]
+    #: Estados con ocupación >= `occupancy_threshold` en cada iteración (estimando del preregistro).
     active_state_history: list[int]
     beta_entropy_history: list[float]
     state_samples: list[np.ndarray]
     beta_update_mode: str
+    #: Iteración (base 1) de la muestra de referencia: máxima log p(x | θ_t) tras el burn-in.
     best_iteration: int
     #: Hiperparámetros de la cadena; van con la traza para que sea auditable.
     hyperparameters: dict[str, float] = field(default_factory=dict)
+    #: β del primer sorteo (prior); sirve para auditar que el resultado no lo hereda.
+    initial_beta: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
+    #: Estados con ocupación >= umbral en cada muestra guardada (alineadas o no, da igual).
+    occupied_state_samples: list[int] = field(default_factory=list)
 
     def trace_rows(self) -> list[dict[str, float | int | str]]:
         """Traza por iteración, con los hiperparámetros que la produjeron."""
@@ -118,6 +279,8 @@ class HDPHMMResult:
     """Resultado resumido del HDP-HMM truncado."""
 
     latent_states: np.ndarray
+    #: Estados distintos de la muestra de referencia (`latent_states`), sin umbral de
+    #: ocupación. No es el estimando del preregistro: ese es `effective_states`.
     active_states: list[int]
     beta: np.ndarray
     initial_probs: np.ndarray
@@ -126,13 +289,19 @@ class HDPHMMResult:
     state_usage: np.ndarray
     observations: ObservationSequence
     diagnostics: HDPHMMDiagnostics
+    #: Media posterior de log p(x | θ_t) sobre las muestras guardadas tras el burn-in.
     log_likelihood: float
-    effective_states: int
+    #: Media posterior del número de estados con ocupación >= `occupancy_threshold`.
+    effective_states: float
     active_state_labels: list[str]
     posterior_transition_mean: np.ndarray
     posterior_emission_mean: np.ndarray
     posterior_beta_mean: np.ndarray
     posterior_initial_mean: np.ndarray
+    #: Máximo de log p(x | θ_t) tras el burn-in: la muestra de referencia. No es el estimador.
+    max_log_likelihood: float = float("nan")
+    #: Muestras tras el burn-in, alineadas a la de referencia (la de `latent_states`).
+    posterior_samples: list[PosteriorSample] = field(default_factory=list)
 
     def summary_dataframe(self) -> pd.DataFrame:
         return pd.DataFrame(
@@ -140,6 +309,7 @@ class HDPHMMResult:
                 "metric": [
                     "log_likelihood",
                     "n_active_states",
+                    "n_reference_states",
                     "K_truncation",
                     "n_observations",
                     "beta_update_mode",
@@ -147,6 +317,8 @@ class HDPHMMResult:
                 "value": [
                     self.log_likelihood,
                     self.effective_states,
+                    # Estados distintos de la muestra de referencia, sin umbral.
+                    len(self.active_states),
                     self.transition_matrix.shape[0],
                     self.observations.size,
                     self.diagnostics.beta_update_mode,
@@ -171,6 +343,7 @@ class TruncatedHDPHMM:
         seed: int | None = 7,
         init_active_states: int = 4,
         store_every: int = 1,
+        occupancy_threshold: float = 0.02,
     ) -> None:
         self.n_states = int(n_states)
         self.alpha = float(alpha)
@@ -183,6 +356,14 @@ class TruncatedHDPHMM:
         self.seed = seed
         self.init_active_states = int(init_active_states)
         self.store_every = int(store_every)
+        self.occupancy_threshold = float(occupancy_threshold)
+        if not 0.0 <= self.occupancy_threshold <= 1.0:
+            raise ValueError("occupancy_threshold debe estar en [0, 1].")
+        if min(self.alpha, self.alpha0, self.gamma, self.eta) <= 0.0 or self.kappa < 0.0:
+            raise ValueError("alpha, alpha0, gamma y eta deben ser > 0; kappa >= 0.")
+        if self.n_states < 1 or self.store_every < 1 or not 0 <= self.burn_in < self.n_iters:
+            raise ValueError("Se requiere n_states >= 1, store_every >= 1 y 0 <= burn_in < n_iters.")
+        # El generador se crea en cada ajuste a partir de `seed` (hallazgo H8).
         self.rng = set_random_seed(seed)
 
     def _initialize_states(self, observations: np.ndarray, vocab_size: int) -> np.ndarray:
@@ -198,91 +379,44 @@ class TruncatedHDPHMM:
 
     def _sample_emissions(self, states: np.ndarray, observations: np.ndarray, vocab_size: int) -> np.ndarray:
         counts = count_emissions(states, observations, self.n_states, vocab_size)
-        prior = np.full(vocab_size, self.eta / vocab_size, dtype=float)
-        matrix = np.zeros((self.n_states, vocab_size), dtype=float)
-        for state in range(self.n_states):
-            matrix[state] = self.rng.dirichlet(prior + counts[state])
-        return matrix
+        return sample_dirichlet(self.eta / vocab_size + counts, self.rng)
 
     def _sample_initial(self, state_sequences: list[np.ndarray], beta: np.ndarray) -> np.ndarray:
-        initial_counts = np.bincount(
-            [int(states[0]) for states in state_sequences],
-            minlength=self.n_states,
-        )
-        prior = self.alpha0 * beta + EPSILON
-        return self.rng.dirichlet(prior + initial_counts)
+        return sample_dirichlet(self.alpha0 * beta + self._initial_counts(state_sequences), self.rng)
 
     def _sample_transitions(self, state_sequences: list[np.ndarray], beta: np.ndarray) -> np.ndarray:
         counts = _count_segmented_transitions(state_sequences, self.n_states)
-        matrix = np.zeros((self.n_states, self.n_states), dtype=float)
-        for state in range(self.n_states):
-            prior = self.alpha * beta + EPSILON
-            if self.kappa > 0.0:
-                prior[state] += self.kappa
-            matrix[state] = self.rng.dirichlet(prior + counts[state])
-        return matrix
+        return sample_dirichlet(self._transition_concentration(beta) + counts, self.rng)
 
-    def _beta_to_v(self, beta: np.ndarray) -> np.ndarray:
-        if beta.size == 1:
-            return np.array([], dtype=float)
-        remaining = 1.0
-        values = []
-        for weight in beta[:-1]:
-            if remaining <= EPSILON:
-                values.append(0.5)
-            else:
-                values.append(np.clip(weight / remaining, EPSILON, 1.0 - EPSILON))
-            remaining -= weight
-        return np.array(values, dtype=float)
+    def _initial_counts(self, state_sequences: list[np.ndarray]) -> np.ndarray:
+        return np.bincount([int(states[0]) for states in state_sequences], minlength=self.n_states)
 
-    def _negative_beta_log_posterior(
-        self,
-        logits: np.ndarray,
-        transition_matrix: np.ndarray,
-        initial_probs: np.ndarray,
-    ) -> float:
-        v = 1.0 / (1.0 + np.exp(-logits))
-        beta = stick_breaking_from_v(v)
-        total = 0.0
-        total -= float(np.sum((self.gamma - 1.0) * np.log(1.0 - v + EPSILON)))
-        total -= dirichlet_logpdf(initial_probs, self.alpha0 * beta + EPSILON)
-        for state in range(self.n_states):
-            prior = self.alpha * beta + EPSILON
-            if self.kappa > 0.0:
-                prior[state] += self.kappa
-            total -= dirichlet_logpdf(transition_matrix[state], prior)
-        if not np.isfinite(total):
-            return 1e12
-        return float(total)
+    def _transition_concentration(self, beta: np.ndarray) -> np.ndarray:
+        """Concentración de la fila j: alpha*beta + kappa*e_j."""
 
-    def _update_beta(
-        self,
-        beta: np.ndarray,
-        transition_matrix: np.ndarray,
-        initial_probs: np.ndarray,
-        states: np.ndarray,
-    ) -> tuple[np.ndarray, str]:
+        return self.alpha * beta[None, :] + self.kappa * np.eye(self.n_states)
+
+    def _update_beta(self, beta: np.ndarray, state_sequences: list[np.ndarray]) -> tuple[np.ndarray, str]:
+        """β | z por variables auxiliares (Fox et al., 2011, weak limit), con π integrado.
+
+        m_jk ~ CRT(n_jk, alpha*beta_k + kappa*[j=k]); si kappa > 0, w_j ~ Bin(m_jj,
+        rho / (rho + beta_j (1 - rho))) con rho = kappa / (alpha + kappa) y m̄_jj = m_jj - w_j.
+        La distribución inicial aporta sus propias mesas con concentración alpha0*beta.
+        Finalmente beta ~ Dir(gamma/K + Σ_j m̄_jk).
+        """
+
         if self.n_states == 1:
             return np.array([1.0], dtype=float), "degenerate"
-
-        if SCIPY_AVAILABLE:
-            initial_v = np.clip(self._beta_to_v(beta), 1e-4, 1.0 - 1e-4)
-            initial_logits = np.log(initial_v) - np.log(1.0 - initial_v)
-            result = minimize(
-                fun=self._negative_beta_log_posterior,
-                x0=initial_logits,
-                args=(transition_matrix, initial_probs),
-                method="L-BFGS-B",
-                bounds=[(-6.0, 6.0)] * len(initial_logits),
-            )
-            if result.success and np.isfinite(result.fun):
-                optimized_v = 1.0 / (1.0 + np.exp(-result.x))
-                return stick_breaking_from_v(optimized_v), "map_stick_breaking"
-
-        usage = np.bincount(states, minlength=self.n_states).astype(float)
-        pseudo = normalize(usage + self.gamma * beta + EPSILON)
-        updated = self.rng.dirichlet(pseudo * self.n_states + EPSILON)
-        return normalize(updated), "approx_dirichlet_fallback"
+        counts = _count_segmented_transitions(state_sequences, self.n_states)
+        tables = _sample_crt(counts, self._transition_concentration(beta), self.rng)
+        if self.kappa > 0.0:
+            rho = self.kappa / (self.alpha + self.kappa)
+            diagonal = np.diag(tables)
+            override = self.rng.binomial(diagonal, rho / (rho + beta * (1.0 - rho)))
+            tables = tables - np.diag(override)
+        initial_tables = _sample_crt(self._initial_counts(state_sequences), self.alpha0 * beta, self.rng)
+        concentration = self.gamma / self.n_states + tables.sum(axis=0) + initial_tables
+        return sample_dirichlet(concentration, self.rng), BETA_UPDATE_MODE
 
     def fit(self, observations: ObservationSequence) -> HDPHMMResult:
         """Fit one observation sequence, preserving the original public API."""
@@ -306,7 +440,9 @@ class TruncatedHDPHMM:
         sequence = np.concatenate(sequences)
         combined_observations = _concatenate_observations(observations)
         vocab_size = first.vocab_size
-        _, beta = sample_truncated_stick_breaking(self.gamma, self.n_states, self.rng)
+        self.rng = set_random_seed(self.seed)
+        beta = sample_dirichlet(np.full(self.n_states, self.gamma / self.n_states), self.rng)
+        initial_beta = beta.copy()
         state_sequences = [self._initialize_states(item, vocab_size) for item in sequences]
         states = np.concatenate(state_sequences)
         transition_matrix = self._sample_transitions(state_sequences, beta)
@@ -316,29 +452,15 @@ class TruncatedHDPHMM:
         log_likelihood_history: list[float] = []
         active_state_history: list[int] = []
         beta_entropy_history: list[float] = []
-        state_samples: list[np.ndarray] = []
+        stored: list[PosteriorSample] = []
         beta_update_mode = "prior_only"
-
-        posterior_transition_sum = np.zeros_like(transition_matrix)
-        posterior_emission_sum = np.zeros_like(emission_matrix)
-        posterior_beta_sum = np.zeros_like(beta)
-        posterior_initial_sum = np.zeros_like(initial_probs)
-        posterior_samples = 0
-
-        best_log_likelihood = -np.inf
-        best_states = states.copy()
-        best_transition = transition_matrix.copy()
-        best_emission = emission_matrix.copy()
-        best_initial = initial_probs.copy()
-        best_beta = beta.copy()
-        best_iteration = 0
 
         for iteration in range(self.n_iters):
             states = np.concatenate(state_sequences)
+            beta, beta_update_mode = self._update_beta(beta, state_sequences)
             emission_matrix = self._sample_emissions(states, sequence, vocab_size)
             transition_matrix = self._sample_transitions(state_sequences, beta)
             initial_probs = self._sample_initial(state_sequences, beta)
-            beta, beta_update_mode = self._update_beta(beta, transition_matrix, initial_probs, states)
 
             state_sequences, sequence_log_likelihoods = ffbs_sample_batch(
                 initial_probs=initial_probs,
@@ -350,50 +472,30 @@ class TruncatedHDPHMM:
             states = np.concatenate(state_sequences)
             log_likelihood = float(sequence_log_likelihoods.sum())
 
-            active_states = int(np.unique(states).size)
-            beta_entropy = -float(np.sum(beta * np.log(beta + EPSILON)))
-
             log_likelihood_history.append(log_likelihood)
-            active_state_history.append(active_states)
-            beta_entropy_history.append(beta_entropy)
+            active_state_history.append(_occupied_states(states, self.n_states, self.occupancy_threshold))
+            beta_entropy_history.append(-float(np.sum(beta * np.log(beta + EPSILON))))
 
             if iteration >= self.burn_in and ((iteration - self.burn_in) % self.store_every == 0):
-                posterior_transition_sum += transition_matrix
-                posterior_emission_sum += emission_matrix
-                posterior_beta_sum += beta
-                posterior_initial_sum += initial_probs
-                posterior_samples += 1
-                state_samples.append(states.copy())
+                stored.append(
+                    PosteriorSample(
+                        iteration=iteration + 1,
+                        log_likelihood=log_likelihood,
+                        initial_probs=initial_probs,
+                        transition_matrix=transition_matrix,
+                        emission_matrix=emission_matrix,
+                        beta=beta,
+                        states=states,
+                    )
+                )
 
-            if log_likelihood > best_log_likelihood:
-                best_log_likelihood = log_likelihood
-                best_states = states.copy()
-                best_transition = transition_matrix.copy()
-                best_emission = emission_matrix.copy()
-                best_initial = initial_probs.copy()
-                best_beta = beta.copy()
-                best_iteration = iteration + 1
-
-        if posterior_samples == 0:
-            posterior_transition_mean = best_transition.copy()
-            posterior_emission_mean = best_emission.copy()
-            posterior_beta_mean = best_beta.copy()
-            posterior_initial_mean = best_initial.copy()
-        else:
-            posterior_transition_mean = posterior_transition_sum / posterior_samples
-            posterior_emission_mean = posterior_emission_sum / posterior_samples
-            posterior_beta_mean = posterior_beta_sum / posterior_samples
-            posterior_initial_mean = posterior_initial_sum / posterior_samples
-
-        state_usage = np.bincount(best_states, minlength=self.n_states)
-        active_state_indices = sorted(int(state) for state in np.unique(best_states))
         diagnostics = HDPHMMDiagnostics(
             log_likelihood_history=log_likelihood_history,
             active_state_history=active_state_history,
             beta_entropy_history=beta_entropy_history,
-            state_samples=state_samples,
+            state_samples=[],
             beta_update_mode=beta_update_mode,
-            best_iteration=best_iteration,
+            best_iteration=0,
             hyperparameters={
                 "alpha": float(self.alpha),
                 "alpha0": float(self.alpha0),
@@ -402,25 +504,49 @@ class TruncatedHDPHMM:
                 "eta": float(self.eta),
                 "n_states_truncation": int(self.n_states),
                 "burn_in": int(self.burn_in),
+                "occupancy_threshold": float(self.occupancy_threshold),
             },
+            initial_beta=initial_beta,
         )
+        return self._summarize(stored, diagnostics, combined_observations)
+
+    def _summarize(
+        self,
+        stored: list[PosteriorSample],
+        diagnostics: HDPHMMDiagnostics,
+        observations: ObservationSequence,
+    ) -> HDPHMMResult:
+        """Alinea las muestras tras burn-in a la de mayor log p(x|θ) y resume la posterior."""
+
+        reference = max(stored, key=lambda sample: sample.log_likelihood)
+        aligned = [
+            sample.relabel(_alignment_permutation(sample.states, reference.states, self.n_states))
+            for sample in stored
+        ]
+        occupied = [_occupied_states(sample.states, self.n_states, self.occupancy_threshold) for sample in aligned]
+        diagnostics.state_samples = [sample.states for sample in aligned]
+        diagnostics.occupied_state_samples = occupied
+        diagnostics.best_iteration = reference.iteration
+        active_state_indices = sorted(int(state) for state in np.unique(reference.states))
         return HDPHMMResult(
-            latent_states=best_states,
+            latent_states=reference.states,
             active_states=active_state_indices,
-            beta=best_beta,
-            initial_probs=best_initial,
-            transition_matrix=best_transition,
-            emission_matrix=best_emission,
-            state_usage=state_usage,
-            observations=combined_observations,
+            beta=reference.beta,
+            initial_probs=reference.initial_probs,
+            transition_matrix=reference.transition_matrix,
+            emission_matrix=reference.emission_matrix,
+            state_usage=np.bincount(reference.states, minlength=self.n_states),
+            observations=observations,
             diagnostics=diagnostics,
-            log_likelihood=best_log_likelihood,
-            effective_states=len(active_state_indices),
+            log_likelihood=float(np.mean([sample.log_likelihood for sample in aligned])),
+            effective_states=float(np.mean(occupied)),
             active_state_labels=[f"z{state}" for state in active_state_indices],
-            posterior_transition_mean=posterior_transition_mean,
-            posterior_emission_mean=posterior_emission_mean,
-            posterior_beta_mean=posterior_beta_mean,
-            posterior_initial_mean=posterior_initial_mean,
+            posterior_transition_mean=np.mean([sample.transition_matrix for sample in aligned], axis=0),
+            posterior_emission_mean=np.mean([sample.emission_matrix for sample in aligned], axis=0),
+            posterior_beta_mean=np.mean([sample.beta for sample in aligned], axis=0),
+            posterior_initial_mean=np.mean([sample.initial_probs for sample in aligned], axis=0),
+            max_log_likelihood=reference.log_likelihood,
+            posterior_samples=aligned,
         )
 
     @staticmethod

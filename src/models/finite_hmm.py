@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -16,7 +16,7 @@ from .harmony import (
     infer_local_mode_label,
 )
 from .inference import forward_log_likelihood, viterbi_decode
-from .utils import count_transitions, normalize
+from .utils import EPSILON, count_transitions, normalize, occupied_state_count
 
 HARMONIC_STATE_SPACE = build_harmonic_state_space()
 CHORD_STATES = [state.label for state in HARMONIC_STATE_SPACE]
@@ -38,6 +38,11 @@ class FiniteHMMResult:
     viterbi_score: float
     observations: ObservationSequence
     state_space: list[HarmonicState]
+    #: Estimando del preregistro, el mismo que el del HDP-HMM: media, sobre trayectorias
+    #: de la posterior p(z | x, θ), del número de estados con ocupación >= el umbral.
+    #: No es ``len(active_states)``, que cuenta los estados distintos del camino de Viterbi.
+    effective_states: float = float("nan")
+    occupied_state_samples: list[int] = field(default_factory=list)
 
     def summary_dataframe(self) -> pd.DataFrame:
         return pd.DataFrame(
@@ -46,12 +51,15 @@ class FiniteHMMResult:
                     "log_likelihood",
                     "viterbi_score",
                     "n_active_states",
+                    "n_viterbi_states",
                     "n_observations",
                     "state_space_size",
                 ],
                 "value": [
                     self.log_likelihood,
                     self.viterbi_score,
+                    # Mismo estimando que el HDP-HMM bajo el mismo rótulo (preregistro).
+                    self.effective_states,
                     len(self.active_states),
                     self.observations.size,
                     len(self.state_space),
@@ -76,7 +84,13 @@ class FiniteChordHMM:
         initial_probs: np.ndarray | None = None,
         transition_matrix: np.ndarray | None = None,
         emission_matrix: np.ndarray | None = None,
+        occupancy_threshold: float = 0.02,
+        n_posterior_samples: int = 200,
+        seed: int = 0,
     ) -> None:
+        self.occupancy_threshold = float(occupancy_threshold)
+        self.n_posterior_samples = int(n_posterior_samples)
+        self.seed = int(seed)
         self.stay_bias = stay_bias
         self.same_root_bias = same_root_bias
         self.related_root_bias = related_root_bias
@@ -141,7 +155,7 @@ class FiniteChordHMM:
             emission_matrix=self.emission_matrix,
             observations=observations.tokens,
         )
-        log_likelihood, _ = forward_log_likelihood(
+        log_likelihood, log_alpha = forward_log_likelihood(
             initial_probs=self.initial_probs,
             transition_matrix=self.transition_matrix,
             emission_matrix=self.emission_matrix,
@@ -152,6 +166,10 @@ class FiniteChordHMM:
         active_states = sorted(set(int(state) for state in states))
         labels = [self.state_labels[int(state)] for state in states]
         modal_labels = self._infer_modal_labels(states, observations.tokens)
+        occupied = [
+            occupied_state_count(path, self.n_states, self.occupancy_threshold)
+            for path in self._sample_posterior_paths(log_alpha)
+        ]
         return FiniteHMMResult(
             latent_states=states,
             latent_labels=labels,
@@ -165,4 +183,24 @@ class FiniteChordHMM:
             viterbi_score=viterbi_score,
             observations=observations,
             state_space=self.state_space,
+            effective_states=float(np.mean(occupied)),
+            occupied_state_samples=occupied,
         )
+
+    def _sample_posterior_paths(self, log_alpha: np.ndarray) -> np.ndarray:
+        """Muestras de p(z | x, θ) por FFBS, todas a la vez (Gumbel-max), con `self.seed`."""
+
+        rng = np.random.default_rng(self.seed)
+        n_steps, n_states = log_alpha.shape
+        n_paths = self.n_posterior_samples
+        log_transition = np.log(self.transition_matrix + EPSILON)
+        paths = np.zeros((n_paths, n_steps), dtype=int)
+
+        def draw(scores: np.ndarray) -> np.ndarray:
+            return np.argmax(scores + rng.gumbel(size=scores.shape), axis=1)
+
+        paths[:, -1] = draw(np.broadcast_to(log_alpha[-1], (n_paths, n_states)))
+        for time_index in range(n_steps - 2, -1, -1):
+            scores = log_alpha[time_index][None, :] + log_transition[:, paths[:, time_index + 1]].T
+            paths[:, time_index] = draw(scores)
+        return paths

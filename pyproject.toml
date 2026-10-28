@@ -36,6 +36,11 @@ melodies-classic-limited = "src.cli.classic_limited_analysis:main"
 melodies-next-token = "next_token_experiment.cli:main"
 melodies-comparacion = "Comparacion.cli:main"
 
+[tool.pytest.ini_options]
+markers = [
+  "slow: prueba de varios minutos (p. ej. criterio (b) con 200 ajustes 400/200); corre por omisión, se salta con -m \"not slow\"",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*", "next_token_experiment*", "Comparacion*", "examples*"]

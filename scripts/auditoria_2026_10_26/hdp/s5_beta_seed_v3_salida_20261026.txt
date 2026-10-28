@@ -1,0 +1,168 @@
+Corrida del 2026-10-26 en la computadora con GPU (sólo CPU), rama fix/auditoria-hdp, código en d2ea2b2.
+Caché: artifacts/corpus_cache_3000.jsonl (PDMX, extracción de agosto). No es el obs_cache.pkl del auditor
+(multicorpus_full no está en esta computadora), así que las obras difieren de s5_beta_seed_v2.
+K=20, 80 iteraciones, burn-in 40, semillas 7..56 (50).
+AVISO (revisión posterior): 80/40 NO es la cadena del preregistro (400/200), así que esta salida
+no evalúa el criterio (b).  (Corregido el 2026-10-26: una versión anterior de este aviso decía que
+80/40 muestra dependencia con datos simulados, r = 0.318; eso sólo vale para las semillas 0..49:
+en 5 bloques de 50 semillas r = 0.318, 0.040, 0.076, -0.364, 0.054, con signo opuesto entre bloques,
+s8_criterio_b_bloques_simulada_80_40_salida_20261026.txt.  Con 400/200 ver
+s8_criterio_b_bloques_simulada_salida_20261026.txt y s8_criterio_b_bloques_pdmx200_salida_20261026.txt.)
+La misma obra con 400/200 está en s5_beta_seed_v3_salida_400_20261026.txt.
+Criterio (b) de PROMPT_CLAUDE.md, |r| < 0.3 (corregido tras la revisión adversarial del 2026-10-26):
+la estimación puntual queda por debajo de 0.3 en ambas corridas, pero eso NO demuestra independencia.
+Con n = 50, el IC 95 % de Fisher para r es [-0.416, 0.128] (15 obras) y [-0.212, 0.342] (una obra);
+ambos incluyen |r| = 0.3, y la prueba de equivalencia TOST para |rho| < 0.3 no es significativa
+(p = 0.148 y p = 0.051).  En una obra, el IC de la pendiente sobre el rango 3..9 va de -0.76 a +1.24
+estados, así que no excluye un efecto de hasta ~1 estado.  La corrida v2 (20 semillas, otro corpus)
+dio r = -0.40, en la misma dirección que el -0.156 de 15 obras.
+Redacción correcta: «no hay evidencia de dependencia», no «K no sigue al primer β».
+Cifras recalculadas desde las filas de abajo con
+python scripts/auditoria_2026_10_26/hdp/s5_beta_seed_v3.py --resumen <este archivo>; ver el final.
+
+== 15 obras (índices 0, 200, ..., 2800) ==
+python scripts/auditoria_2026_10_26/hdp/s5_beta_seed_v3.py artifacts/corpus_cache_3000.jsonl --n-seeds 50
+obras (índice en el caché): [0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800]; eventos: [116, 599, 88, 160, 66, 129, 143, 154, 200, 90, 85, 68, 1187, 81, 62]
+seed 7: #beta_k>0.01= 6  K medio=5.240
+seed 8: #beta_k>0.01= 5  K medio=5.442
+seed 9: #beta_k>0.01= 7  K medio=5.027
+seed 10: #beta_k>0.01= 8  K medio=4.522
+seed 11: #beta_k>0.01= 4  K medio=4.867
+seed 12: #beta_k>0.01= 9  K medio=5.228
+seed 13: #beta_k>0.01= 7  K medio=4.892
+seed 14: #beta_k>0.01= 8  K medio=4.760
+seed 15: #beta_k>0.01= 8  K medio=4.918
+seed 16: #beta_k>0.01= 4  K medio=5.332
+seed 17: #beta_k>0.01= 3  K medio=4.702
+seed 18: #beta_k>0.01= 5  K medio=5.228
+seed 19: #beta_k>0.01= 3  K medio=5.278
+seed 20: #beta_k>0.01= 3  K medio=4.968
+seed 21: #beta_k>0.01= 7  K medio=5.032
+seed 22: #beta_k>0.01= 9  K medio=5.205
+seed 23: #beta_k>0.01= 8  K medio=5.312
+seed 24: #beta_k>0.01= 5  K medio=5.250
+seed 25: #beta_k>0.01= 5  K medio=5.375
+seed 26: #beta_k>0.01= 5  K medio=5.328
+seed 27: #beta_k>0.01= 5  K medio=4.778
+seed 28: #beta_k>0.01= 9  K medio=4.887
+seed 29: #beta_k>0.01= 5  K medio=5.380
+seed 30: #beta_k>0.01= 6  K medio=4.910
+seed 31: #beta_k>0.01= 5  K medio=5.142
+seed 32: #beta_k>0.01= 7  K medio=5.173
+seed 33: #beta_k>0.01= 8  K medio=4.760
+seed 34: #beta_k>0.01= 5  K medio=4.910
+seed 35: #beta_k>0.01= 5  K medio=5.160
+seed 36: #beta_k>0.01= 4  K medio=4.760
+seed 37: #beta_k>0.01= 6  K medio=5.007
+seed 38: #beta_k>0.01= 6  K medio=4.797
+seed 39: #beta_k>0.01= 6  K medio=4.748
+seed 40: #beta_k>0.01= 3  K medio=4.922
+seed 41: #beta_k>0.01= 8  K medio=4.762
+seed 42: #beta_k>0.01= 9  K medio=4.923
+seed 43: #beta_k>0.01= 5  K medio=5.222
+seed 44: #beta_k>0.01= 7  K medio=4.988
+seed 45: #beta_k>0.01= 6  K medio=4.495
+seed 46: #beta_k>0.01= 5  K medio=5.047
+seed 47: #beta_k>0.01= 4  K medio=5.280
+seed 48: #beta_k>0.01= 5  K medio=4.902
+seed 49: #beta_k>0.01= 7  K medio=5.007
+seed 50: #beta_k>0.01= 4  K medio=4.712
+seed 51: #beta_k>0.01= 6  K medio=5.267
+seed 52: #beta_k>0.01= 5  K medio=4.832
+seed 53: #beta_k>0.01= 6  K medio=5.170
+seed 54: #beta_k>0.01= 9  K medio=4.695
+seed 55: #beta_k>0.01= 8  K medio=5.025
+seed 56: #beta_k>0.01= 8  K medio=5.152
+n semillas = 50
+Pearson r = -0.156 (p = 0.281)
+Spearman rho = -0.162 (p = 0.26)
+pendiente = -0.0207 estados por componente; IC 95 % (t) = [-0.0588, 0.0174]
+IC 95 % bootstrap de la pendiente = [-0.0600, 0.0149]
+rango de #beta_k>0.01 = 3..9; efecto de la pendiente sobre ese rango = -0.124 estados
+K medio: media 5.014, d.e. entre semillas 0.235, rango 4.495..5.442
+
+== Una sola obra (índice 200, 599 eventos) ==
+python scripts/auditoria_2026_10_26/hdp/s5_beta_seed_v3.py artifacts/corpus_cache_3000.jsonl --n-seeds 50 --single-work 200
+
+obras (índice en el caché): [200]; eventos: [599]
+seed 7: #beta_k>0.01= 6  K medio=6.600
+seed 8: #beta_k>0.01= 5  K medio=6.075
+seed 9: #beta_k>0.01= 7  K medio=5.550
+seed 10: #beta_k>0.01= 8  K medio=4.025
+seed 11: #beta_k>0.01= 4  K medio=5.950
+seed 12: #beta_k>0.01= 9  K medio=7.650
+seed 13: #beta_k>0.01= 7  K medio=6.025
+seed 14: #beta_k>0.01= 8  K medio=6.000
+seed 15: #beta_k>0.01= 8  K medio=4.750
+seed 16: #beta_k>0.01= 4  K medio=6.125
+seed 17: #beta_k>0.01= 3  K medio=5.625
+seed 18: #beta_k>0.01= 5  K medio=4.975
+seed 19: #beta_k>0.01= 3  K medio=5.000
+seed 20: #beta_k>0.01= 3  K medio=5.000
+seed 21: #beta_k>0.01= 7  K medio=5.000
+seed 22: #beta_k>0.01= 9  K medio=4.950
+seed 23: #beta_k>0.01= 8  K medio=5.625
+seed 24: #beta_k>0.01= 5  K medio=7.000
+seed 25: #beta_k>0.01= 5  K medio=5.300
+seed 26: #beta_k>0.01= 5  K medio=6.075
+seed 27: #beta_k>0.01= 5  K medio=5.200
+seed 28: #beta_k>0.01= 9  K medio=7.075
+seed 29: #beta_k>0.01= 5  K medio=5.000
+seed 30: #beta_k>0.01= 6  K medio=4.750
+seed 31: #beta_k>0.01= 5  K medio=6.850
+seed 32: #beta_k>0.01= 7  K medio=4.300
+seed 33: #beta_k>0.01= 8  K medio=7.800
+seed 34: #beta_k>0.01= 5  K medio=6.350
+seed 35: #beta_k>0.01= 5  K medio=6.000
+seed 36: #beta_k>0.01= 4  K medio=5.000
+seed 37: #beta_k>0.01= 6  K medio=6.000
+seed 38: #beta_k>0.01= 6  K medio=4.225
+seed 39: #beta_k>0.01= 6  K medio=4.000
+seed 40: #beta_k>0.01= 3  K medio=5.075
+seed 41: #beta_k>0.01= 8  K medio=5.000
+seed 42: #beta_k>0.01= 9  K medio=7.125
+seed 43: #beta_k>0.01= 5  K medio=6.000
+seed 44: #beta_k>0.01= 7  K medio=5.425
+seed 45: #beta_k>0.01= 6  K medio=4.000
+seed 46: #beta_k>0.01= 5  K medio=7.600
+seed 47: #beta_k>0.01= 4  K medio=5.625
+seed 48: #beta_k>0.01= 5  K medio=6.975
+seed 49: #beta_k>0.01= 7  K medio=5.950
+seed 50: #beta_k>0.01= 4  K medio=4.950
+seed 51: #beta_k>0.01= 6  K medio=7.000
+seed 52: #beta_k>0.01= 5  K medio=5.150
+seed 53: #beta_k>0.01= 6  K medio=4.025
+seed 54: #beta_k>0.01= 9  K medio=5.725
+seed 55: #beta_k>0.01= 8  K medio=4.775
+seed 56: #beta_k>0.01= 8  K medio=4.000
+n semillas = 50
+Pearson r = 0.071 (p = 0.626)
+Spearman rho = -0.016 (p = 0.911)
+pendiente = 0.0407 estados por componente; IC 95 % (t) = [-0.1261, 0.2075]
+IC 95 % bootstrap de la pendiente = [-0.1297, 0.1880]
+rango de #beta_k>0.01 = 3..9; efecto de la pendiente sobre ese rango = 0.244 estados
+K medio: media 5.605, d.e. entre semillas 1.018, rango 4.000..7.800
+
+== Resumen recalculado con --resumen (código de este commit) ==
+== semillas 7..56 ==
+n semillas = 50
+Pearson r = -0.156 (p = 0.28)
+IC 95 % de Fisher para r = [-0.416, 0.128]
+TOST |r| < 0.3: p = 0.148
+Spearman rho = -0.162 (p = 0.261)
+pendiente = -0.0207 estados por componente; IC 95 % (t) = [-0.0588, 0.0174]
+IC 95 % bootstrap de la pendiente = [-0.0600, 0.0148]
+rango de #beta_k>0.01 = 3..9; efecto de la pendiente sobre ese rango = -0.124 estados, IC 95 % (t) = [-0.35, 0.10]
+K medio: media 5.014, d.e. entre semillas 0.235, rango 4.495..5.442
+veredicto: sin evidencia de dependencia ni de |r| < 0.3
+== semillas 7..56 ==
+n semillas = 50
+Pearson r = 0.071 (p = 0.626)
+IC 95 % de Fisher para r = [-0.212, 0.342]
+TOST |r| < 0.3: p = 0.051
+Spearman rho = -0.016 (p = 0.911)
+pendiente = 0.0407 estados por componente; IC 95 % (t) = [-0.1261, 0.2075]
+IC 95 % bootstrap de la pendiente = [-0.1297, 0.1880]
+rango de #beta_k>0.01 = 3..9; efecto de la pendiente sobre ese rango = 0.244 estados, IC 95 % (t) = [-0.76, 1.24]
+K medio: media 5.605, d.e. entre semillas 1.018, rango 4.000..7.800
+veredicto: sin evidencia de dependencia ni de |r| < 0.3

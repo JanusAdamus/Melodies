@@ -4,6 +4,7 @@ from typing import Iterable
 
 import numpy as np
 from scipy.special import gammaln
+from scipy.special import logsumexp as scipy_logsumexp
 
 
 EPSILON = 1e-12
@@ -123,16 +124,49 @@ def sample_truncated_stick_breaking(
     return v, beta
 
 
+def sample_dirichlet(alpha: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Muestra Dirichlet por la última dimensión de `alpha`, sin ceros exactos.
+
+    Con concentraciones pequeñas (p. ej. alpha*beta_k de un estado sin uso) los gammas
+    subdesbordan y `rng.dirichlet` devuelve ceros exactos, que vuelven -inf cualquier
+    log densidad posterior. Aquí se trabaja en log: Gamma(a) = Gamma(a+1) * U^(1/a),
+    se normaliza con logsumexp y se aplica un piso explícito de `np.finfo(float).tiny`
+    (~2.2e-308): cambia la masa total en menos de K * 2.2e-308.
+    """
+
+    alpha = np.asarray(alpha, dtype=float)
+    if not np.all(np.isfinite(alpha)) or np.any(alpha <= 0.0):
+        raise ValueError("Las concentraciones de la Dirichlet deben ser finitas y > 0.")
+    log_gamma = np.log(rng.gamma(alpha + 1.0)) + np.log(rng.random(alpha.shape)) / alpha
+    log_probs = log_gamma - scipy_logsumexp(log_gamma, axis=-1, keepdims=True)
+    probs = np.maximum(np.exp(log_probs), np.finfo(float).tiny)
+    return probs / probs.sum(axis=-1, keepdims=True)
+
+
 def dirichlet_logpdf(x: np.ndarray, alpha: np.ndarray) -> float:
-    """Log densidad de Dirichlet."""
+    """Log densidad de Dirichlet en el interior del simplex.
+
+    Un cero en `x` no es un punto donde la densidad valga -inf: casi siempre es un
+    subdesbordamiento de una coordenada positiva, y la densidad ahí depende de cuán
+    pequeña era. Por eso se rechaza en vez de devolver -inf en silencio.
+    """
 
     x = np.asarray(x, dtype=float)
     alpha = np.asarray(alpha, dtype=float)
-    if np.any(x <= 0.0) or np.any(alpha <= 0.0):
-        return -np.inf
+    if np.any(alpha <= 0.0):
+        raise ValueError("Las concentraciones de la Dirichlet deben ser > 0.")
+    if np.any(x <= 0.0):
+        raise ValueError("dirichlet_logpdf recibió coordenadas <= 0 (¿subdesbordamiento?).")
     total = float(gammaln(np.sum(alpha)) - np.sum(gammaln(alpha)))
     total += float(np.sum((alpha - 1.0) * np.log(x)))
     return total
+
+
+def occupied_state_count(states: np.ndarray, n_states: int, threshold: float) -> int:
+    """Número de estados con ocupación >= `threshold` en una trayectoria (preregistro)."""
+
+    occupancy = np.bincount(np.asarray(states, dtype=int), minlength=n_states) / len(states)
+    return int(np.sum(occupancy >= threshold))
 
 
 def count_transitions(states: np.ndarray, n_states: int) -> np.ndarray:
