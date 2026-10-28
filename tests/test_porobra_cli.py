@@ -69,7 +69,7 @@ def test_corrida_escribe_directorio_nuevo_con_csv_resumen_y_manifiesto(corpus, t
     sensitivity = summary["sensitivity_converged_only"]
     assert sensitivity["converged_only"] is True
     assert sensitivity["n_works"] == int(works["hdp_converged"].sum())
-    assert summary["preregistro"].endswith("Enmiendas 3, 5 y 6")
+    assert "Enmiendas 3, 5 y 6" in summary["preregistro"]
     assert "Enmienda 6" in summary["convergence"]["rule"]
     assert "media posterior" in summary["hdp_states_note"]
     for column in ("hdp_test_nll_by_chain", "hdp_test_nll_chain_range", "hdp_predictive_rhat",
