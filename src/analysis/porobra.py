@@ -1,15 +1,16 @@
-"""Análisis por obra held-out: preregistro 2026-10-26, sección A, Aclaración 2 y Enmienda 3.
+"""Análisis por obra held-out: preregistro 2026-10-26, sección A, Aclaración 2, Enmiendas 3 y 5.
 
 Por obra, partición contigua: el primer 80 % de los eventos ajusta y el último 20 % evalúa;
 dentro del 80 %, su último 20 % valida los hiperparámetros (α de los n-gramas, K del finito,
-η del HDP) y después se reajusta con el 80 % completo. La métrica es la NLL por nota en
+η del HDP, α del finito) y después se reajusta con el 80 % completo. La métrica es la NLL por nota en
 prueba, −log p(x_prueba | x_ajuste) / n_prueba, en nats, sobre las 12 clases de altura.
 
 * n-gramas: predictiva posterior exacta de Dirichlet(α) (los conteos se actualizan con cada
   nota de prueba, que es ∫ p(x_prueba | θ) p(θ | x_ajuste) dθ en forma cerrada).
-* HMM finito: Baum-Welch (estimador puntual), el mejor de ``finite_restarts`` inicios por
-  log-verosimilitud de entrenamiento; la prueba se puntúa filtrando el estado a
-  través de la frontera ajuste/prueba.
+* HMM finito: Baum-Welch (estimador puntual) con seudoconteo de Dirichlet α en emisiones y
+  transiciones; (K, α) se eligen juntos en validación (Enmienda 5); el mejor de
+  ``finite_restarts`` inicios por log-verosimilitud de entrenamiento; la prueba se puntúa
+  filtrando el estado a través de la frontera ajuste/prueba.
 * HDP-HMM: predictiva posterior promediada sobre las muestras tras burn-in de todas las
   cadenas (`heldout_nll_per_token`).
 """
@@ -53,6 +54,8 @@ MODELS = ("hdp",) + COMPARED_MODELS
 RHAT_THRESHOLD = 1.1
 MAX_NOT_CONVERGED_FRACTION = 0.10
 DECISION_ESTIMAND = "mean_over_works_of_work_nll_difference"
+#: Seudoconteo de la distribución inicial del finito (una sola secuencia: casi no pesa).
+INITIAL_PSEUDOCOUNT = 1e-3
 
 
 # --- partición -----------------------------------------------------------------------
@@ -142,6 +145,45 @@ def select_by_validation(
                 hit_limit = True
     best = min(candidates, key=lambda value: scores[value])
     return Selection(best, scores, tuple(candidates), extensions, hit_limit)
+
+
+@dataclass(frozen=True)
+class JointSelection:
+    k: int
+    alpha: float
+    #: NLL de validación por α y luego por K.
+    validation_nll: dict
+    k_grid: tuple
+    grid_extensions: int = 0
+    hit_limit: bool = False
+
+
+def select_k_alpha(
+    grid: Iterable[int],
+    alphas: Sequence[float],
+    score: Callable[[int, float], float],
+    *,
+    max_value: int | None = None,
+) -> JointSelection:
+    """Selección conjunta de (K, α) por menor NLL de validación (Enmienda 5).
+
+    Cada K se califica con su mejor α, así que el mínimo sobre K es el mínimo conjunto y la
+    regla de ampliar la rejilla de K cuando se elige el máximo se mantiene. Empates: el
+    primer K de la rejilla y, dentro de él, el primer α.
+    """
+
+    alphas = tuple(float(a) for a in alphas)
+    scores: dict[float, dict[int, float]] = {alpha: {} for alpha in alphas}
+
+    def best_over_alpha(k) -> float:
+        for alpha in alphas:
+            scores[alpha][int(k)] = float(score(int(k), alpha))
+        return min(scores[alpha][int(k)] for alpha in alphas)
+
+    by_k = select_by_validation(tuple(int(k) for k in grid), best_over_alpha, extend=True, max_value=max_value)
+    k = int(by_k.selected)
+    alpha = min(alphas, key=lambda a: scores[a][k])
+    return JointSelection(k, alpha, scores, tuple(int(v) for v in by_k.grid), by_k.grid_extensions, by_k.hit_limit)
 
 
 # --- n-gramas ------------------------------------------------------------------------
@@ -239,8 +281,9 @@ def baum_welch(
 ) -> HMMFit:
     """EM de Baum-Welch sobre una secuencia, inicio Dirichlet(1) con `seed`.
 
-    ``pseudocount`` se suma a cada conteo esperado (como en `Comparacion.FiniteGlobalHMM`):
-    ninguna probabilidad queda en 0. Para cuando la mejora de log p(x|θ) es < ``tolerance``.
+    ``pseudocount`` (el α de la Enmienda 5) se suma a cada conteo esperado de transición y
+    de emisión; la distribución inicial lleva el seudoconteo fijo ``INITIAL_PSEUDOCOUNT``.
+    Ninguna probabilidad queda en 0. Para cuando la mejora de log p(x|θ) es < ``tolerance``.
     """
 
     tokens = np.asarray(tokens, dtype=int)
@@ -255,7 +298,7 @@ def baum_welch(
             initial, transition, emission, padded, lengths
         )
         trace.append(float(log_likelihood))
-        initial = (counts_initial + pseudocount) / (counts_initial + pseudocount).sum()
+        initial = (counts_initial + INITIAL_PSEUDOCOUNT) / (counts_initial + INITIAL_PSEUDOCOUNT).sum()
         transition = counts_transition + pseudocount
         transition /= transition.sum(axis=1, keepdims=True)
         emission = counts_emission + pseudocount
@@ -298,6 +341,7 @@ def fit_finite(
     split: TokenSplit,
     *,
     grid: Sequence[int] = (2, 4, 8, 16, 32),
+    alphas: Sequence[float] = (0.1, 0.5, 1.0),
     seed: int = 0,
     n_restarts: int = 5,
     max_states: int = 512,
@@ -305,22 +349,26 @@ def fit_finite(
     n_occupancy_samples: int = 200,
 ) -> dict:
     seeds = tuple(range(seed, seed + n_restarts))
-    selection = select_by_validation(
-        tuple(int(k) for k in grid),
-        lambda k: hmm_conditional_nll(
-            *_params(best_baum_welch(split.inner_train, n_states=int(k), seeds=seeds)), split.inner_train, split.validation
+    selection = select_k_alpha(
+        grid,
+        alphas,
+        lambda k, alpha: hmm_conditional_nll(
+            *_params(best_baum_welch(split.inner_train, n_states=k, seeds=seeds, pseudocount=alpha)),
+            split.inner_train,
+            split.validation,
         ),
-        extend=True,
         max_value=max_states,
     )
-    k = int(selection.selected)
-    fit = best_baum_welch(split.fit, n_states=k, seeds=seeds)
+    k, alpha = selection.k, selection.alpha
+    fit = best_baum_welch(split.fit, n_states=k, seeds=seeds, pseudocount=alpha)
     occupancy = posterior_occupied_states(fit, split.fit, threshold=threshold, n_samples=n_occupancy_samples, seed=seed)
     return {
         "finite_k": k,
+        "finite_alpha": alpha,
         "finite_restarts": int(n_restarts),
-        "finite_k_validation_nll": selection.validation_nll,
-        "finite_k_grid": list(selection.grid),
+        "finite_validation_nll": selection.validation_nll,
+        "finite_selected_validation_nll": selection.validation_nll[alpha][k],
+        "finite_k_grid": list(selection.k_grid),
         "finite_grid_extensions": selection.grid_extensions,
         "finite_k_hit_limit": selection.hit_limit,
         "finite_test_nll": hmm_conditional_nll(*_params(fit), split.fit, split.test),
@@ -420,6 +468,8 @@ def fit_hdp(
 class PorObraConfig:
     alphas: tuple = (0.1, 0.5, 1.0)
     k_grid: tuple = (2, 4, 8, 16, 32)
+    #: Seudoconteo de Dirichlet de Baum-Welch, elegido junto con K (Enmienda 5).
+    finite_alphas: tuple = (0.1, 0.5, 1.0)
     max_states: int = 512
     finite_seed: int = 0
     #: Inicializaciones de Baum-Welch por K (semillas finite_seed..+n−1); gana la de mayor
@@ -458,6 +508,7 @@ def analyze_work(work_id: str, tokens: Sequence[int], config: PorObraConfig) -> 
             tokens,
             split,
             grid=config.k_grid,
+            alphas=config.finite_alphas,
             seed=config.finite_seed,
             n_restarts=config.finite_restarts,
             max_states=config.max_states,
