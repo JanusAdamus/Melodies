@@ -6,13 +6,16 @@ Ejemplo (corrida principal de la Fase 2):
         --symbtr-root external/SymbTr --symbtr-n 100 --symbtr-seed 7 --n-workers 6
 
 Escribe en un directorio NUEVO ``<output-root>/<run-name>_<AAAAMMDD>_<commit7>`` (falla si
-existe): ``per_work.csv``, ``summary.json`` y ``manifest.json``.
+existe): ``per_work.csv``, ``summary.json`` y ``manifest.json``. El directorio se crea al
+empezar y cada obra terminada se agrega a ``per_work.partial.jsonl``: si la corrida se
+interrumpe, lo ya calculado queda en disco. Una obra que falla se registra en
+``analysis_failures`` del resumen y queda fuera de las comparaciones; las demás siguen.
 """
 
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 import hashlib
 import importlib.metadata
@@ -60,6 +63,15 @@ def _ints(text: str) -> tuple[int, ...]:
     return tuple(int(value) for value in text.split(","))
 
 
+def _min_events(text: str) -> int:
+    value = int(text)
+    if value < porobra.MIN_EVENTS:
+        raise argparse.ArgumentTypeError(
+            f"la partición del preregistro exige al menos {porobra.MIN_EVENTS} eventos por obra"
+        )
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Análisis por obra held-out: HDP-HMM contra finito, bigrama y unigrama.")
     parser.add_argument("--musetrainer-root", help="Carpeta de MuseTrainer (se usa completa).")
@@ -70,9 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", default=str(REPO_ROOT / "artifacts" / "outputs"))
     parser.add_argument("--run-name", default="porobra_heldout")
     parser.add_argument("--n-workers", type=int, default=1, help="Obras en paralelo (procesos).")
-    parser.add_argument("--min-events", type=int, default=porobra.MIN_EVENTS)
+    parser.add_argument("--min-events", type=_min_events, default=porobra.MIN_EVENTS, help="Mínimo 20 (preregistro).")
     parser.add_argument("--alphas", type=_floats, default=(0.1, 0.5, 1.0))
     parser.add_argument("--k-grid", type=_ints, default=(2, 4, 8, 16, 32))
+    parser.add_argument("--finite-alphas", type=_floats, default=(0.1, 0.5, 1.0), help="Seudoconteo de Baum-Welch (Enmienda 5).")
     parser.add_argument("--finite-restarts", type=int, default=5, help="Inicios de Baum-Welch por K (gana el de mayor log-verosimilitud).")
     parser.add_argument("--max-states", type=int, default=512, help="Techo de la ampliación de la rejilla del finito.")
     parser.add_argument("--etas", type=_floats, default=(1.0, 3.0, 6.0))
@@ -108,7 +121,36 @@ def _sha256(path: str | Path) -> str:
 
 
 def _analyze(item: tuple[str, list[int], porobra.PorObraConfig]) -> dict:
-    return porobra.analyze_work(*item)
+    """Analiza una obra; si falla, devuelve el error en lugar de propagarlo."""
+
+    try:
+        return porobra.analyze_work(*item)
+    except Exception as error:  # noqa: BLE001 - una obra no debe tumbar la corrida
+        return {"work_id": item[0], "error": f"{type(error).__name__}: {error}"}
+
+
+def _run_jobs(jobs: list, n_workers: int, partial_path: Path) -> list[dict]:
+    """Corre las obras y agrega cada resultado a ``partial_path`` en cuanto termina."""
+
+    results = []
+
+    def keep(result: dict) -> None:
+        results.append(result)
+        with partial_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(_jsonable(result), ensure_ascii=False) + "\n")
+
+    if n_workers > 1 and len(jobs) > 1:
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_analyze, job): job[0] for job in jobs}
+            for future in as_completed(futures):
+                try:
+                    keep(future.result())
+                except Exception as error:  # noqa: BLE001 - p. ej., un proceso que muere
+                    keep({"work_id": futures[future], "error": f"{type(error).__name__}: {error}"})
+    else:
+        for job in jobs:
+            keep(_analyze(job))
+    return sorted(results, key=lambda result: str(result["work_id"]))
 
 
 def _jsonable(value):
@@ -148,6 +190,7 @@ def main(argv: list[str] | None = None) -> Path:
     config = porobra.PorObraConfig(
         alphas=tuple(args.alphas),
         k_grid=tuple(args.k_grid),
+        finite_alphas=tuple(args.finite_alphas),
         max_states=args.max_states,
         finite_restarts=args.finite_restarts,
         etas=tuple(args.etas),
@@ -170,14 +213,14 @@ def main(argv: list[str] | None = None) -> Path:
         (row.work_id, [int(event.representative_pitch_class) for event in prepared.events[row.path]], config)
         for row in kept.itertuples()
     ]
-    if args.n_workers > 1 and len(jobs) > 1:
-        with ProcessPoolExecutor(max_workers=args.n_workers) as pool:
-            results = list(pool.map(_analyze, jobs))
-    else:
-        results = [_analyze(job) for job in jobs]
-
-    per_work = pd.DataFrame(results)
-    per_work = kept[["work_id", "source", "relative_path", "makam", "content_fingerprint"]].merge(per_work, on="work_id")
+    run_dir.mkdir(parents=True)
+    results = _run_jobs(jobs, args.n_workers, run_dir / "per_work.partial.jsonl")
+    analysis_failures = [result for result in results if "error" in result]
+    columns = ["work_id", "source", "relative_path", "makam", "content_fingerprint"]
+    per_work = pd.DataFrame([result for result in results if "error" not in result])
+    if per_work.empty:
+        raise SystemExit(f"Ninguna obra se pudo analizar; detalles en {run_dir / 'per_work.partial.jsonl'}.")
+    per_work = kept[columns].merge(per_work, on="work_id")
     for column in per_work.columns:
         if per_work[column].map(lambda value: isinstance(value, (dict, list))).any():
             per_work[column] = per_work[column].map(lambda value: json.dumps(_jsonable(value), sort_keys=True))
@@ -186,7 +229,7 @@ def main(argv: list[str] | None = None) -> Path:
                                  per_work["hdp_converged"])]
 
     summary = {
-        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmienda 3",
+        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3 y 5",
         "corpus": {
             "extraction": EXTRACTION,
             "n_candidates": int(len(catalog)),
@@ -198,14 +241,17 @@ def main(argv: list[str] | None = None) -> Path:
             "min_events": int(args.min_events),
             "n_excluded_short": int(len(short)),
             "excluded_short_works": short[["path", "n_events"]].to_dict("records"),
+            "n_analysis_failures": len(analysis_failures),
             "n_analyzed": int(len(per_work)),
             "n_by_source_analyzed": _distribution(per_work["source"]) if len(per_work) else {},
         },
+        "analysis_failures": analysis_failures,
         "convergence": porobra.convergence_summary(records),
         "comparisons": porobra.compare_hdp(records, bootstrap_samples=args.bootstrap_samples, seed=args.stats_seed),
         "selected_hyperparameters": {
             "hdp_eta": _distribution(per_work["hdp_eta"]) if len(per_work) else {},
             "finite_k": _distribution(per_work["finite_k"]) if len(per_work) else {},
+            "finite_alpha": _distribution(per_work["finite_alpha"]) if len(per_work) else {},
             "finite_k_hit_limit": per_work.loc[per_work["finite_k_hit_limit"], "work_id"].tolist() if len(per_work) else [],
             "unigram_alpha": _distribution(per_work["unigram_alpha"]) if len(per_work) else {},
             "bigram_alpha": _distribution(per_work["bigram_alpha"]) if len(per_work) else {},
@@ -213,7 +259,6 @@ def main(argv: list[str] | None = None) -> Path:
         "wall_clock_s": None,
     }
 
-    run_dir.mkdir(parents=True)
     per_work.to_csv(run_dir / "per_work.csv", index=False)
     summary["wall_clock_s"] = round(time.perf_counter() - started, 1)
     (run_dir / "summary.json").write_text(json.dumps(_jsonable(summary), indent=2, ensure_ascii=False), encoding="utf-8")
@@ -248,6 +293,8 @@ def main(argv: list[str] | None = None) -> Path:
     }
     (run_dir / "manifest.json").write_text(json.dumps(_jsonable(manifest), indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Corrida escrita en {run_dir} ({summary['wall_clock_s']} s, {len(per_work)} obras).")
+    if analysis_failures:
+        print(f"AVISO: {len(analysis_failures)} obra(s) fallaron en el análisis; ver analysis_failures en summary.json.")
     if summary["convergence"]["exceeds_10_percent"]:
         print("AVISO: " + summary["convergence"]["action_required"])
     return run_dir
