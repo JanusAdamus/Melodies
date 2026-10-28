@@ -139,3 +139,22 @@ seleccionado entre sus corridas en frac = 1.0 (tolerancia relativa de 10 %).
 Dos modelos cuyos intervalos se traslapan empatan en costo. El tiempo de
 evaluación se reporta y no decide. Implementado como
 `PARETO_TIME_RELATIVE_TOLERANCE = 0.10` en `Comparacion/runner.py`.
+
+## Enmienda 5, 2026-10-28 (antes de ver resultados de las corridas corregidas)
+
+Decisión de Adrián. Agrega a la sección A un hiperparámetro del HMM finito que el
+texto original no fijaba.
+
+**Suavizado de Dirichlet del HMM finito (análisis por obra).** Las emisiones y las
+transiciones de Baum-Welch se estiman con un seudoconteo α elegido por obra en la
+validación interna de {0.1, 0.5, 1}, junto con K (selección conjunta de (K, α) por
+menor NLL de validación), con el mismo procedimiento que el α de los n-gramas y el η
+del HDP-HMM; se reporta el α elegido por obra. La regla de ampliar la rejilla de K
+cuando se elige el máximo se mantiene.
+Motivo, medido en una corrida de tiempos de 5 obras de MuseTrainer (sólo cifras de
+validación): con el seudoconteo fijo de 0.001, una altura de la validación ausente
+en el ajuste (Minueto BWV Anh. 114: do#, 4 de 21 eventos) recibe probabilidad casi
+nula, la NLL de validación de K ∈ {2, 4, 8, 16} queda en 3.96–4.70 nats (peor que el
+uniforme, 2.485) y la rejilla se amplía hasta K = 512 con 80 eventos de ajuste,
+porque los estados sin uso funcionan como suavizado. Con α ∈ {0.1, 0.5, 1} se elige
+K entre 8 y 16 con NLL de 2.35–2.40. La comparación PDMX (sección B) no cambia.
