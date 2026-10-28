@@ -59,6 +59,10 @@ def matrix_to_dataframe(matrix: np.ndarray, row_labels: list[str], col_labels: l
     return pd.DataFrame(matrix, index=row_labels, columns=col_labels)
 
 
+#: Nombre del eje de las tablas del HDP restringidas a `result.active_states`.
+REFERENCE_SAMPLE_AXIS = "reference_sample_state"
+
+
 def active_submatrix(matrix: np.ndarray, active_states: list[int]) -> np.ndarray:
     return matrix[np.ix_(active_states, active_states)]
 
@@ -97,6 +101,7 @@ def summarize_hdp_result(result: HDPHMMResult) -> pd.DataFrame:
             "metric": [
                 "log_likelihood",
                 "n_active_states",
+                "n_reference_states",
                 "n_segments",
                 "mean_segment_length",
                 "trajectory_stability",
@@ -105,6 +110,8 @@ def summarize_hdp_result(result: HDPHMMResult) -> pd.DataFrame:
             "value": [
                 result.log_likelihood,
                 result.effective_states,
+                # Estados distintos de la muestra de referencia, sin umbral de ocupación.
+                len(result.active_states),
                 segmentation["n_segments"],
                 segmentation["mean_segment_length"],
                 stability,
@@ -231,6 +238,15 @@ def build_hdp_tables(
     )
     state_labels = [f"z{index}" for index in range(result.posterior_transition_mean.shape[0])]
     active_labels = [f"z{state}" for state in result.active_states]
+    # Los estados de esta matriz son los de la muestra de referencia (sin umbral), no
+    # los que cuenta 'n_active_states'; el eje lo dice.
+    transition_active = matrix_to_dataframe(
+        active_submatrix(result.posterior_transition_mean, result.active_states),
+        active_labels,
+        active_labels,
+    )
+    transition_active.index.name = REFERENCE_SAMPLE_AXIS
+    transition_active.columns.name = REFERENCE_SAMPLE_AXIS
     tables = {
         "observations": observations_df,
         "latent_sequence": sequence_df,
@@ -240,11 +256,7 @@ def build_hdp_tables(
             state_labels,
             state_labels,
         ),
-        "transition_matrix_active": matrix_to_dataframe(
-            active_submatrix(result.posterior_transition_mean, result.active_states),
-            active_labels,
-            active_labels,
-        ),
+        "transition_matrix_active": transition_active,
         "emission_matrix_full": matrix_to_dataframe(
             result.posterior_emission_mean,
             state_labels,

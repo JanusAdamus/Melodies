@@ -61,7 +61,12 @@ def interpret_hdp_states(
     top_n_emissions: int = 5,
     top_n_successors: int = 3,
 ) -> pd.DataFrame:
-    """Genera un resumen musical interpretable para estados activos."""
+    """Resumen musical de los estados de la muestra de referencia (`result.active_states`).
+
+    Son los estados distintos de esa muestra, sin umbral de ocupación; `reference_share`
+    es su fracción de eventos en ella. El número de estados que reporta el modelo es
+    `effective_states` (ocupación >= 2 %, media posterior), no el número de filas.
+    """
 
     posterior_transition = result.posterior_transition_mean
     posterior_emission = result.posterior_emission_mean
@@ -88,6 +93,7 @@ def interpret_hdp_states(
                 "state": state,
                 "label": f"z{state}",
                 "occupation": int(len(positions)),
+                "reference_share": len(positions) / result.latent_states.size,
                 "mean_dwell": float(np.mean(segment_lengths)) if segment_lengths else 0.0,
                 "median_dwell": float(np.median(segment_lengths)) if segment_lengths else 0.0,
                 "top_emissions": _top_items(emission_probs, result.observations.vocabulary, top_n_emissions),

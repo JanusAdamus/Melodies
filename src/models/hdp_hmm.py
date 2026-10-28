@@ -279,6 +279,8 @@ class HDPHMMResult:
     """Resultado resumido del HDP-HMM truncado."""
 
     latent_states: np.ndarray
+    #: Estados distintos de la muestra de referencia (`latent_states`), sin umbral de
+    #: ocupación. No es el estimando del preregistro: ese es `effective_states`.
     active_states: list[int]
     beta: np.ndarray
     initial_probs: np.ndarray
@@ -307,6 +309,7 @@ class HDPHMMResult:
                 "metric": [
                     "log_likelihood",
                     "n_active_states",
+                    "n_reference_states",
                     "K_truncation",
                     "n_observations",
                     "beta_update_mode",
@@ -314,6 +317,8 @@ class HDPHMMResult:
                 "value": [
                     self.log_likelihood,
                     self.effective_states,
+                    # Estados distintos de la muestra de referencia, sin umbral.
+                    len(self.active_states),
                     self.transition_matrix.shape[0],
                     self.observations.size,
                     self.diagnostics.beta_update_mode,
