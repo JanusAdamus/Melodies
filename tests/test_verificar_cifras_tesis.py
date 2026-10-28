@@ -98,6 +98,8 @@ def test_display_math_ignores_only_lone_digit_constants(ver):
         ("El transformador es 37x más lento y tarda 120ms con 12GB.\n", ["37", "120", "12"]),
         # (g) «37 pt» en prosa no es una longitud
         ("El HDP gana por 37 pt sobre el finito y por 2pt más (o 5cm).\n", ["37", "2", "5"]),
+        # un decimal en un exponente o subíndice se lee; los índices enteros no
+        ("La NLL baja a $9.876^{}$ y luego $e^{-0.437}$ con $x_{t-1}^{2}$ y $y_{0.5}$.\n", ["9.876", "-0.437", "0.5"]),
         # (h) display
         ("La diferencia es\n\\[ \\Delta_{\\mathrm{NLL}} = -0.437 \\]\nnats.\n", ["-0.437"]),
         ("\\begin{equation}\\Delta = -0.437\\end{equation}\n", ["-0.437"]),
