@@ -232,8 +232,13 @@ def test_hdp_por_obra_elige_eta_y_reporta_rhat_y_estados():
     assert math.isfinite(result["hdp_test_nll"]) and result["hdp_test_nll"] > 0
     assert math.isfinite(result["hdp_rhat"])
     assert result["hdp_converged"] == (result["hdp_rhat"] < 1.1)
-    assert 1.0 <= result["hdp_states_mean"] <= 6.0
-    assert result["hdp_states_sd"] >= 0.0
+    # Enmienda 6, punto 4: los estados del HDP se reportan por cadena; el agregado de todas
+    # las cadenas lleva otro nombre para no leerse como una media posterior junto al finito.
+    assert "hdp_states_mean" not in result and "hdp_states_sd" not in result
+    assert 1.0 <= result["hdp_states_pooled_chains_mean"] <= 6.0
+    assert result["hdp_states_pooled_chains_sd"] >= 0.0
+    keys = list(result)
+    assert keys.index("hdp_states_mean_by_chain") < keys.index("hdp_states_pooled_chains_mean")
     assert math.isfinite(result["hdp_insample_ll_per_note"])
 
 
@@ -371,9 +376,37 @@ def test_estimando_que_decide_es_la_media_por_obra_no_la_ponderada():
     assert comparison["decision_estimand"] == "mean_over_works_of_work_nll_difference"
 
 
-def test_menos_de_diez_obras_no_decide():
-    result = porobra.compare_hdp(_rows(5, -0.5), bootstrap_samples=200, seed=0)
+def test_el_minimo_de_diez_obras_de_la_enmienda_1_no_rige_la_seccion_a():
+    # La Enmienda 1 fija 10 obras pareadas sólo para la frontera de Pareto (sección B).
+    # En A se compara con las obras que haya y se reporta n.
+    result = porobra.compare_hdp(_rows(5, -0.5), bootstrap_samples=500, seed=0)
+    for comparison in result["comparisons"]:
+        assert comparison["n_pairs"] == 5
+        assert comparison["work_mean_holm_status"] == "ok"
+        assert comparison["wilcoxon_holm_status"] == "ok" and comparison["p_value_holm"] is not None
+        assert comparison["token_weighted_holm_status"] == "ok"
+        assert comparison["verdict"] == "mejora"
+    assert result["min_paired_works"] == 2
+    assert result["holm_family"]["work_mean_ci"]["min_paired_works"] == 2
+    assert result["holm_family"]["work_mean_ci"]["n_evaluable"] == 3
+
+
+def test_la_sensibilidad_con_pocas_obras_tambien_se_evalua():
+    rows = _rows(6, -0.5) + _rows(20, -0.5, converged=False)
+    for index, row in enumerate(rows[6:]):
+        row["work_id"] = f"nc{index}"
+    sensitivity = porobra.compare_hdp(rows, bootstrap_samples=500, seed=0, converged_only=True)
+    assert sensitivity["n_works"] == 6
+    assert {c["verdict"] for c in sensitivity["comparisons"]} == {"mejora"}
+
+
+def test_con_una_sola_obra_no_es_evaluable():
+    result = porobra.compare_hdp(_rows(1, -0.5), bootstrap_samples=200, seed=0)
+    assert result["n_works"] == 1
     assert {c["verdict"] for c in result["comparisons"]} == {"no_evaluable"}
+    assert {c["work_mean_holm_status"] for c in result["comparisons"]} == {"too_few_paired_works"}
+    empty = porobra.compare_hdp([], bootstrap_samples=200, seed=0)
+    assert empty["n_works"] == 0 and {c["verdict"] for c in empty["comparisons"]} == {"no_evaluable"}
 
 
 # --- resumen -------------------------------------------------------------------------

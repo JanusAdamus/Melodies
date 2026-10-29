@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import shutil
 
 import pandas as pd
 import pytest
 
 from next_token_experiment.tests.test_pipeline import write_scale_score
+from src.analysis import porobra
 from src.cli import porobra_heldout
 
 FAST = ["--truncation", "4", "--chains", "2", "--iters", "8", "--burn-in", "4", "--k-grid", "2,4",
@@ -52,8 +54,16 @@ def test_corrida_escribe_directorio_nuevo_con_csv_resumen_y_manifiesto(corpus, t
     assert set(works["source"]) == {"MuseTrainer", "SymbTr"}
     for column in ("hdp_test_nll", "finite_test_nll", "bigram_test_nll", "unigram_test_nll", "hdp_eta",
                    "finite_k", "unigram_alpha", "bigram_alpha", "hdp_rhat", "hdp_converged",
-                   "hdp_states_mean", "finite_states_mean"):
+                   "hdp_states_pooled_chains_mean", "finite_states_mean"):
         assert column in works.columns
+    # Enmienda 6, punto 4: nada de «hdp_states_mean» junto a finite_states_mean; las
+    # columnas por cadena van primero y la advertencia viaja con la corrida.
+    assert not {"hdp_states_mean", "hdp_states_sd"} & set(works.columns)
+    columns = list(works.columns)
+    assert columns.index("hdp_states_mean_by_chain") < columns.index("hdp_states_pooled_chains_mean")
+    assert columns.index("hdp_states_sd_by_chain") < columns.index("hdp_states_pooled_chains_mean")
+    readme = (run_dir / "README.txt").read_text(encoding="utf-8")
+    assert porobra.HDP_STATES_NOTE in readme and "hdp_states_pooled_chains_mean" in readme
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["corpus"]["n_excluded_short"] == 1
     assert summary["corpus"]["excluded_short_works"][0]["n_events"] == 12
@@ -85,7 +95,36 @@ def test_corrida_escribe_directorio_nuevo_con_csv_resumen_y_manifiesto(corpus, t
     assert len(manifest["inputs"]["files"]) == 7  # 5 de MuseTrainer + 2 de la muestra de SymbTr
     assert all(len(item["sha256"]) == 64 for item in manifest["inputs"]["files"])
     assert "numpy" in manifest["versions"] and "music21" in manifest["versions"]
-    assert set(manifest["outputs"]) == {"per_work.csv", "summary.json"}
+    assert set(manifest["outputs"]) == {"per_work.csv", "summary.json", "README.txt"}
+
+
+def test_el_hash_de_las_entradas_no_depende_de_la_ruta_local(corpus, tmp_path):
+    # Las rutas del manifiesto son relativas a la raíz de cada corpus (criterio de 88833f6,
+    # Comparacion/corpus_fingerprint.py): el mismo corpus en otra carpeta da el mismo hash.
+    moved = tmp_path / "otra" / "maquina"
+    shutil.copytree(corpus["library"], moved / "library")
+    shutil.copytree(corpus["symbtr"], moved / "SymbTr")
+    first = json.loads((_run(corpus, tmp_path / "a", "--n-workers", "1") / "manifest.json").read_text(encoding="utf-8"))
+    second = json.loads((_run({"library": moved / "library", "symbtr": moved / "SymbTr"}, tmp_path / "b", "--n-workers", "1")
+                         / "manifest.json").read_text(encoding="utf-8"))
+    files = first["inputs"]["files"]
+    assert files == second["inputs"]["files"]
+    assert first["inputs"]["aggregate_sha256"] == second["inputs"]["aggregate_sha256"]
+    assert {item["source"] for item in files} == {"MuseTrainer", "SymbTr"}
+    assert {item["path"] for item in files if item["source"] == "MuseTrainer"} == {
+        "a.musicxml", "b.musicxml", "b_copia.musicxml", "corta.musicxml", "rota.musicxml"}
+    assert not any(Path(item["path"]).is_absolute() or str(tmp_path.as_posix()) in item["path"] for item in files)
+
+
+def test_el_catalogo_se_ordena_por_ruta_relativa_posix_con_mayusculas(tmp_path):
+    # sorted(Path) no distingue mayúsculas en Windows; la cadena POSIX sí, igual en Linux.
+    library = tmp_path / "library"
+    (library / "sub").mkdir(parents=True)
+    for name in ("a.musicxml", "B.musicxml", "sub/C.musicxml"):
+        write_scale_score(library / name, name, "X", _melody(1, 24))
+    args = porobra_heldout.build_parser().parse_args(["--musetrainer-root", str(library)])
+    catalog = porobra_heldout._catalog(args)
+    assert list(catalog["relative_path"]) == ["B.musicxml", "a.musicxml", "sub/C.musicxml"]
 
 
 def test_no_sobrescribe_una_corrida_existente(corpus, tmp_path):

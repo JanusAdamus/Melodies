@@ -40,21 +40,38 @@ def _check(audit: dict, name: str) -> dict:
     return check
 
 
-def _as_preregistered(run_dir: Path, tmp_path: Path, monkeypatch, **overrides) -> Path:
-    """Copia la corrida con la configuración de la sección A en el manifiesto.
+def _as_preregistered(run_dir: Path, tmp_path: Path, monkeypatch, *, principal_truncation=None, **overrides) -> Path:
+    """Copia la corrida y toma su configuración real como la «preregistrada».
 
-    El manifiesto no está entre los ``outputs`` con hash, así que editarlo no rompe los
-    demás controles; el tamaño del corpus esperado se ajusta al del corpus de prueba.
+    Así el manifiesto, su ``command`` y el resumen siguen siendo los de una corrida real y
+    coherentes entre sí (la auditoría los compara); ``overrides`` edita sólo
+    ``manifest["config"]``. El truncamiento de la corrida cuenta como el principal salvo
+    que ``principal_truncation`` diga otro; el tamaño del corpus, el del corpus de prueba.
     """
 
     copy = _copy(run_dir, tmp_path)
     summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
     monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS", dict(summary["corpus"]["n_by_source_candidates"]))
     manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
-    manifest["config"].update({**porobra_audit.PREREGISTERED_CONFIG, "truncation": 20, **overrides})
+    config = manifest["config"]
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CONFIG", {
+        key: value for key, value in config.items() if key not in (*porobra_audit.UNCHECKED_CONFIG_KEYS, "truncation")})
+    truncation = config["truncation"] if principal_truncation is None else principal_truncation
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_TRUNCATION",
+                        {truncation: "principal", 40: "sensibilidad_truncamiento_40"})
+    config.update(overrides)
     manifest["dirty_worktree"] = False
     (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return copy
+
+
+def _rewrite_summary(copy: Path, summary: dict) -> None:
+    """Reescribe summary.json y actualiza su hash: sólo el recálculo puede detectarlo."""
+
+    (copy / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["outputs"]["summary.json"] = hashlib.sha256((copy / "summary.json").read_bytes()).hexdigest()
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def _rewrite_per_work(copy: Path, works: pd.DataFrame) -> None:
@@ -97,16 +114,67 @@ def test_con_la_configuracion_de_la_seccion_a_la_corrida_es_confirmatoria(run_di
     assert porobra_audit.main([str(copy), "--require-preregistered"]) == 0
 
 
-def test_truncamiento_40_es_la_sensibilidad_preregistrada(run_dir, tmp_path, monkeypatch):
-    copy = _as_preregistered(run_dir, tmp_path, monkeypatch, truncation=40)
+def test_las_constantes_de_truncamiento_son_las_del_preregistro():
+    assert porobra_audit.PREREGISTERED_TRUNCATION == {20: "principal", 40: "sensibilidad_truncamiento_40"}
+
+
+def test_truncamiento_40_es_la_sensibilidad_y_no_la_confirmatoria(corpus, tmp_path, monkeypatch):  # noqa: F811
+    # Una corrida real con --truncation 40: su command, su config y su resumen coinciden.
+    sensitivity = _run(corpus, tmp_path / "t40", "--n-workers", "1", "--truncation", "40")
+    copy = _as_preregistered(sensitivity, tmp_path, monkeypatch, principal_truncation=20)
     audit = porobra_audit.audit_run_directory(copy)
-    assert audit["preregistration"]["status"] == "preregistered"
-    assert audit["preregistration"]["run_kind"] == "sensibilidad_truncamiento_40"
+    assert audit["status"] == "passed", audit
+    preregistration = audit["preregistration"]
+    assert preregistration["status"] == "preregistered", preregistration
+    assert preregistration["run_kind"] == "sensibilidad_truncamiento_40"
+    # Es la sensibilidad preregistrada, no la corrida confirmatoria.
+    assert audit["confirmatory"] is False
+    assert porobra_audit.main([str(copy), "--require-preregistered"]) == 1
+    assert porobra_audit.main([str(copy)]) == 0
+
+
+def test_config_que_no_coincide_con_el_comando_real_no_pasa(run_dir, tmp_path, monkeypatch):
+    # El manifiesto dice 400 iteraciones, pero el argv real de la corrida pidió 8.
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    monkeypatch.setitem(porobra_audit.PREREGISTERED_CONFIG, "n_iters", 400)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["config"]["n_iters"] = 400
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    audit = porobra_audit.audit_run_directory(copy)
+    deviations = audit["preregistration"]["deviations"]
+    assert set(deviations) == {"command"}, deviations
+    assert deviations["command"]["observed"] == {"n_iters": 8}
+    assert deviations["command"]["expected"] == {"n_iters": 400}
+    assert audit["confirmatory"] is False
+
+
+def test_un_comando_ilegible_no_pasa(run_dir, tmp_path, monkeypatch):
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["command"] = manifest["command"][:3] + ["--opcion-que-no-existe"]
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert "command" in porobra_audit.audit_run_directory(copy)["preregistration"]["deviations"]
+
+
+def test_config_que_no_coincide_con_el_resumen_no_pasa(run_dir, tmp_path, monkeypatch):
+    # Config y comando dicen 10 000 remuestreos; el resumen se calculó con 200.
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    monkeypatch.setitem(porobra_audit.PREREGISTERED_CONFIG, "bootstrap_samples", 10_000)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["config"]["bootstrap_samples"] = 10_000
+    command = manifest["command"]
+    command[command.index("--bootstrap-samples") + 1] = "10000"
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    audit = porobra_audit.audit_run_directory(copy)
+    deviations = audit["preregistration"]["deviations"]
+    assert set(deviations) == {"summary"}, deviations
+    assert "comparisons.bootstrap_samples" in deviations["summary"]["observed"]
+    assert audit["confirmatory"] is False
 
 
 @pytest.mark.parametrize("overrides", [
-    {"n_iters": 40}, {"bootstrap_samples": 500}, {"k_grid": [2, 4]}, {"musetrainer_limit": 3},
-    {"symbtr_n": 0}, {"symbtr_seed": 8}, {"n_chains": 2, "chain_seeds": [1, 2]}, {"etas": [1.0]},
+    {"n_iters": 40}, {"bootstrap_samples": 500}, {"k_grid": [2, 4, 8]}, {"musetrainer_limit": 3},
+    {"symbtr_n": 0}, {"symbtr_seed": 8}, {"n_chains": 3, "chain_seeds": [1, 2, 3]}, {"etas": [1.0]},
     {"min_events": 25}, {"finite_alphas": [0.1]}, {"alphas": [1.0]}, {"burn_in": 100}, {"truncation": 30},
     # Flags del CLI y semillas que también cambian la corrida (ronda 3 de revisión).
     {"max_states": 32}, {"finite_restarts": 1}, {"n_occupancy_samples": 1}, {"stats_seed": 99},
@@ -191,6 +259,54 @@ def test_un_csv_alterado_no_pasa_hashes_ni_recalculo(run_dir, tmp_path):
     assert _check(audit, "headline_recompute")["status"] == "failed"
 
 
+def _flip_interval(interval):
+    return [interval[0] - 1.0, interval[1] + 1.0]
+
+
+#: Ediciones del resumen en lo que decide; cada una deja el hash al día.
+SUMMARY_EDITS = {
+    "decision_ci": lambda s: s["comparisons"]["comparisons"][0].update(
+        work_mean_holm_decision_ci=_flip_interval(s["comparisons"]["comparisons"][0]["work_mean_holm_decision_ci"])),
+    "rejects_zero": lambda s: s["comparisons"]["comparisons"][1].update(
+        work_mean_holm_rejects_zero=not s["comparisons"]["comparisons"][1]["work_mean_holm_rejects_zero"]),
+    "verdict": lambda s: s["comparisons"]["comparisons"][2].update(verdict="mejora"
+        if s["comparisons"]["comparisons"][2]["verdict"] != "mejora" else "no_hay_evidencia"),
+    "bootstrap_95_ci": lambda s: s["comparisons"]["comparisons"][0].update(
+        bootstrap_95_ci=_flip_interval(s["comparisons"]["comparisons"][0]["bootstrap_95_ci"])),
+    "token_weighted": lambda s: s["comparisons"]["comparisons"][0].update(
+        token_weighted_difference=s["comparisons"]["comparisons"][0]["token_weighted_difference"] + 0.1),
+    "wilcoxon_holm": lambda s: s["comparisons"]["comparisons"][0].update(
+        p_value_holm=(s["comparisons"]["comparisons"][0]["p_value_holm"] or 0.5) / 2),
+    "sensitivity_verdict": lambda s: s["sensitivity_without_exposed"]["comparisons"][0].update(verdict="mejora"
+        if s["sensitivity_without_exposed"]["comparisons"][0]["verdict"] != "mejora" else "no_hay_evidencia"),
+    "fraction_converged": lambda s: s["convergence"].update(fraction_converged=0.123),
+    "not_converged_ids": lambda s: s["convergence"].update(not_converged_work_ids=["otra"]),
+    "bootstrap_samples": lambda s: s["comparisons"].update(bootstrap_samples=201),
+    "exposed_removed": lambda s: s["test_exposure"].update(exposed_work_ids=[]),
+}
+
+
+def test_el_recalculo_reproduce_exacto_lo_que_decide(run_dir):
+    # Con la misma semilla, recalcular desde per_work.csv da el resumen bit a bit.
+    check = _check(porobra_audit.audit_run_directory(run_dir), "headline_recompute")
+    assert check["status"] == "passed" and check["mismatches"] == []
+    assert set(check["recomputed_blocks"]) == {"comparisons", "sensitivity_converged_only",
+                                               "sensitivity_without_exposed", "convergence"}
+
+
+@pytest.mark.parametrize("edit", sorted(SUMMARY_EDITS))
+def test_un_resumen_editado_falla_el_recalculo(run_dir, tmp_path, edit):
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    SUMMARY_EDITS[edit](summary)
+    _rewrite_summary(copy, summary)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert _check(audit, "manifest_hashes")["status"] == "passed"
+    check = _check(audit, "headline_recompute")
+    assert check["status"] == "failed" and check["mismatches"], check
+    assert audit["status"] == "failed"
+
+
 def test_denominador_y_huella_duplicada_se_detectan(run_dir, tmp_path):
     copy = _copy(run_dir, tmp_path)
     works = pd.read_csv(copy / "per_work.csv")
@@ -230,20 +346,25 @@ def test_una_obra_que_falla_deja_la_auditoria_en_failed(corpus, tmp_path, monkey
 # --- obras con la prueba expuesta ----------------------------------------------------
 
 
-def test_las_obras_expuestas_son_las_de_la_aclaracion_7_y_passacaglia():
-    aclaracion_7 = (
+def test_las_obras_expuestas_son_las_seis_de_la_aclaracion_8():
+    timing_runs = (
         "MuseTrainer:12_Variations_of_Twinkle_Twinkle_Little_Star.mxl",
         "MuseTrainer:Arabesque_L._66_No._1_in_E_Major.mxl",
         "MuseTrainer:Ave_Maria_D839_-_Schubert_-_Solo_Piano_Arrg..mxl",
         "MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl",
         "MuseTrainer:Bach_Toccata_and_Fugue_in_D_Minor_Piano_solo.mxl",
     )
-    # La revisión de la ronda 1 de la tarea 1.4 calculó (y la de la ronda 3 imprimió) la
-    # NLL de prueba de Passacaglia, que también está en el corpus de la corrida definitiva.
-    assert porobra.TEST_EXPOSED_WORK_IDS == aclaracion_7 + ("MuseTrainer:Passacaglia.mxl",)
+    # La Aclaración 8 (9117caf) registra las seis: las cinco de las corridas de tiempos de
+    # la Aclaración 7 y Passacaglia, cuya NLL de prueba calculó e imprimió la revisión 1.4.
+    assert porobra.TEST_EXPOSED_WORK_IDS == timing_runs + ("MuseTrainer:Passacaglia.mxl",)
     assert set(porobra.TEST_EXPOSED_WORKS) == set(porobra.TEST_EXPOSED_WORK_IDS)
-    assert all("Aclaración 7" in porobra.TEST_EXPOSED_WORKS[work] for work in aclaracion_7)
+    assert all(reason.startswith("Aclaración 8") for reason in porobra.TEST_EXPOSED_WORKS.values())
+    assert all("Aclaración 7" in porobra.TEST_EXPOSED_WORKS[work] for work in timing_runs)
     assert "Aclaración 7" not in porobra.TEST_EXPOSED_WORKS["MuseTrainer:Passacaglia.mxl"]
+    assert "sin leerse" in porobra.TEST_EXPOSED_WORKS["MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl"]
+    assert "ff9f998" in porobra.TEST_EXPOSED_WORKS["MuseTrainer:Arabesque_L._66_No._1_in_E_Major.mxl"]
+    for text in (porobra.TEST_EXPOSURE_NOTE, *porobra.TEST_EXPOSED_WORKS.values()):
+        assert "propuesta" not in text and "pendiente" not in text, text
 
 
 def _rows(n: int) -> list[dict]:
@@ -269,12 +390,14 @@ def test_el_resumen_divulga_la_exposicion_y_repite_sin_esas_obras(corpus, tmp_pa
     assert exposure["exposed_work_ids"] == ["MuseTrainer:a.musicxml", "MuseTrainer:no_esta.mxl"]
     assert exposure["exposed_works"] == exposed
     assert exposure["exposed_in_run"] == ["MuseTrainer:a.musicxml"]
-    # La sensibilidad sin las obras expuestas no está en el preregistro: es una propuesta
-    # de la revisión que Adrián confirma o descarta, y nunca decide.
-    assert "Aclaración 8" not in json.dumps(summary, ensure_ascii=False)
-    assert "Aclaración 7" in exposure["note"] and "no decide" in exposure["note"]
-    assert "Adrián" in exposure["note"]
+    # La Aclaración 8 registra la exposición y el análisis adicional sin esas obras, que no decide.
+    assert "Aclaración 8" in exposure["note"] and "no decide" in exposure["note"]
+    assert "propuesta" not in exposure["note"] and "pendiente" not in exposure["note"]
     without = summary["sensitivity_without_exposed"]
     assert without["n_works"] == summary["comparisons"]["n_works"] - 1
     assert without["excluded_work_ids"] == ["MuseTrainer:a.musicxml"]
-    assert summary["preregistro"].endswith("Enmiendas 3, 5 y 6, Aclaración 7")
+    assert summary["preregistro"].endswith("Enmiendas 3, 5 y 6, Aclaraciones 7 y 8")
+    assert "Aclaración 8" in without["rule"] and "no decide" in without["rule"]
+    # El recálculo de la auditoría usa la misma lista de obras expuestas.
+    audit = json.loads((run_dir / porobra_audit.AUDIT_FILENAME).read_text(encoding="utf-8"))
+    assert _check(audit, "headline_recompute")["status"] == "passed", audit
