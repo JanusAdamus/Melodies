@@ -3,18 +3,24 @@
 Las auditorías de ``Comparacion/`` entienden los archivos del runner PDMX; esta revisa los
 de la corrida por obra: archivos presentes, hashes del manifiesto, denominadores de la
 partición 80/20, conteo del corpus, unicidad de obras y huellas de contenido, recálculo de
-las cifras titulares desde ``per_work.csv``, obras que fallaron en el análisis y que la
-configuración del manifiesto sea la de la sección A del preregistro (si no lo es, el estado
-es ``not_preregistered`` y ``deviations`` dice qué cambió: un smoke nunca sale ``passed``).
+las cifras titulares desde ``per_work.csv`` y obras que fallaron en el análisis. Eso es la
+integridad: ``status`` es ``passed``, ``incomplete`` o ``failed``.
 
-    python -m src.analysis.porobra_audit <directorio de la corrida>
+Aparte, ``preregistration`` dice si la configuración del manifiesto es la de la sección A
+del preregistro (``preregistered``) o no (``not_preregistered``, con ``deviations``: qué
+cambió), incluida la regla de ampliar la rejilla del finito. Un smoke íntegro sale
+``passed`` y ``not_preregistered``; ``confirmatory`` sólo es verdadero con las dos.
 
-imprime el JSON y sale con 0 sólo si el estado es ``passed``. El CLI escribe el mismo
-resultado en ``porobra_audit.json`` al terminar; esta función nunca escribe.
+    python -m src.analysis.porobra_audit <directorio de la corrida> [--require-preregistered]
+
+imprime el JSON y sale con 0 si la corrida es íntegra (con ``--require-preregistered``, si
+además es la configuración de la sección A). El CLI escribe el mismo resultado en
+``porobra_audit.json`` al terminar; esta función nunca escribe.
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
@@ -29,12 +35,19 @@ from src.analysis import porobra
 AUDIT_FILENAME = "porobra_audit.json"
 REQUIRED_ARTIFACTS = ("per_work.csv", "summary.json", "manifest.json")
 TOLERANCE = 1e-9
-#: «not_preregistered»: la corrida es íntegra pero su configuración no es la de la sección A
-#: (p. ej., un smoke). Sólo «passed» habilita reportar la corrida como la confirmatoria.
-_STATUS_ORDER = {"passed": 0, "not_preregistered": 1, "incomplete": 2, "failed": 3}
+_STATUS_ORDER = {"passed": 0, "incomplete": 1, "failed": 2}
 
 #: Sección A del preregistro (más Enmiendas 3 y 5), tal como la escribe ``manifest["config"]``.
+#: Las claves de implementación que el preregistro no fija (techo de la rejilla, inicios de
+#: Baum-Welch, trayectorias FFBS, semillas, hiperparámetros del HDP fuera de η) quedan con
+#: los valores registrados en la bitácora: cambiarlas cambia la corrida.
 PREREGISTERED_CONFIG = {
+    "max_states": 512,
+    "finite_seed": 0,
+    "finite_restarts": 5,
+    "n_occupancy_samples": 200,
+    "hdp_hyperparameters": {"alpha": 8.0, "alpha0": 4.0, "gamma": 2.0, "kappa": 0.0},
+    "stats_seed": 0,
     "alphas": [0.1, 0.5, 1.0],
     "k_grid": [2, 4, 8, 16, 32],
     "finite_alphas": [0.1, 0.5, 1.0],
@@ -52,6 +65,9 @@ PREREGISTERED_CONFIG = {
     "symbtr_seed": 7,
     "bootstrap_samples": 10_000,
 }
+#: Claves del manifiesto que no cambian los resultados. Cualquier otra clave que no esté en
+#: PREREGISTERED_CONFIG (ni sea «truncation») es una desviación: un flag nuevo no pasa solo.
+UNCHECKED_CONFIG_KEYS = ("n_workers",)
 #: Truncamiento del HDP: 20 es la corrida principal; 40, la sensibilidad preregistrada.
 PREREGISTERED_TRUNCATION = {20: "principal", 40: "sensibilidad_truncamiento_40"}
 #: Candidatos por fuente: MuseTrainer completo (69 partituras) y la muestra de 100 de SymbTr.
@@ -149,10 +165,32 @@ def _same(observed, expected) -> bool:
     return observed == expected
 
 
-def _preregistered_config(manifest: dict, summary: dict) -> dict:
+def _same_dict(observed, expected: dict) -> bool:
+    return isinstance(observed, dict) and set(observed) == set(expected) and all(
+        _same(observed[key], value) for key, value in expected.items())
+
+
+def _hit_limit(works: pd.DataFrame) -> list[str]:
+    if "finite_k_hit_limit" not in works:
+        return []
+    hit = works["finite_k_hit_limit"].astype(str).str.lower().isin(("true", "1"))
+    return sorted(works.loc[hit, "work_id"].astype(str))
+
+
+def _preregistration(manifest: dict, summary: dict, works: pd.DataFrame) -> dict:
     config = manifest.get("config") or {}
-    deviations = {key: {"observed": config.get(key), "expected": expected}
-                  for key, expected in PREREGISTERED_CONFIG.items() if not _same(config.get(key), expected)}
+    deviations = {}
+    for key, expected in PREREGISTERED_CONFIG.items():
+        observed = config.get(key)
+        if not (_same_dict(observed, expected) if isinstance(expected, dict) else _same(observed, expected)):
+            deviations[key] = {"observed": observed, "expected": expected}
+    known = set(PREREGISTERED_CONFIG) | set(UNCHECKED_CONFIG_KEYS) | {"truncation"}
+    for key in sorted(set(config) - known):
+        deviations[key] = {"observed": config[key], "expected": "clave no prevista por la sección A"}
+    # Sección A: «si se elige el máximo, se amplía la rejilla antes de reportar».
+    hit_limit = _hit_limit(works)
+    if hit_limit:
+        deviations["finite_k_hit_limit"] = {"observed": hit_limit, "expected": []}
     truncation = config.get("truncation")
     if truncation not in PREREGISTERED_TRUNCATION:
         deviations["truncation"] = {"observed": truncation, "expected": sorted(PREREGISTERED_TRUNCATION)}
@@ -161,7 +199,7 @@ def _preregistered_config(manifest: dict, summary: dict) -> dict:
         deviations["corpus_size"] = {"observed": corpus, "expected": dict(PREREGISTERED_CORPUS)}
     if manifest.get("dirty_worktree") is not False:
         deviations["dirty_worktree"] = {"observed": manifest.get("dirty_worktree"), "expected": False}
-    return {"name": "preregistered_config", "status": "not_preregistered" if deviations else "passed",
+    return {"status": "not_preregistered" if deviations else "preregistered",
             "run_kind": PREREGISTERED_TRUNCATION.get(truncation), "deviations": deviations}
 
 
@@ -169,6 +207,7 @@ def audit_run_directory(run_dir: str | Path) -> dict:
     root = Path(run_dir)
     missing = [name for name in REQUIRED_ARTIFACTS if not (root / name).exists()]
     checks = [{"name": "artifacts_present", "status": "incomplete" if missing else "passed", "missing": missing}]
+    preregistration = {"status": "unknown", "run_kind": None, "deviations": {}}
     if not missing:
         works = pd.read_csv(root / "per_work.csv")
         summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
@@ -181,17 +220,27 @@ def audit_run_directory(run_dir: str | Path) -> dict:
             _canonicalization(works),
             _recompute(works, summary),
             {"name": "analysis_failures", "status": _status(not failures), "work_ids": failures},
-            _preregistered_config(manifest, summary),
         ]
+        preregistration = _preregistration(manifest, summary, works)
     status = max((check["status"] for check in checks), key=_STATUS_ORDER.__getitem__)
-    return {"status": status, "run_dir": root.as_posix(), "checks": checks}
+    return {
+        "status": status,
+        "preregistration": preregistration,
+        "confirmatory": status == "passed" and preregistration["status"] == "preregistered",
+        "run_dir": root.as_posix(),
+        "checks": checks,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
-    (run_dir,) = argv if argv is not None else sys.argv[1:]
-    audit = audit_run_directory(run_dir)
+    parser = argparse.ArgumentParser(description="Audita una corrida de src.cli.porobra_heldout (sólo lectura).")
+    parser.add_argument("run_dir")
+    parser.add_argument("--require-preregistered", action="store_true",
+                        help="Sale con 0 sólo si además es la configuración de la sección A.")
+    args = parser.parse_args(argv)
+    audit = audit_run_directory(args.run_dir)
     print(json.dumps(audit, indent=2, ensure_ascii=False))
-    return 0 if audit["status"] == "passed" else 1
+    return 0 if (audit["confirmatory"] if args.require_preregistered else audit["status"] == "passed") else 1
 
 
 if __name__ == "__main__":
