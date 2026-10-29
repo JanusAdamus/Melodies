@@ -219,7 +219,9 @@ def test_rejilla_del_finito_topada_no_pasa_por_preregistrada(run_dir, tmp_path, 
     copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
     works = porobra_audit.read_per_work(copy / "per_work.csv")
     works["finite_k_hit_limit"] = False
+    # Una fila coherente: la marca va con finite_k en el techo de su rejilla.
     works.loc[0, "finite_k_hit_limit"] = True
+    works.loc[0, "finite_k"] = max(json.loads(works.loc[0, "finite_k_grid"]))
     _rewrite_per_work(copy, works)
     audit = porobra_audit.audit_run_directory(copy)
     assert audit["status"] == "passed", audit

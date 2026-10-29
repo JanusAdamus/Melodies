@@ -1,11 +1,14 @@
 """Auditoría de sólo lectura de una corrida de ``src.cli.porobra_heldout`` (tareas 1.5 y 2.5).
 
 Las auditorías de ``Comparacion/`` entienden los archivos del runner PDMX; esta revisa los
-de la corrida por obra: archivos presentes, hashes del manifiesto, denominadores de la
-partición 80/20, conteo del corpus (por fuente, contra los archivos de entrada del
-manifiesto y la columna ``source`` del CSV), unicidad de obras y huellas de contenido, recálculo de
-las cifras titulares desde ``per_work.csv`` y obras que fallaron en el análisis. Eso es la
-integridad: ``status`` es ``passed``, ``incomplete`` o ``failed``.
+de la corrida por obra: archivos presentes, hashes del manifiesto (y su ``aggregate_sha256``
+recalculado desde ``inputs.files``), denominadores de la partición 80/20, conteo del corpus
+(por fuente, contra los archivos de entrada del manifiesto y la columna ``source`` del CSV;
+cada conteo, la longitud de su lista; cada entrada, un solo destino: fila del CSV, falla,
+duplicado o corta), unicidad de obras y huellas de contenido, invariantes de cada fila
+(convergencia según R-hat, NLL del ensamble dentro del rango por cadena, marca de techo de la
+rejilla del finito), recálculo de las cifras titulares desde ``per_work.csv`` y obras que
+fallaron en el análisis. Eso es la integridad: ``status`` es ``passed``, ``incomplete`` o ``failed``.
 
 El recálculo repite desde ``per_work.csv``, con la semilla y los remuestreos del resumen,
 todo lo que decide (IC de Holm por pasos, rechazo, veredicto, IC del 95 %, ponderada por
@@ -29,6 +32,7 @@ además es la corrida confirmatoria). El CLI escribe el mismo resultado en
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import math
@@ -100,10 +104,18 @@ def _manifest_hashes(root: Path, manifest: dict) -> dict:
     outputs = manifest.get("outputs") or {}
     mismatched = sorted(name for name, digest in outputs.items() if not (root / name).exists() or _sha256(root / name) != digest)
     missing_fields = [key for key in ("commit", "config", "inputs", "versions") if not manifest.get(key)]
-    unhashed_inputs = [item.get("path") for item in (manifest.get("inputs") or {}).get("files", []) if len(str(item.get("sha256", ""))) != 64]
-    ok = bool(outputs) and not mismatched and not missing_fields and not unhashed_inputs
+    inputs = manifest.get("inputs") or {}
+    unhashed_inputs = [item.get("path") for item in inputs.get("files", []) if len(str(item.get("sha256", ""))) != 64]
+    from src.cli import porobra_heldout  # el CLI importa este módulo: import diferido
+
+    # El agregado se recalcula desde los registros: un hash de entrada editado no pasa.
+    try:
+        aggregate_mismatch = porobra_heldout.aggregate_sha256(inputs.get("files") or []) != inputs.get("aggregate_sha256")
+    except (KeyError, TypeError):
+        aggregate_mismatch = True
+    ok = bool(outputs) and not mismatched and not missing_fields and not unhashed_inputs and not aggregate_mismatch
     return {"name": "manifest_hashes", "status": _status(ok), "mismatched": mismatched,
-            "missing_fields": missing_fields, "unhashed_inputs": unhashed_inputs}
+            "missing_fields": missing_fields, "unhashed_inputs": unhashed_inputs, "aggregate_mismatch": aggregate_mismatch}
 
 
 def _denominators(works: pd.DataFrame, summary: dict) -> dict:
@@ -154,8 +166,77 @@ def _corpus_accounting(works: pd.DataFrame, summary: dict, manifest: dict) -> di
         problems.append(f"n_analyzed {corpus.get('n_analyzed')!r}, {len(works)} filas, n_by_source_analyzed suma {sum(analyzed.values())}")
     if analyzed != in_csv:
         problems.append(f"n_by_source_analyzed {analyzed!r} y per_work.csv por fuente {in_csv!r}")
+    for count, items in (("n_failures", "failures"), ("n_duplicates", "duplicates"), ("n_excluded_short", "excluded_short_works")):
+        if corpus.get(count) != len(corpus.get(items) or []):
+            problems.append(f"{count} {corpus.get(count)!r} y len({items}) {len(corpus.get(items) or [])}")
+    if corpus.get("n_analysis_failures") != len(summary.get("analysis_failures") or []):
+        problems.append(f"n_analysis_failures {corpus.get('n_analysis_failures')!r} y "
+                        f"len(analysis_failures) {len(summary.get('analysis_failures') or [])}")
+    problems += _input_destinations(works, summary, manifest)
     return {"name": "corpus_accounting", "status": _status(not problems), "n_candidates": corpus.get("n_candidates"),
             "accounted": accounted, "n_rows": len(works), "n_by_source_inputs": inputs, "problems": problems}
+
+
+def _input_destinations(works: pd.DataFrame, summary: dict, manifest: dict) -> list[str]:
+    """Cada entrada del manifiesto tiene un solo destino y cada destino, su entrada.
+
+    Destinos, con la clave ``fuente:ruta relativa`` (la de ``work_id``): las filas de
+    ``per_work.csv``, ``analysis_failures`` y las listas ``failures``, ``duplicates`` y
+    ``excluded_short_works`` del corpus. Rellenar ``inputs.files`` con entradas que ninguna
+    lista explica, o una fila cuya ruta no es una entrada, no pasa.
+    """
+
+    entries = Counter(f"{item.get('source')}:{item.get('path')}" for item in (manifest.get("inputs") or {}).get("files", []))
+    corpus = summary.get("corpus", {})
+    destinations = Counter(f"{source}:{path}" for source, path in zip(works["source"].astype(str), works["relative_path"].astype(str)))
+    destinations.update(str(item.get("work_id")) for item in summary.get("analysis_failures") or [])
+    for key in ("failures", "duplicates", "excluded_short_works"):
+        destinations.update(f"{item.get('source')}:{item.get('relative_path')}" for item in corpus.get(key) or [])
+    problems = [f"entrada repetida en inputs.files: {key}" for key, n in sorted(entries.items()) if n > 1]
+    problems += [f"entrada sin destino (per_work.csv, analysis_failures, failures, duplicates o excluded_short_works): {key}"
+                 for key in sorted(set(entries) - set(destinations))]
+    problems += [f"destino sin entrada en inputs.files o repetido: {key}"
+                 for key, n in sorted(destinations.items()) if n > entries.get(key, 0)]
+    keys = works["source"].astype(str) + ":" + works["relative_path"].astype(str)
+    problems += [f"work_id {work!r} no es fuente:relative_path ({key!r})"
+                 for work, key in zip(works["work_id"].astype(str), keys) if work != key]
+    return problems
+
+
+def _per_work_invariants(works: pd.DataFrame, summary: dict) -> dict:
+    """Lo que cada fila de ``per_work.csv`` dice de sí misma debe cuadrar.
+
+    - ``hdp_converged`` es ``hdp_rhat < rhat_threshold`` (decide la convergencia y la
+      sensibilidad de la Enmienda 6).
+    - ``hdp_test_nll``, la predictiva del ensamble de cadenas con las mismas muestras por
+      cadena, es −log de la media de las predictivas por cadena: queda dentro del rango de
+      ``hdp_test_nll_by_chain``.
+    - ``finite_k_hit_limit`` sólo si ``finite_k`` es el máximo de ``finite_k_grid``: la
+      rejilla crece mientras se elija el máximo y sólo se detiene en el techo.
+    """
+
+    threshold = float((summary.get("convergence") or {}).get("rhat_threshold", porobra.RHAT_THRESHOLD))
+    problems = []
+    for row in works.to_dict("records"):
+        work = str(row.get("work_id"))
+        try:
+            rhat = float(row["hdp_rhat"])
+            converged = math.isfinite(rhat) and rhat < threshold
+            if _as_bool(row["hdp_converged"]) != converged:
+                problems.append(f"{work}: hdp_converged {row['hdp_converged']!r} con hdp_rhat {rhat!r} (umbral {threshold})")
+            by_chain = [float(value) for value in json.loads(row["hdp_test_nll_by_chain"])]
+            nll = float(row["hdp_test_nll"])
+            if not by_chain or not min(by_chain) - TOLERANCE <= nll <= max(by_chain) + TOLERANCE:
+                problems.append(f"{work}: hdp_test_nll fuera del rango de hdp_test_nll_by_chain")
+            grid = [int(value) for value in json.loads(row["finite_k_grid"])]
+            hit_limit, at_top = _as_bool(row["finite_k_hit_limit"]), int(row["finite_k"]) == max(grid)
+            if hit_limit != at_top:
+                problems.append(f"{work}: finite_k_hit_limit {hit_limit} con finite_k {int(row['finite_k'])} "
+                                f"y máximo de finite_k_grid {max(grid)}")
+        except (KeyError, TypeError, ValueError) as error:
+            problems.append(f"{work}: fila ilegible para hdp_converged, hdp_test_nll y finite_k_hit_limit "
+                            f"({type(error).__name__}: {error})")
+    return {"name": "per_work_invariants", "status": _status(not problems), "rhat_threshold": threshold, "problems": problems}
 
 
 def _corpus_config_deviation(manifest: dict, config: dict) -> dict | None:
@@ -412,6 +493,7 @@ def audit_run_directory(run_dir: str | Path) -> dict:
             _denominators(works, summary),
             _corpus_accounting(works, summary, manifest),
             _canonicalization(works),
+            _per_work_invariants(works, summary),
             _recompute(works, summary),
             {"name": "analysis_failures", "status": _status(not failures), "work_ids": failures},
         ]
