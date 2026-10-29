@@ -1,4 +1,4 @@
-"""Análisis por obra held-out: preregistro 2026-10-26, sección A, Aclaración 2, Enmiendas 3, 5 y 6.
+"""Análisis por obra held-out: preregistro 2026-10-26, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaraciones 7 y 8.
 
 Por obra, partición contigua: el primer 80 % de los eventos ajusta y el último 20 % evalúa;
 dentro del 80 %, su último 20 % valida los hiperparámetros (α de los n-gramas, K del finito,
@@ -60,37 +60,51 @@ CONVERGENCE_RULE = (
     "R-hat de log L < 1.1 y la comparación restringida a esas obras es sólo sensibilidad."
 )
 HDP_STATES_NOTE = (
-    "Estados del HDP-HMM por cadena (Enmienda 6): sin convergencia entre cadenas no son una "
-    "media posterior y no se interpretan como inferencia bayesiana sobre K."
+    "Estados del HDP-HMM por cadena (Enmienda 6, punto 4: hdp_states_mean_by_chain y "
+    "hdp_states_sd_by_chain): sin convergencia entre cadenas no son una media posterior y no se "
+    "interpretan como inferencia bayesiana sobre K. hdp_states_pooled_chains_mean/_sd agregan todas "
+    "las cadenas y no se comparan con finite_states_mean/_sd."
 )
 DECISION_ESTIMAND = "mean_over_works_of_work_nll_difference"
-_ACLARACION_7 = (
-    "Aclaración 7: corridas de tiempos del 2026-10-28 (5 primeras obras de MuseTrainer), "
-    "NLL de prueba calculada antes de las Enmiendas 5 y 6"
+_TIMING_RUNS = "calculada también en las corridas de tiempos de la Aclaración 7"
+_SMOKE_40 = (
+    "NLL de prueba de un smoke de 40 iteraciones leída en un reporte el 2026-10-28, después de "
+    "registrar las Enmiendas 5 y 6"
 )
-#: Obras del corpus de A cuya NLL de prueba se calculó antes de la corrida confirmatoria, con
-#: el motivo. Siguen en la métrica principal (Aclaración 7). La comparación sin ellas
-#: (``sensitivity_without_exposed``) es una propuesta de la revisión de la tarea 1.4,
-#: registrada en la bitácora para que Adrián la confirme: no está en el preregistro y no decide.
+#: Obras del corpus de A con exposición a cifras de prueba antes de la corrida confirmatoria,
+#: según la Aclaración 8 (9117caf, corrige la 7), con el motivo. Siguen en la métrica
+#: principal; ``sensitivity_without_exposed`` es el análisis adicional sin ellas que la
+#: Aclaración 8 registra y que no decide.
 TEST_EXPOSED_WORKS = {
-    "MuseTrainer:12_Variations_of_Twinkle_Twinkle_Little_Star.mxl": _ACLARACION_7,
-    "MuseTrainer:Arabesque_L._66_No._1_in_E_Major.mxl": _ACLARACION_7
-    + "; sus cifras de prueba quedaron escritas en la bitácora (ff9f998, 700acba)",
-    "MuseTrainer:Ave_Maria_D839_-_Schubert_-_Solo_Piano_Arrg..mxl": _ACLARACION_7,
-    "MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl": _ACLARACION_7,
-    "MuseTrainer:Bach_Toccata_and_Fugue_in_D_Minor_Piano_solo.mxl": _ACLARACION_7,
-    "MuseTrainer:Passacaglia.mxl": (
-        "revisión de la tarea 1.4: la ronda 1 la calculó en una corrida de prueba (2026-10-28 16:14, "
-        "fuera del repo) y la ronda 3 imprimió sus cifras de prueba"
+    "MuseTrainer:12_Variations_of_Twinkle_Twinkle_Little_Star.mxl": f"Aclaración 8: {_SMOKE_40}; {_TIMING_RUNS}",
+    "MuseTrainer:Arabesque_L._66_No._1_in_E_Major.mxl": (
+        "Aclaración 8: cifras de prueba escritas en la bitácora de feat/porobra-heldout (ff9f998, antes de "
+        f"la Enmienda 5; 700acba, después de la 6) y {_SMOKE_40}; {_TIMING_RUNS}"
     ),
+    "MuseTrainer:Ave_Maria_D839_-_Schubert_-_Solo_Piano_Arrg..mxl": f"Aclaración 8: {_SMOKE_40}; {_TIMING_RUNS}",
+    "MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl": (
+        "Aclaración 8: NLL de prueba calculada en las corridas de tiempos (Aclaración 7), sin leerse"
+    ),
+    "MuseTrainer:Bach_Toccata_and_Fugue_in_D_Minor_Piano_solo.mxl": (
+        "Aclaración 8: NLL de prueba calculada en las corridas de tiempos (Aclaración 7), sin leerse"
+    ),
+    "MuseTrainer:Passacaglia.mxl": "Aclaración 8: NLL de prueba calculada e impresa por la revisión de la tarea 1.4",
 }
 TEST_EXPOSED_WORK_IDS = tuple(TEST_EXPOSED_WORKS)
 TEST_EXPOSURE_NOTE = (
-    "La NLL de prueba de estas obras se calculó antes de la corrida confirmatoria (Aclaración 7 y "
-    "revisión de la tarea 1.4; motivo por obra en exposed_works). Siguen en la métrica principal. "
-    "sensitivity_without_exposed repite la comparación sin ellas: es una propuesta de la revisión, "
-    "pendiente de que Adrián la confirme (bitácora), fuera del preregistro; no decide."
+    "Aclaración 8 (corrige la 7): estas obras tuvieron exposición a cifras de prueba de la sección A "
+    "antes de la corrida confirmatoria (motivo por obra en exposed_works). Siguen en la métrica "
+    "principal. sensitivity_without_exposed es el análisis adicional que la Aclaración 8 registra: "
+    "repite la comparación sin ellas e indica si algún veredicto cambia; no decide."
 )
+WITHOUT_EXPOSED_RULE = (
+    "Aclaración 8: análisis adicional sin las obras con exposición a cifras de prueba; no decide."
+)
+CONVERGED_ONLY_RULE = "Enmienda 6, punto 3: sensibilidad con la regla original (R-hat de log L < 1.1); no decide."
+#: La sección A compara con las obras que haya y reporta n: el mínimo de 10 obras pareadas de
+#: la Enmienda 1 sólo rige la frontera de Pareto (sección B). Con una sola obra todas las
+#: réplicas bootstrap valen lo mismo y su p sería 0: no es evaluable.
+MIN_PAIRED_WORKS = 2
 #: Seudoconteo de la distribución inicial del finito (una sola secuencia: casi no pesa).
 INITIAL_PSEUDOCOUNT = 1e-3
 
@@ -517,11 +531,13 @@ def fit_hdp(
         "hdp_test_nll": heldout_nll_per_token(chains, split.fit, split.test),
         "hdp_rhat": rhat,
         "hdp_converged": bool(math.isfinite(rhat) and rhat < rhat_threshold),
-        "hdp_states_mean": float(np.mean(occupied)),
-        "hdp_states_sd": float(np.std(occupied)),
+        # Enmienda 6, punto 4: los estados se reportan por cadena (van primero); el agregado
+        # de todas las cadenas no es una media posterior y no se compara con finite_states_*.
+        **hdp_chain_diagnostics(chains, split.fit, split.test),
+        "hdp_states_pooled_chains_mean": float(np.mean(occupied)),
+        "hdp_states_pooled_chains_sd": float(np.std(occupied)),
         "hdp_insample_ll_per_note": float(np.mean(insample)) / split.fit.size,
         "hdp_posterior_mean_log_likelihood_per_note": float(np.mean([c.log_likelihood for c in chains])) / split.fit.size,
-        **hdp_chain_diagnostics(chains, split.fit, split.test),
     }
 
 
@@ -621,6 +637,7 @@ def compare_hdp(
     seed: int = 0,
     converged_only: bool = False,
     exclude_work_ids: Iterable[str] = (),
+    rule: str | None = None,
 ) -> dict:
     """HDP − {finito, bigrama, unigrama} sobre todas las obras analizadas (Aclaración 2, Enmienda 6).
 
@@ -631,8 +648,10 @@ def compare_hdp(
     IC bootstrap por obra ajustado por Holm por pasos sobre la familia de 3. La ponderada por
     notas de prueba y Wilcoxon (con Holm) son secundarias. Regla: «mejora» si el extremo
     superior del IC de Holm es < 0; «es_mejor_el_otro» si el inferior es > 0; si no, «no hay
-    evidencia». Menos de 10 obras en común (Enmienda 1): «no_evaluable».
-    ``exclude_work_ids`` quita esas obras (sensibilidad sin las obras con la prueba expuesta).
+    evidencia». Se usan las obras que haya y se reporta n (``n_pairs``): el mínimo de 10 de la
+    Enmienda 1 sólo rige la sección B; con menos de ``MIN_PAIRED_WORKS`` (2), «no_evaluable».
+    ``exclude_work_ids`` quita esas obras (análisis adicional de la Aclaración 8).
+    ``rule`` dice qué bloque es y queda en el resultado.
     """
 
     rows = list(rows)
@@ -683,27 +702,66 @@ def compare_hdp(
                     p_value=float(result.pvalue),
                 )
         comparisons.append(comparison)
-    _apply_holm_adjustment(comparisons)
-    _apply_bootstrap_holm(comparisons, work_draws, prefix="work_mean")
-    _apply_bootstrap_holm(comparisons, token_draws, prefix="token_weighted")
+    _apply_holm_adjustment(comparisons, min_paired_works=MIN_PAIRED_WORKS)
+    _apply_bootstrap_holm(comparisons, work_draws, prefix="work_mean", min_paired_works=MIN_PAIRED_WORKS)
+    _apply_bootstrap_holm(comparisons, token_draws, prefix="token_weighted", min_paired_works=MIN_PAIRED_WORKS)
     for comparison in comparisons:
         comparison["decision_estimand"] = DECISION_ESTIMAND
         comparison["verdict"] = _verdict(comparison)
-    family = _holm_family_record(comparisons)
+    family = _holm_family_record(comparisons, min_paired_works=MIN_PAIRED_WORKS)
     family["family_size"] = len(comparisons)
     return {
         "decision_rule": (
             "media por obra de NLL_HDP - NLL_X; IC bootstrap por obra con Holm por pasos (familia de 3); "
             "'mejora' si el extremo superior < 0, 'es_mejor_el_otro' si el inferior > 0"
         ),
+        "rule": rule,
         "bootstrap_samples": int(bootstrap_samples),
         "seed": int(seed),
         "converged_only": bool(converged_only),
         "excluded_work_ids": excluded,
+        "min_paired_works": MIN_PAIRED_WORKS,
         "n_works": len(rows),
         "comparisons": comparisons,
         "holm_family": family,
     }
+
+
+def summary_blocks(
+    records: Sequence[Mapping], *, bootstrap_samples: int, seed: int, exposed_work_ids: Iterable[str]
+) -> dict:
+    """Los bloques del resumen que deciden o se reportan con la regla, desde las filas por obra.
+
+    El CLI los escribe en ``summary.json`` y la auditoría los recalcula desde ``per_work.csv``:
+    con la misma semilla deben coincidir exacto.
+    """
+
+    records = list(records)
+    exposed = tuple(str(work) for work in exposed_work_ids)
+    blocks = {
+        "convergence": convergence_summary(records),
+        "comparisons": compare_hdp(
+            records, bootstrap_samples=bootstrap_samples, seed=seed,
+            rule="Aclaración 2 y Enmienda 6: comparación principal con todas las obras analizadas; decide.",
+        ),
+        "sensitivity_converged_only": compare_hdp(
+            records, bootstrap_samples=bootstrap_samples, seed=seed, converged_only=True, rule=CONVERGED_ONLY_RULE
+        ),
+        "sensitivity_without_exposed": compare_hdp(
+            records, bootstrap_samples=bootstrap_samples, seed=seed, exclude_work_ids=exposed, rule=WITHOUT_EXPOSED_RULE
+        ),
+    }
+    # Aclaración 8: el resumen «indica si algún veredicto cambia» sin las obras expuestas.
+    principal = {c["model_b"]: c["verdict"] for c in blocks["comparisons"]["comparisons"]}
+    for key in ("sensitivity_converged_only", "sensitivity_without_exposed"):
+        block = blocks[key]
+        block["verdict_changes"] = [
+            {"model_b": c["model_b"], "principal": principal[c["model_b"]], "sensitivity": c["verdict"]}
+            for c in block["comparisons"]
+            if c["verdict"] != principal[c["model_b"]]
+        ]
+        block["any_verdict_changes"] = bool(block["verdict_changes"])
+    return blocks
 
 
 def convergence_summary(rows: Sequence[Mapping]) -> dict:

@@ -6,15 +6,22 @@ partición 80/20, conteo del corpus, unicidad de obras y huellas de contenido, r
 las cifras titulares desde ``per_work.csv`` y obras que fallaron en el análisis. Eso es la
 integridad: ``status`` es ``passed``, ``incomplete`` o ``failed``.
 
+El recálculo repite desde ``per_work.csv``, con la semilla y los remuestreos del resumen,
+todo lo que decide (IC de Holm por pasos, rechazo, veredicto, IC del 95 %, ponderada por
+tokens, Wilcoxon con Holm, sensibilidades y convergencia) y exige igualdad exacta.
+
 Aparte, ``preregistration`` dice si la configuración del manifiesto es la de la sección A
 del preregistro (``preregistered``) o no (``not_preregistered``, con ``deviations``: qué
-cambió), incluida la regla de ampliar la rejilla del finito. Un smoke íntegro sale
-``passed`` y ``not_preregistered``; ``confirmatory`` sólo es verdadero con las dos.
+cambió), incluida la regla de ampliar la rejilla del finito; ``manifest["config"]`` se
+compara además con la que sale del argv real (``manifest["command"]``) y con lo que dice el
+resumen. Un smoke íntegro sale ``passed`` y ``not_preregistered``. ``confirmatory`` sólo es
+verdadero si la corrida es íntegra, preregistrada y la principal (truncamiento 20): la de
+truncamiento 40 es la sensibilidad (``run_kind``).
 
     python -m src.analysis.porobra_audit <directorio de la corrida> [--require-preregistered]
 
 imprime el JSON y sale con 0 si la corrida es íntegra (con ``--require-preregistered``, si
-además es la configuración de la sección A). El CLI escribe el mismo resultado en
+además es la corrida confirmatoria). El CLI escribe el mismo resultado en
 ``porobra_audit.json`` al terminar; esta función nunca escribe.
 """
 
@@ -70,6 +77,12 @@ PREREGISTERED_CONFIG = {
 UNCHECKED_CONFIG_KEYS = ("n_workers",)
 #: Truncamiento del HDP: 20 es la corrida principal; 40, la sensibilidad preregistrada.
 PREREGISTERED_TRUNCATION = {20: "principal", 40: "sensibilidad_truncamiento_40"}
+RUN_KIND_NOTES = {
+    "principal": "corrida confirmatoria de la sección A (truncamiento 20)",
+    "sensibilidad_truncamiento_40": (
+        "sensibilidad preregistrada del truncamiento (40); no es la corrida confirmatoria y no decide"
+    ),
+}
 #: Candidatos por fuente: MuseTrainer completo (69 partituras) y la muestra de 100 de SymbTr.
 PREREGISTERED_CORPUS = {"MuseTrainer": 69, "SymbTr": 100}
 
@@ -125,35 +138,99 @@ def _canonicalization(works: pd.DataFrame) -> dict:
             "duplicated_fingerprint_work_ids": duplicated, "missing_fingerprint_work_ids": empty}
 
 
+def read_per_work(path: str | Path) -> pd.DataFrame:
+    """Lee ``per_work.csv`` con los floats exactos que escribió el CLI."""
+
+    return pd.read_csv(path, float_precision="round_trip")
+
+
+def _as_bool(value) -> bool:
+    return str(value).strip().lower() in ("true", "1", "1.0")
+
+
+def comparison_records(works: pd.DataFrame) -> list[dict]:
+    """Filas por obra con lo que usan las comparaciones y la convergencia."""
+
+    records = []
+    for row in works.to_dict("records"):
+        record = {"work_id": str(row["work_id"]), "n_test": int(row["n_test"]), "hdp_converged": _as_bool(row["hdp_converged"])}
+        for model in porobra.MODELS:
+            value = row.get(f"{model}_test_nll")
+            record[f"{model}_test_nll"] = float(value) if value is not None else math.nan
+        records.append(record)
+    return records
+
+
+def _jsonable(value):
+    """Lo mismo que el CLI hace antes de escribir el resumen (NaN e infinitos a None)."""
+
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        return float(value) if math.isfinite(value) else None
+    return value
+
+
+def _differences(observed, expected, path: str = "") -> list[str]:
+    """Rutas donde dos estructuras JSON difieren (igualdad exacta, sin tolerancia)."""
+
+    if isinstance(expected, dict) and isinstance(observed, dict):
+        found = []
+        for key in sorted(set(expected) | set(observed)):
+            where = f"{path}.{key}" if path else str(key)
+            if key not in observed:
+                found.append(f"{where}: falta en el resumen")
+            elif key not in expected:
+                found.append(f"{where}: sobra en el resumen")
+            else:
+                found += _differences(observed[key], expected[key], where)
+        return found
+    if isinstance(expected, list) and isinstance(observed, list) and len(expected) == len(observed):
+        return [item for index, (a, b) in enumerate(zip(observed, expected)) for item in _differences(a, b, f"{path}[{index}]")]
+    if type(observed) is not type(expected) or observed != expected:
+        return [f"{path}: {observed!r} en el resumen, {expected!r} al recalcular"]
+    return []
+
+
 def _recompute(works: pd.DataFrame, summary: dict) -> dict:
-    exposed = set(summary.get("test_exposure", {}).get("exposed_work_ids", []))
-    converged = works["hdp_converged"].astype(str).str.lower().isin(("true", "1"))
-    blocks = {
-        "comparisons": works,
-        "sensitivity_converged_only": works[converged],
-        "sensitivity_without_exposed": works[~works["work_id"].isin(exposed)],
-    }
-    mismatches = []
-    for key, subset in blocks.items():
-        block = summary.get(key)
-        if block is None:
-            mismatches.append(f"{key}: falta en el resumen")
-            continue
-        if block.get("n_works") != len(subset):
-            mismatches.append(f"{key}: n_works {block.get('n_works')} contra {len(subset)}")
-        for comparison in block.get("comparisons", []):
-            other = comparison["model_b"]
-            differences = (subset["hdp_test_nll"] - subset[f"{other}_test_nll"]).dropna().to_numpy()
-            if comparison.get("status") != "ok":
-                if len(differences):
-                    mismatches.append(f"{key}/{other}: sin comparar con {len(differences)} pares")
-                continue
-            if comparison.get("n_pairs") != len(differences) or abs(comparison["mean_difference"] - float(np.mean(differences))) > TOLERANCE:
-                mismatches.append(f"{key}/{other}: media {comparison['mean_difference']} contra {float(np.mean(differences))}")
-    n_converged = summary.get("convergence", {}).get("n_converged")
-    if n_converged != int(converged.sum()):
-        mismatches.append(f"convergence: n_converged {n_converged} contra {int(converged.sum())}")
-    return {"name": "headline_recompute", "status": _status(not mismatches), "mismatches": mismatches}
+    """Recalcula desde ``per_work.csv`` todo lo que decide o se reporta con la regla.
+
+    Comparación principal, las dos sensibilidades y la convergencia, con los remuestreos y la
+    semilla del resumen: IC bootstrap por obra con Holm por pasos, rechazo, veredicto,
+    bootstrap_95_ci, ponderada por tokens, Wilcoxon con Holm, fraction_converged y
+    not_converged_work_ids. Deben coincidir exacto: un resumen editado no pasa. La lista de
+    obras expuestas del resumen debe ser la de ``porobra.TEST_EXPOSED_WORK_IDS`` y
+    ``exposed_in_run``, su intersección con las obras de la corrida.
+    """
+
+    blocks = ("convergence", "comparisons", "sensitivity_converged_only", "sensitivity_without_exposed")
+    mismatches = [f"{key}: falta en el resumen" for key in blocks if not isinstance(summary.get(key), dict)]
+    exposure = summary.get("test_exposure") or {}
+    exposed = list(exposure.get("exposed_work_ids") or [])
+    if exposed != list(porobra.TEST_EXPOSED_WORK_IDS):
+        mismatches.append(f"test_exposure.exposed_work_ids: {exposed!r} contra {list(porobra.TEST_EXPOSED_WORK_IDS)!r}")
+    in_run = sorted(set(exposed) & set(works["work_id"].astype(str)))
+    if exposure.get("exposed_in_run") != in_run:
+        mismatches.append(f"test_exposure.exposed_in_run: {exposure.get('exposed_in_run')!r} contra {in_run!r}")
+    if not mismatches:
+        main = summary["comparisons"]
+        try:
+            expected = _jsonable(porobra.summary_blocks(
+                comparison_records(works), bootstrap_samples=int(main["bootstrap_samples"]), seed=int(main["seed"]),
+                exposed_work_ids=exposed))
+        except (KeyError, TypeError, ValueError) as error:
+            mismatches.append(f"no se pudo recalcular: {type(error).__name__}: {error}")
+        else:
+            for key in blocks:
+                mismatches += _differences(summary[key], expected[key], key)
+    return {"name": "headline_recompute", "status": _status(not mismatches), "recomputed_blocks": list(blocks),
+            "mismatches": mismatches}
 
 
 def _same(observed, expected) -> bool:
@@ -177,9 +254,74 @@ def _hit_limit(works: pd.DataFrame) -> list[str]:
     return sorted(works.loc[hit, "work_id"].astype(str))
 
 
+def _command_config(manifest: dict) -> dict:
+    """Vuelve a derivar la configuración del argv real guardado en ``manifest["command"]``."""
+
+    from src.cli import porobra_heldout  # el CLI importa este módulo: import diferido
+
+    command = manifest.get("command")
+    if not isinstance(command, list) or command[1:3] != ["-m", "src.cli.porobra_heldout"]:
+        raise ValueError(f"no es un comando de src.cli.porobra_heldout: {command!r}")
+    parser = porobra_heldout.build_parser()
+    parser.exit_on_error = False
+    try:
+        args = parser.parse_args([str(item) for item in command[3:]])
+    except (argparse.ArgumentError, SystemExit) as error:
+        raise ValueError(f"argv ilegible: {error}") from None
+    return porobra_heldout.manifest_config(args)
+
+
+def _command_deviation(manifest: dict, config: dict) -> dict | None:
+    try:
+        derived = _jsonable(_command_config(manifest))
+    except ValueError as error:
+        return {"observed": str(error), "expected": "argv de src.cli.porobra_heldout que reproduzca manifest['config']"}
+    keys = sorted(key for key in set(derived) | set(config) if not _same(_listify(config.get(key)), _listify(derived.get(key))))
+    if not keys:
+        return None
+    return {"observed": {key: derived.get(key) for key in keys}, "expected": {key: config.get(key) for key in keys}}
+
+
+def _listify(value):
+    if isinstance(value, tuple):
+        return [_listify(item) for item in value]
+    if isinstance(value, list):
+        return [_listify(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _listify(item) for key, item in value.items()}
+    return value
+
+
+def _summary_deviation(summary: dict, config: dict) -> dict | None:
+    """Lo que el resumen dice de la configuración debe ser lo del manifiesto."""
+
+    observed, expected = {}, {}
+    for key in ("comparisons", "sensitivity_converged_only", "sensitivity_without_exposed"):
+        block = summary.get(key) or {}
+        for field, config_key in (("bootstrap_samples", "bootstrap_samples"), ("seed", "stats_seed")):
+            if block.get(field) != config.get(config_key):
+                observed[f"{key}.{field}"] = block.get(field)
+                expected[f"{key}.{field}"] = config.get(config_key)
+    corpus = summary.get("corpus") or {}
+    if corpus.get("min_events") != config.get("min_events"):
+        observed["corpus.min_events"], expected["corpus.min_events"] = corpus.get("min_events"), config.get("min_events")
+    if corpus.get("extraction") != config.get("extraction"):
+        observed["corpus.extraction"], expected["corpus.extraction"] = corpus.get("extraction"), config.get("extraction")
+    rhat = (summary.get("convergence") or {}).get("rhat_threshold")
+    if not _same(rhat, config.get("rhat_threshold")):
+        observed["convergence.rhat_threshold"], expected["convergence.rhat_threshold"] = rhat, config.get("rhat_threshold")
+    return {"observed": observed, "expected": expected} if observed else None
+
+
 def _preregistration(manifest: dict, summary: dict, works: pd.DataFrame) -> dict:
     config = manifest.get("config") or {}
     deviations = {}
+    command = _command_deviation(manifest, config)
+    if command:
+        deviations["command"] = command
+    in_summary = _summary_deviation(summary, config)
+    if in_summary:
+        deviations["summary"] = in_summary
     for key, expected in PREREGISTERED_CONFIG.items():
         observed = config.get(key)
         if not (_same_dict(observed, expected) if isinstance(expected, dict) else _same(observed, expected)):
@@ -199,17 +341,18 @@ def _preregistration(manifest: dict, summary: dict, works: pd.DataFrame) -> dict
         deviations["corpus_size"] = {"observed": corpus, "expected": dict(PREREGISTERED_CORPUS)}
     if manifest.get("dirty_worktree") is not False:
         deviations["dirty_worktree"] = {"observed": manifest.get("dirty_worktree"), "expected": False}
+    run_kind = PREREGISTERED_TRUNCATION.get(truncation)
     return {"status": "not_preregistered" if deviations else "preregistered",
-            "run_kind": PREREGISTERED_TRUNCATION.get(truncation), "deviations": deviations}
+            "run_kind": run_kind, "run_kind_note": RUN_KIND_NOTES.get(run_kind), "deviations": deviations}
 
 
 def audit_run_directory(run_dir: str | Path) -> dict:
     root = Path(run_dir)
     missing = [name for name in REQUIRED_ARTIFACTS if not (root / name).exists()]
     checks = [{"name": "artifacts_present", "status": "incomplete" if missing else "passed", "missing": missing}]
-    preregistration = {"status": "unknown", "run_kind": None, "deviations": {}}
+    preregistration = {"status": "unknown", "run_kind": None, "run_kind_note": None, "deviations": {}}
     if not missing:
-        works = pd.read_csv(root / "per_work.csv")
+        works = read_per_work(root / "per_work.csv")
         summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
         failures = [str(item.get("work_id")) for item in summary.get("analysis_failures", [])]
@@ -226,7 +369,10 @@ def audit_run_directory(run_dir: str | Path) -> dict:
     return {
         "status": status,
         "preregistration": preregistration,
-        "confirmatory": status == "passed" and preregistration["status"] == "preregistered",
+        # Sólo la corrida principal (truncamiento 20) es la confirmatoria; la de 40 es la
+        # sensibilidad preregistrada y --require-preregistered no la acepta.
+        "confirmatory": (status == "passed" and preregistration["status"] == "preregistered"
+                         and preregistration["run_kind"] == "principal"),
         "run_dir": root.as_posix(),
         "checks": checks,
     }
@@ -236,7 +382,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audita una corrida de src.cli.porobra_heldout (sólo lectura).")
     parser.add_argument("run_dir")
     parser.add_argument("--require-preregistered", action="store_true",
-                        help="Sale con 0 sólo si además es la configuración de la sección A.")
+                        help="Sale con 0 sólo si además es la corrida confirmatoria de la sección A "
+                             "(truncamiento 20; la de 40 es la sensibilidad).")
     args = parser.parse_args(argv)
     audit = audit_run_directory(args.run_dir)
     print(json.dumps(audit, indent=2, ensure_ascii=False))

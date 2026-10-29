@@ -217,7 +217,7 @@ def test_la_configuracion_por_defecto_del_cli_es_la_preregistrada():
 
 def test_rejilla_del_finito_topada_no_pasa_por_preregistrada(run_dir, tmp_path, monkeypatch):
     copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
-    works = pd.read_csv(copy / "per_work.csv")
+    works = porobra_audit.read_per_work(copy / "per_work.csv")
     works["finite_k_hit_limit"] = False
     works.loc[0, "finite_k_hit_limit"] = True
     _rewrite_per_work(copy, works)
@@ -250,7 +250,7 @@ def test_falta_un_archivo_queda_incompleta(run_dir, tmp_path):
 
 def test_un_csv_alterado_no_pasa_hashes_ni_recalculo(run_dir, tmp_path):
     copy = _copy(run_dir, tmp_path)
-    works = pd.read_csv(copy / "per_work.csv")
+    works = porobra_audit.read_per_work(copy / "per_work.csv")
     works.loc[0, "hdp_test_nll"] += 0.5
     works.to_csv(copy / "per_work.csv", index=False)
     audit = porobra_audit.audit_run_directory(copy)
@@ -309,7 +309,7 @@ def test_un_resumen_editado_falla_el_recalculo(run_dir, tmp_path, edit):
 
 def test_denominador_y_huella_duplicada_se_detectan(run_dir, tmp_path):
     copy = _copy(run_dir, tmp_path)
-    works = pd.read_csv(copy / "per_work.csv")
+    works = porobra_audit.read_per_work(copy / "per_work.csv")
     works.loc[0, "n_test"] += 1
     works.loc[1, "content_fingerprint"] = works.loc[0, "content_fingerprint"]
     works.to_csv(copy / "per_work.csv", index=False)

@@ -400,6 +400,23 @@ def test_la_sensibilidad_con_pocas_obras_tambien_se_evalua():
     assert {c["verdict"] for c in sensitivity["comparisons"]} == {"mejora"}
 
 
+def test_los_bloques_del_resumen_dicen_si_algun_veredicto_cambia():
+    # Aclaración 8: el análisis sin las obras expuestas «indica si algún veredicto cambia».
+    rows = _rows(20, -0.5) + _rows(25, 1.5)
+    for index, row in enumerate(rows[20:]):
+        row["work_id"] = f"x{index}"
+    exposed = [row["work_id"] for row in rows[20:]]
+    blocks = porobra.summary_blocks(rows, bootstrap_samples=500, seed=0, exposed_work_ids=exposed)
+    assert {c["verdict"] for c in blocks["comparisons"]["comparisons"]} == {"es_mejor_el_otro"}
+    without = blocks["sensitivity_without_exposed"]
+    assert without["n_works"] == 20 and without["any_verdict_changes"] is True
+    assert without["verdict_changes"][0] == {"model_b": "finite", "principal": "es_mejor_el_otro", "sensitivity": "mejora"}
+    assert "Aclaración 8" in without["rule"]
+    converged = blocks["sensitivity_converged_only"]
+    assert converged["any_verdict_changes"] is False and converged["verdict_changes"] == []
+    assert blocks["convergence"]["n_works"] == 45
+
+
 def test_con_una_sola_obra_no_es_evaluable():
     result = porobra.compare_hdp(_rows(1, -0.5), bootstrap_samples=200, seed=0)
     assert result["n_works"] == 1

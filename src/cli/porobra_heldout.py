@@ -12,9 +12,11 @@ interrumpe, lo ya calculado queda en disco. Una obra que falla se registra en
 ``analysis_failures`` del resumen y queda fuera de las comparaciones; las demás siguen.
 La comparación principal usa todas las obras analizadas (Enmienda 6);
 ``sensitivity_converged_only`` la repite sólo con las que tienen R-hat de log L < 1.1 y
-``sensitivity_without_exposed`` sin las obras con la prueba expuesta (propuesta de la
-revisión, fuera del preregistro; no decide). Al final escribe ``porobra_audit.json``
-(``src.analysis.porobra_audit``): integridad y, aparte, si es la configuración de la sección A.
+``sensitivity_without_exposed`` sin las obras con exposición a cifras de prueba (análisis
+adicional de la Aclaración 8; no decide); las dos dicen si algún veredicto cambia.
+``README.txt`` lleva la advertencia de la Enmienda 6 sobre los estados del HDP. Al final
+escribe ``porobra_audit.json`` (``src.analysis.porobra_audit``): integridad y, aparte, si es
+la configuración de la sección A.
 """
 
 from __future__ import annotations
@@ -43,6 +45,8 @@ from src.data.multicorpus import parse_symbtr_filename, stratified_symbtr_sample
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXTRACTION = "melody"
+#: Archivos de la corrida con hash en ``manifest["outputs"]``.
+OUTPUTS = ("per_work.csv", "summary.json", "README.txt")
 PACKAGES = ("numpy", "scipy", "pandas", "music21")
 
 
@@ -106,19 +110,89 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _catalog(args: argparse.Namespace) -> pd.DataFrame:
+    """Candidatos por fuente, cada fuente en orden de su ruta relativa POSIX como cadena.
+
+    ``sorted(Path)`` no distingue mayúsculas en Windows y sí en Linux; la cadena POSIX da el
+    mismo orden en los dos (y con él, el mismo manifiesto y las mismas listas del resumen).
+    """
+
     rows = []
     if args.musetrainer_root:
         root = Path(args.musetrainer_root)
-        paths = iter_musicxml_files(root)
+        paths = sorted(iter_musicxml_files(root), key=lambda p: p.relative_to(root).as_posix())
         if args.musetrainer_limit is not None:
-            paths = sorted(paths, key=lambda p: p.relative_to(root).as_posix())[: args.musetrainer_limit]
+            paths = paths[: args.musetrainer_limit]
         rows += [{"path": str(p), "source": "MuseTrainer", "relative_path": p.relative_to(root).as_posix(), "makam": "", "error": ""} for p in paths]
     if args.symbtr_root:
-        for path in symbtr_paths(args.symbtr_root, n=args.symbtr_n, seed=args.symbtr_seed):
+        sample = sorted(symbtr_paths(args.symbtr_root, n=args.symbtr_n, seed=args.symbtr_seed), key=lambda p: p.name)
+        for path in sample:
             rows.append({"path": str(path), "source": "SymbTr", "relative_path": path.name, "makam": parse_symbtr_filename(path)["makam"], "error": ""})
     if not rows:
         raise SystemExit("Indica --musetrainer-root y/o --symbtr-root.")
     return pd.DataFrame(rows)
+
+
+def manifest_config(args: argparse.Namespace) -> dict:
+    """La configuración que escribe ``manifest["config"]``, derivada de los argumentos.
+
+    La auditoría la vuelve a derivar de ``manifest["command"]`` para comprobar que coincide.
+    """
+
+    config = _config(args)
+    return {
+        **config.to_dict(),
+        "chain_seeds": list(range(1, config.n_chains + 1)),
+        "extraction": EXTRACTION,
+        "min_events": args.min_events,
+        "symbtr_n": args.symbtr_n if args.symbtr_root else None,
+        "symbtr_seed": args.symbtr_seed if args.symbtr_root else None,
+        "musetrainer_limit": args.musetrainer_limit,
+        "bootstrap_samples": args.bootstrap_samples,
+        "stats_seed": args.stats_seed,
+        "n_workers": args.n_workers,
+    }
+
+
+def _config(args: argparse.Namespace) -> porobra.PorObraConfig:
+    return porobra.PorObraConfig(
+        alphas=tuple(args.alphas),
+        k_grid=tuple(args.k_grid),
+        finite_alphas=tuple(args.finite_alphas),
+        max_states=args.max_states,
+        finite_restarts=args.finite_restarts,
+        etas=tuple(args.etas),
+        truncation=args.truncation,
+        n_chains=args.chains,
+        n_iters=args.iters,
+        burn_in=args.burn_in,
+        occupancy_threshold=args.occupancy_threshold,
+        n_occupancy_samples=args.occupancy_samples,
+    )
+
+
+def input_files(catalog: pd.DataFrame) -> list[dict]:
+    """Entradas con su ruta relativa a la raíz de su corpus (como Comparacion/corpus_fingerprint.py).
+
+    Sin la ruta local, el mismo corpus en otra carpeta u otra máquina da los mismos registros
+    y el mismo ``aggregate_sha256``.
+    """
+
+    files = [{"source": row.source, "path": row.relative_path, "sha256": _sha256(row.path)} for row in catalog.itertuples()]
+    return sorted(files, key=lambda item: (item["source"], item["path"]))
+
+
+def aggregate_sha256(files: list[dict]) -> str:
+    return hashlib.sha256("".join(f"{i['source']}\n{i['path']}\n{i['sha256']}\n" for i in files).encode("utf-8")).hexdigest()
+
+
+def _readme() -> str:
+    return (
+        "Corrida de src.cli.porobra_heldout (preregistro 2026-10-26, sección A).\n\n"
+        "Archivos: per_work.csv (una fila por obra), summary.json (comparaciones, convergencia, "
+        "sensibilidades), manifest.json (commit, comando, configuración, hashes) y porobra_audit.json.\n\n"
+        "Advertencia sobre los estados del HDP-HMM en per_work.csv:\n"
+        f"{porobra.HDP_STATES_NOTE}\n"
+    )
 
 
 def _sha256(path: str | Path) -> str:
@@ -192,20 +266,7 @@ def main(argv: list[str] | None = None) -> Path:
     run_dir = run_directory(args.output_root, args.run_name)
     if run_dir.exists():
         raise FileExistsError(f"{run_dir} ya existe: nunca se sobrescribe una corrida.")
-    config = porobra.PorObraConfig(
-        alphas=tuple(args.alphas),
-        k_grid=tuple(args.k_grid),
-        finite_alphas=tuple(args.finite_alphas),
-        max_states=args.max_states,
-        finite_restarts=args.finite_restarts,
-        etas=tuple(args.etas),
-        truncation=args.truncation,
-        n_chains=args.chains,
-        n_iters=args.iters,
-        burn_in=args.burn_in,
-        occupancy_threshold=args.occupancy_threshold,
-        n_occupancy_samples=args.occupancy_samples,
-    )
+    config = _config(args)
 
     catalog = _catalog(args)
     prepared = prepare_corpus(catalog, extraction=EXTRACTION)
@@ -229,12 +290,16 @@ def main(argv: list[str] | None = None) -> Path:
     for column in per_work.columns:
         if per_work[column].map(lambda value: isinstance(value, (dict, list))).any():
             per_work[column] = per_work[column].map(lambda value: json.dumps(_jsonable(value), sort_keys=True))
-    records = [dict(zip(("work_id", "n_test", *(f"{m}_test_nll" for m in porobra.MODELS), "hdp_converged"), values))
-               for values in zip(per_work["work_id"], per_work["n_test"], *(per_work[f"{m}_test_nll"] for m in porobra.MODELS),
-                                 per_work["hdp_converged"])]
+    per_work.to_csv(run_dir / "per_work.csv", index=False)
+    (run_dir / "README.txt").write_text(_readme(), encoding="utf-8")
+    # Las comparaciones salen del CSV tal como quedó en disco: la auditoría las recalcula
+    # desde el mismo archivo y, con la misma semilla, deben coincidir exacto.
+    records = porobra_audit.comparison_records(porobra_audit.read_per_work(run_dir / "per_work.csv"))
+    blocks = porobra.summary_blocks(records, bootstrap_samples=args.bootstrap_samples, seed=args.stats_seed,
+                                    exposed_work_ids=porobra.TEST_EXPOSED_WORK_IDS)
 
     summary = {
-        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaración 7",
+        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaraciones 7 y 8",
         "corpus": {
             "extraction": EXTRACTION,
             "n_candidates": int(len(catalog)),
@@ -251,21 +316,16 @@ def main(argv: list[str] | None = None) -> Path:
             "n_by_source_analyzed": _distribution(per_work["source"]) if len(per_work) else {},
         },
         "analysis_failures": analysis_failures,
-        "convergence": porobra.convergence_summary(records),
-        "comparisons": porobra.compare_hdp(records, bootstrap_samples=args.bootstrap_samples, seed=args.stats_seed),
-        "sensitivity_converged_only": porobra.compare_hdp(
-            records, bootstrap_samples=args.bootstrap_samples, seed=args.stats_seed, converged_only=True
-        ),
+        "convergence": blocks["convergence"],
+        "comparisons": blocks["comparisons"],
+        "sensitivity_converged_only": blocks["sensitivity_converged_only"],
         "test_exposure": {
             "exposed_work_ids": list(porobra.TEST_EXPOSED_WORK_IDS),
             "exposed_works": dict(porobra.TEST_EXPOSED_WORKS),
             "exposed_in_run": sorted(set(porobra.TEST_EXPOSED_WORK_IDS) & set(per_work["work_id"])),
             "note": porobra.TEST_EXPOSURE_NOTE,
         },
-        "sensitivity_without_exposed": porobra.compare_hdp(
-            records, bootstrap_samples=args.bootstrap_samples, seed=args.stats_seed,
-            exclude_work_ids=porobra.TEST_EXPOSED_WORK_IDS,
-        ),
+        "sensitivity_without_exposed": blocks["sensitivity_without_exposed"],
         "hdp_states_note": porobra.HDP_STATES_NOTE,
         "selected_hyperparameters": {
             "hdp_eta": _distribution(per_work["hdp_eta"]) if len(per_work) else {},
@@ -278,37 +338,27 @@ def main(argv: list[str] | None = None) -> Path:
         "wall_clock_s": None,
     }
 
-    per_work.to_csv(run_dir / "per_work.csv", index=False)
     summary["wall_clock_s"] = round(time.perf_counter() - started, 1)
     (run_dir / "summary.json").write_text(json.dumps(_jsonable(summary), indent=2, ensure_ascii=False), encoding="utf-8")
-    input_files = [{"path": Path(p).as_posix(), "sha256": _sha256(p)} for p in catalog["path"]]
+    files = input_files(catalog)
     manifest = {
         "created": datetime.now().isoformat(timespec="seconds"),
         "commit": _git("rev-parse", "HEAD"),
         "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
         "dirty_worktree": bool(_git("status", "--porcelain", "--untracked-files=no")),
         "command": [sys.executable, "-m", "src.cli.porobra_heldout", *(argv if argv is not None else sys.argv[1:])],
-        "config": {
-            **config.to_dict(),
-            "chain_seeds": list(range(1, config.n_chains + 1)),
-            "extraction": EXTRACTION,
-            "min_events": args.min_events,
-            "symbtr_n": args.symbtr_n if args.symbtr_root else None,
-            "symbtr_seed": args.symbtr_seed if args.symbtr_root else None,
-            "musetrainer_limit": args.musetrainer_limit,
-            "bootstrap_samples": args.bootstrap_samples,
-            "stats_seed": args.stats_seed,
-            "n_workers": args.n_workers,
-        },
+        "config": manifest_config(args),
         "inputs": {
+            # Las raíces locales se guardan como referencia; no entran en el hash.
             "musetrainer_root": args.musetrainer_root,
             "symbtr_root": args.symbtr_root,
-            "aggregate_sha256": hashlib.sha256("".join(f"{i['path']}\n{i['sha256']}\n" for i in input_files).encode()).hexdigest(),
-            "files": input_files,
+            "path_base": "ruta relativa a la raíz de cada corpus (source), en POSIX",
+            "aggregate_sha256": aggregate_sha256(files),
+            "files": files,
         },
         "versions": _versions(),
         "hardware": {"platform": platform.platform(), "processor": platform.processor(), "cpu_count": os.cpu_count()},
-        "outputs": {name: _sha256(run_dir / name) for name in ("per_work.csv", "summary.json")},
+        "outputs": {name: _sha256(run_dir / name) for name in OUTPUTS},
     }
     (run_dir / "manifest.json").write_text(json.dumps(_jsonable(manifest), indent=2, ensure_ascii=False), encoding="utf-8")
     audit = porobra_audit.audit_run_directory(run_dir)
