@@ -21,7 +21,7 @@ from src.cli import porobra_heldout
 from tests.test_porobra_cli import _run, corpus  # noqa: F401 - fixture reutilizada
 
 INTEGRITY_CHECKS = {"artifacts_present", "manifest_hashes", "denominators", "corpus_accounting",
-                    "canonicalization", "headline_recompute", "analysis_failures"}
+                    "canonicalization", "per_work_invariants", "headline_recompute", "analysis_failures"}
 
 
 @pytest.fixture(scope="module")
@@ -377,6 +377,190 @@ def test_conteo_del_preregistro_escrito_en_el_resumen_no_hace_confirmatoria_la_c
     audit = porobra_audit.audit_run_directory(copy)
     assert audit["status"] == "failed" and audit["confirmatory"] is False
     assert porobra_audit.main([str(copy), "--require-preregistered"]) == 1
+
+
+def _rewrite_manifest(copy: Path, manifest: dict) -> None:
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_aggregate_sha256_que_no_es_el_de_los_archivos_falla(run_dir, tmp_path):
+    # Ronda 2 de revisión: un hash de entrada editado con el agregado sin recalcular pasaba.
+    copy = _copy(run_dir, tmp_path)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["inputs"]["files"][0]["sha256"] = "0" * 64
+    _rewrite_manifest(copy, manifest)
+    check = _check(porobra_audit.audit_run_directory(copy), "manifest_hashes")
+    assert check["status"] == "failed" and check["aggregate_mismatch"] is True, check
+
+
+def test_el_aggregate_sha256_de_la_corrida_cuadra(run_dir):
+    check = _check(porobra_audit.audit_run_directory(run_dir), "manifest_hashes")
+    assert check["status"] == "passed" and check["aggregate_mismatch"] is False
+
+
+def test_las_listas_del_corpus_llevan_fuente_y_ruta_relativa(run_dir):
+    corpus = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))["corpus"]
+    for key in ("failures", "duplicates", "excluded_short_works"):
+        assert corpus[key], key
+        for item in corpus[key]:
+            assert item["source"] == "MuseTrainer" and "/" not in item["relative_path"], item
+    assert [item["relative_path"] for item in corpus["failures"]] == ["rota.musicxml"]
+    assert [item["relative_path"] for item in corpus["duplicates"]] == ["b_copia.musicxml"]
+    assert [item["relative_path"] for item in corpus["excluded_short_works"]] == ["corta.musicxml"]
+
+
+def _padded(run_dir: Path, tmp_path: Path, monkeypatch) -> Path:
+    """Ronda 2 de revisión: entradas de relleno, contadas como «cortas» sin entrar en la lista.
+
+    El agregado y los conteos por fuente se rehacen coherentes con el relleno, el corpus del
+    preregistro pasa a ser el rellenado y la config es la «preregistrada».
+    """
+
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    files = manifest["inputs"]["files"]
+    files += [{"source": "SymbTr", "path": f"relleno{i}.xml", "sha256": f"{i:064x}"} for i in range(5)]
+    files.sort(key=lambda item: (item["source"], item["path"]))
+    manifest["inputs"]["aggregate_sha256"] = porobra_heldout.aggregate_sha256(files)
+    _rewrite_manifest(copy, manifest)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    corpus = summary["corpus"]
+    corpus["n_candidates"] += 5
+    corpus["n_excluded_short"] += 5
+    corpus["n_by_source_candidates"]["SymbTr"] += 5
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS", dict(corpus["n_by_source_candidates"]))
+    _rewrite_summary(copy, summary)
+    return copy
+
+
+def test_entradas_de_relleno_no_hacen_confirmatoria_la_corrida(run_dir, tmp_path, monkeypatch):
+    copy = _padded(run_dir, tmp_path, monkeypatch)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert _check(audit, "manifest_hashes")["status"] == "passed"
+    check = _check(audit, "corpus_accounting")
+    assert check["status"] == "failed", check
+    assert any("n_excluded_short" in problem for problem in check["problems"]), check
+    assert any("relleno0.xml" in problem for problem in check["problems"]), check
+    assert audit["confirmatory"] is False
+    assert porobra_audit.main([str(copy), "--require-preregistered"]) == 1
+
+
+#: Conteos que suman lo mismo que antes pero ya no son la longitud de su lista.
+LIST_COUNT_EDITS = {
+    "duplicadas_de_mas": lambda c: c.update(n_duplicates=c["n_duplicates"] + 1, n_excluded_short=c["n_excluded_short"] - 1),
+    "fallas_de_mas": lambda c: c.update(n_failures=c["n_failures"] + 1, n_duplicates=c["n_duplicates"] - 1),
+    "cortas_de_mas": lambda c: c.update(n_excluded_short=c["n_excluded_short"] + 1, n_failures=c["n_failures"] - 1),
+}
+
+
+@pytest.mark.parametrize("edit", sorted(LIST_COUNT_EDITS))
+def test_un_conteo_que_no_es_la_longitud_de_su_lista_falla(run_dir, tmp_path, edit):
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    LIST_COUNT_EDITS[edit](summary["corpus"])
+    _rewrite_summary(copy, summary)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert _check(audit, "manifest_hashes")["status"] == "passed"
+    check = _check(audit, "corpus_accounting")
+    assert check["status"] == "failed" and any("len(" in problem for problem in check["problems"]), check
+
+
+def test_una_obra_del_csv_que_no_esta_en_las_entradas_falla(run_dir, tmp_path):
+    # Ronda 2 de revisión: la ruta de la fila no era una de las entradas del manifiesto.
+    copy = _copy(run_dir, tmp_path)
+    works = porobra_audit.read_per_work(copy / "per_work.csv")
+    works.loc[0, "relative_path"] = "otra_obra.mxl"
+    _rewrite_per_work(copy, works)
+    check = _check(porobra_audit.audit_run_directory(copy), "corpus_accounting")
+    assert check["status"] == "failed" and any("otra_obra.mxl" in problem for problem in check["problems"]), check
+
+
+def test_una_entrada_que_ninguna_lista_explica_falla(run_dir, tmp_path):
+    # La entrada rota.musicxml desaparece de failures: queda sin destino.
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    summary["corpus"]["failures"] = []
+    summary["corpus"]["n_failures"] = 0
+    summary["corpus"]["n_duplicates"] += 1
+    summary["corpus"]["duplicates"].append(dict(summary["corpus"]["duplicates"][0]))
+    _rewrite_summary(copy, summary)
+    check = _check(porobra_audit.audit_run_directory(copy), "corpus_accounting")
+    assert check["status"] == "failed", check
+    assert any("rota.musicxml" in problem for problem in check["problems"]), check
+    assert any("b_copia.musicxml" in problem for problem in check["problems"]), check
+
+
+# --- invariantes de cada fila de per_work.csv ----------------------------------------
+
+
+def _rewrite_rows(copy: Path, works: pd.DataFrame) -> None:
+    """Reescribe per_work.csv y el resumen recalculado desde él (los dos con su hash al día).
+
+    Así el recálculo de las cifras titulares pasa y sólo los invariantes de fila pueden
+    detectar la edición.
+    """
+
+    _rewrite_per_work(copy, works)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    blocks = porobra_audit._jsonable(porobra.summary_blocks(
+        porobra_audit.comparison_records(porobra_audit.read_per_work(copy / "per_work.csv")),
+        bootstrap_samples=summary["comparisons"]["bootstrap_samples"], seed=summary["comparisons"]["seed"],
+        exposed_work_ids=summary["test_exposure"]["exposed_work_ids"]))
+    summary.update(blocks)
+    _rewrite_summary(copy, summary)
+
+
+def _below_chains(works: pd.DataFrame) -> None:
+    works["hdp_test_nll"] = [min(json.loads(value)) - 0.1 for value in works["hdp_test_nll_by_chain"]]
+
+
+def _above_chains(works: pd.DataFrame) -> None:
+    works.loc[0, "hdp_test_nll"] = max(json.loads(works.loc[0, "hdp_test_nll_by_chain"])) + 0.1
+
+
+def _flip_converged(works: pd.DataFrame) -> None:
+    works["hdp_converged"] = ~works["hdp_converged"].astype(bool)
+
+
+def _k_at_top(works: pd.DataFrame) -> None:
+    works.loc[0, "finite_k"] = max(json.loads(works.loc[0, "finite_k_grid"]))
+    works["finite_k_hit_limit"] = False
+
+
+def _hit_limit_below_top(works: pd.DataFrame) -> None:
+    works.loc[0, "finite_k"] = min(json.loads(works.loc[0, "finite_k_grid"]))
+    works.loc[0, "finite_k_hit_limit"] = True
+
+
+#: Ediciones de per_work.csv con el resumen recalculado: cada una contradice su propia fila.
+ROW_EDITS = {
+    "convergencia_contra_rhat": (_flip_converged, "hdp_converged"),
+    "ensamble_bajo_las_cadenas": (_below_chains, "hdp_test_nll"),
+    "ensamble_sobre_las_cadenas": (_above_chains, "hdp_test_nll"),
+    "k_en_el_techo_sin_marca": (_k_at_top, "finite_k_hit_limit"),
+    "marca_de_techo_sin_k_en_el_techo": (_hit_limit_below_top, "finite_k_hit_limit"),
+}
+
+
+@pytest.mark.parametrize("edit", sorted(ROW_EDITS))
+def test_una_fila_que_se_contradice_falla(run_dir, tmp_path, edit):
+    copy = _copy(run_dir, tmp_path)
+    works = porobra_audit.read_per_work(copy / "per_work.csv")
+    change, field = ROW_EDITS[edit]
+    change(works)
+    _rewrite_rows(copy, works)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert _check(audit, "manifest_hashes")["status"] == "passed"
+    assert _check(audit, "headline_recompute")["status"] == "passed", _check(audit, "headline_recompute")
+    check = _check(audit, "per_work_invariants")
+    assert check["status"] == "failed" and check["problems"], check
+    assert all(field in problem for problem in check["problems"]), check
+    assert audit["status"] == "failed" and audit["confirmatory"] is False
+
+
+def test_las_filas_de_la_corrida_cumplen_sus_invariantes(run_dir):
+    check = _check(porobra_audit.audit_run_directory(run_dir), "per_work_invariants")
+    assert check["status"] == "passed" and check["problems"] == [], check
 
 
 @pytest.mark.parametrize("flag,key,value", [("--symbtr-n", "symbtr_n", 1), ("--musetrainer-limit", "musetrainer_limit", 4)])
