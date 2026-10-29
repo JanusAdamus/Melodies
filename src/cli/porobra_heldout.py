@@ -12,7 +12,7 @@ interrumpe, lo ya calculado queda en disco. Una obra que falla se registra en
 ``analysis_failures`` del resumen y queda fuera de las comparaciones; las demás siguen.
 La comparación principal usa todas las obras analizadas (Enmienda 6);
 ``sensitivity_converged_only`` la repite sólo con las que tienen R-hat de log L < 1.1 y
-``sensitivity_without_exposed`` sin las obras con la prueba expuesta (Aclaración 7). Al final
+``sensitivity_without_exposed`` sin las obras con la prueba expuesta (Aclaraciones 7 y 8). Al final
 escribe ``porobra_audit.json`` (``src.analysis.porobra_audit``).
 """
 
@@ -233,7 +233,7 @@ def main(argv: list[str] | None = None) -> Path:
                                  per_work["hdp_converged"])]
 
     summary = {
-        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaración 7",
+        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaraciones 7 y 8",
         "corpus": {
             "extraction": EXTRACTION,
             "n_candidates": int(len(catalog)),

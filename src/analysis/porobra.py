@@ -64,9 +64,10 @@ HDP_STATES_NOTE = (
     "media posterior y no se interpretan como inferencia bayesiana sobre K."
 )
 DECISION_ESTIMAND = "mean_over_works_of_work_nll_difference"
-#: Aclaración 7: obras de MuseTrainer cuya NLL de prueba se calculó (corridas de tiempos y
-#: smokes del 2026-10-28) antes de escribir las Enmiendas 5 y 6. Siguen en la métrica
-#: principal; la comparación se repite sin ellas como sensibilidad.
+#: Aclaraciones 7 y 8: obras de MuseTrainer cuya NLL de prueba se calculó (corridas de
+#: tiempos y smokes del 2026-10-28) antes de escribir las Enmiendas 5 y 6; la de Arabesque
+#: quedó escrita en la bitácora. Siguen en la métrica principal; la comparación se repite
+#: sin ellas como sensibilidad (Aclaración 8).
 TEST_EXPOSED_WORK_IDS = (
     "MuseTrainer:12_Variations_of_Twinkle_Twinkle_Little_Star.mxl",
     "MuseTrainer:Arabesque_L._66_No._1_in_E_Major.mxl",
@@ -75,7 +76,8 @@ TEST_EXPOSED_WORK_IDS = (
     "MuseTrainer:Bach_Toccata_and_Fugue_in_D_Minor_Piano_solo.mxl",
 )
 TEST_EXPOSURE_NOTE = (
-    "Aclaración 7: la NLL de prueba de estas obras se calculó antes de las Enmiendas 5 y 6; "
+    "Aclaraciones 7 y 8: la NLL de prueba de estas obras se calculó antes de las Enmiendas 5 y 6 "
+    "(la de Arabesque se vio); "
     "siguen en la métrica principal y sensitivity_without_exposed repite la comparación sin ellas (no decide)."
 )
 #: Seudoconteo de la distribución inicial del finito (una sola secuencia: casi no pesa).
@@ -619,7 +621,7 @@ def compare_hdp(
     notas de prueba y Wilcoxon (con Holm) son secundarias. Regla: «mejora» si el extremo
     superior del IC de Holm es < 0; «es_mejor_el_otro» si el inferior es > 0; si no, «no hay
     evidencia». Menos de 10 obras en común (Enmienda 1): «no_evaluable».
-    ``exclude_work_ids`` quita esas obras (sensibilidad de la Aclaración 7).
+    ``exclude_work_ids`` quita esas obras (sensibilidad de la Aclaración 8).
     """
 
     rows = list(rows)
