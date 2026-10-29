@@ -327,6 +327,77 @@ def test_conteo_del_corpus_que_no_cuadra_falla(run_dir, tmp_path):
     assert _check(porobra_audit.audit_run_directory(copy), "corpus_accounting")["status"] == "failed"
 
 
+#: Ediciones de los conteos por fuente del resumen (hash al día) que no cuadran con los
+#: archivos de entrada del manifiesto o con la columna «source» de per_work.csv.
+COUNT_EDITS = {
+    # Ronda 1 de revisión: el resumen dice 69/100 candidatos; la corrida tiene 7 archivos.
+    "candidatos_del_preregistro": lambda s: s["corpus"].update(
+        n_by_source_candidates={"MuseTrainer": 69, "SymbTr": 100}),
+    # Misma suma que n_candidates, otro reparto que el de manifest["inputs"]["files"].
+    "candidatos_mal_repartidos": lambda s: s["corpus"].update(
+        n_by_source_candidates={"MuseTrainer": s["corpus"]["n_candidates"] - 1, "SymbTr": 1}),
+    # Misma suma que n_analyzed, otro reparto que la columna «source» de per_work.csv.
+    "analizadas_mal_repartidas": lambda s: s["corpus"].update(
+        n_by_source_analyzed={"MuseTrainer": s["corpus"]["n_analyzed"] - 1, "SymbTr": 1}),
+}
+
+
+@pytest.mark.parametrize("edit", sorted(COUNT_EDITS))
+def test_conteos_por_fuente_que_no_son_los_de_la_corrida_fallan(run_dir, tmp_path, edit):
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    before = json.dumps(summary["corpus"], sort_keys=True)
+    COUNT_EDITS[edit](summary)
+    assert json.dumps(summary["corpus"], sort_keys=True) != before
+    _rewrite_summary(copy, summary)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert _check(audit, "manifest_hashes")["status"] == "passed"
+    check = _check(audit, "corpus_accounting")
+    assert check["status"] == "failed" and check["problems"], check
+    assert audit["status"] == "failed" and audit["confirmatory"] is False
+
+
+def test_archivos_de_entrada_que_no_son_los_candidatos_fallan(run_dir, tmp_path):
+    copy = _copy(run_dir, tmp_path)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["inputs"]["files"] = manifest["inputs"]["files"][:-1]
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    check = _check(porobra_audit.audit_run_directory(copy), "corpus_accounting")
+    assert check["status"] == "failed" and check["problems"], check
+
+
+def test_conteo_del_preregistro_escrito_en_el_resumen_no_hace_confirmatoria_la_corrida(run_dir, tmp_path, monkeypatch):
+    # Ronda 1 de revisión: config, comando y árbol como los de la sección A y el resumen
+    # con 69/100 candidatos; la corrida sólo tiene los archivos del corpus de prueba.
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS", {"MuseTrainer": 69, "SymbTr": 100})
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    summary["corpus"]["n_by_source_candidates"] = {"MuseTrainer": 69, "SymbTr": 100}
+    _rewrite_summary(copy, summary)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert audit["status"] == "failed" and audit["confirmatory"] is False
+    assert porobra_audit.main([str(copy), "--require-preregistered"]) == 1
+
+
+@pytest.mark.parametrize("flag,key,value", [("--symbtr-n", "symbtr_n", 1), ("--musetrainer-limit", "musetrainer_limit", 4)])
+def test_config_del_corpus_que_contradice_los_archivos_no_pasa(run_dir, tmp_path, monkeypatch, flag, key, value):
+    # Config, comando y «preregistro» dicen el mismo tope; los archivos de la corrida lo superan.
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch, **{key: value})
+    monkeypatch.setitem(porobra_audit.PREREGISTERED_CONFIG, key, value)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    command = manifest["command"]
+    if flag in command:
+        command[command.index(flag) + 1] = str(value)
+    else:
+        command += [flag, str(value)]
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    audit = porobra_audit.audit_run_directory(copy)
+    deviations = audit["preregistration"]["deviations"]
+    assert set(deviations) == {"corpus_config"}, deviations
+    assert key in deviations["corpus_config"]["observed"]
+    assert audit["confirmatory"] is False
+
+
 def test_una_obra_que_falla_deja_la_auditoria_en_failed(corpus, tmp_path, monkeypatch):  # noqa: F811
     original = porobra_heldout.porobra.analyze_work
 
