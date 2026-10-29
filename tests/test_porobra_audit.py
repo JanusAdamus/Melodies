@@ -30,16 +30,85 @@ def _check(audit: dict, name: str) -> dict:
     return check
 
 
-def test_la_corrida_escribe_su_auditoria_en_passed(run_dir):
+def _as_preregistered(run_dir: Path, tmp_path: Path, monkeypatch, **overrides) -> Path:
+    """Copia la corrida con la configuración de la sección A en el manifiesto.
+
+    El manifiesto no está entre los ``outputs`` con hash, así que editarlo no rompe los
+    demás controles; el tamaño del corpus esperado se ajusta al del corpus de prueba.
+    """
+
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS", dict(summary["corpus"]["n_by_source_candidates"]))
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["config"].update({**porobra_audit.PREREGISTERED_CONFIG, "truncation": 20, **overrides})
+    manifest["dirty_worktree"] = False
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return copy
+
+
+def test_la_corrida_escribe_su_auditoria_y_un_smoke_no_pasa_por_preregistrada(run_dir):
     written = json.loads((run_dir / porobra_audit.AUDIT_FILENAME).read_text(encoding="utf-8"))
-    assert written["status"] == "passed", written
+    # Integridad en orden, pero la configuración rápida de la prueba no es la de la sección A.
+    assert written["status"] == "not_preregistered", written
     names = {check["name"] for check in written["checks"]}
     assert names == {"artifacts_present", "manifest_hashes", "denominators", "corpus_accounting",
-                     "canonicalization", "headline_recompute", "analysis_failures"}
+                     "canonicalization", "headline_recompute", "analysis_failures", "preregistered_config"}
+    assert all(check["status"] == "passed" for check in written["checks"] if check["name"] != "preregistered_config")
+    deviations = _check(written, "preregistered_config")["deviations"]
+    for key in ("n_chains", "n_iters", "burn_in", "k_grid", "etas", "bootstrap_samples", "truncation",
+                "symbtr_n", "corpus_size"):
+        assert key in deviations, deviations
     # Releer la carpeta da lo mismo y no escribe nada.
     before = sorted(p.name for p in run_dir.iterdir())
-    assert porobra_audit.audit_run_directory(run_dir)["status"] == "passed"
+    assert porobra_audit.audit_run_directory(run_dir)["status"] == "not_preregistered"
     assert sorted(p.name for p in run_dir.iterdir()) == before
+    assert porobra_audit.main([str(run_dir)]) == 1
+
+
+def test_con_la_configuracion_de_la_seccion_a_la_auditoria_pasa(run_dir, tmp_path, monkeypatch):
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert audit["status"] == "passed", audit
+    check = _check(audit, "preregistered_config")
+    assert check["deviations"] == {} and check["run_kind"] == "principal"
+
+
+def test_truncamiento_40_es_la_sensibilidad_preregistrada(run_dir, tmp_path, monkeypatch):
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch, truncation=40)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert audit["status"] == "passed"
+    assert _check(audit, "preregistered_config")["run_kind"] == "sensibilidad_truncamiento_40"
+
+
+@pytest.mark.parametrize("overrides", [
+    {"n_iters": 40}, {"bootstrap_samples": 500}, {"k_grid": [2, 4]}, {"musetrainer_limit": 3},
+    {"symbtr_n": 0}, {"symbtr_seed": 8}, {"n_chains": 2, "chain_seeds": [1, 2]}, {"etas": [1.0]},
+    {"min_events": 25}, {"finite_alphas": [0.1]}, {"alphas": [1.0]}, {"burn_in": 100}, {"truncation": 30},
+])
+def test_cualquier_desviacion_de_la_seccion_a_se_nombra(run_dir, tmp_path, monkeypatch, overrides):
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch, **overrides)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert audit["status"] == "not_preregistered"
+    deviations = _check(audit, "preregistered_config")["deviations"]
+    assert set(overrides) <= set(deviations), deviations
+    assert deviations[next(iter(overrides))]["observed"] == next(iter(overrides.values()))
+
+
+def test_arbol_sucio_o_corpus_incompleto_no_pasan(run_dir, tmp_path, monkeypatch):
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["dirty_worktree"] = True
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS", {"MuseTrainer": 69, "SymbTr": 100})
+    deviations = _check(porobra_audit.audit_run_directory(copy), "preregistered_config")["deviations"]
+    assert set(deviations) == {"dirty_worktree", "corpus_size"}
+
+
+def test_una_falla_de_integridad_pesa_mas_que_la_configuracion(run_dir, tmp_path):
+    copy = _copy(run_dir, tmp_path)
+    (copy / "summary.json").unlink()
+    assert porobra_audit.audit_run_directory(copy)["status"] == "incomplete"
 
 
 def test_falta_un_archivo_queda_incompleta(run_dir, tmp_path):
