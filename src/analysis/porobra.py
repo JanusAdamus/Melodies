@@ -64,21 +64,32 @@ HDP_STATES_NOTE = (
     "media posterior y no se interpretan como inferencia bayesiana sobre K."
 )
 DECISION_ESTIMAND = "mean_over_works_of_work_nll_difference"
-#: Aclaraciones 7 y 8: obras de MuseTrainer cuya NLL de prueba se calculó (corridas de
-#: tiempos y smokes del 2026-10-28) antes de escribir las Enmiendas 5 y 6; la de Arabesque
-#: quedó escrita en la bitácora. Siguen en la métrica principal; la comparación se repite
-#: sin ellas como sensibilidad (Aclaración 8).
-TEST_EXPOSED_WORK_IDS = (
-    "MuseTrainer:12_Variations_of_Twinkle_Twinkle_Little_Star.mxl",
-    "MuseTrainer:Arabesque_L._66_No._1_in_E_Major.mxl",
-    "MuseTrainer:Ave_Maria_D839_-_Schubert_-_Solo_Piano_Arrg..mxl",
-    "MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl",
-    "MuseTrainer:Bach_Toccata_and_Fugue_in_D_Minor_Piano_solo.mxl",
+_ACLARACION_7 = (
+    "Aclaración 7: corridas de tiempos del 2026-10-28 (5 primeras obras de MuseTrainer), "
+    "NLL de prueba calculada antes de las Enmiendas 5 y 6"
 )
+#: Obras del corpus de A cuya NLL de prueba se calculó antes de la corrida confirmatoria, con
+#: el motivo. Siguen en la métrica principal (Aclaración 7). La comparación sin ellas
+#: (``sensitivity_without_exposed``) es una propuesta de la revisión de la tarea 1.4,
+#: registrada en la bitácora para que Adrián la confirme: no está en el preregistro y no decide.
+TEST_EXPOSED_WORKS = {
+    "MuseTrainer:12_Variations_of_Twinkle_Twinkle_Little_Star.mxl": _ACLARACION_7,
+    "MuseTrainer:Arabesque_L._66_No._1_in_E_Major.mxl": _ACLARACION_7
+    + "; sus cifras de prueba quedaron escritas en la bitácora (ff9f998, 700acba)",
+    "MuseTrainer:Ave_Maria_D839_-_Schubert_-_Solo_Piano_Arrg..mxl": _ACLARACION_7,
+    "MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl": _ACLARACION_7,
+    "MuseTrainer:Bach_Toccata_and_Fugue_in_D_Minor_Piano_solo.mxl": _ACLARACION_7,
+    "MuseTrainer:Passacaglia.mxl": (
+        "revisión de la tarea 1.4: la ronda 1 la calculó en una corrida de prueba (2026-10-28 16:14, "
+        "fuera del repo) y la ronda 3 imprimió sus cifras de prueba"
+    ),
+}
+TEST_EXPOSED_WORK_IDS = tuple(TEST_EXPOSED_WORKS)
 TEST_EXPOSURE_NOTE = (
-    "Aclaraciones 7 y 8: la NLL de prueba de estas obras se calculó antes de las Enmiendas 5 y 6 "
-    "(la de Arabesque se vio); "
-    "siguen en la métrica principal y sensitivity_without_exposed repite la comparación sin ellas (no decide)."
+    "La NLL de prueba de estas obras se calculó antes de la corrida confirmatoria (Aclaración 7 y "
+    "revisión de la tarea 1.4; motivo por obra en exposed_works). Siguen en la métrica principal. "
+    "sensitivity_without_exposed repite la comparación sin ellas: es una propuesta de la revisión, "
+    "pendiente de que Adrián la confirme (bitácora), fuera del preregistro; no decide."
 )
 #: Seudoconteo de la distribución inicial del finito (una sola secuencia: casi no pesa).
 INITIAL_PSEUDOCOUNT = 1e-3
@@ -621,7 +632,7 @@ def compare_hdp(
     notas de prueba y Wilcoxon (con Holm) son secundarias. Regla: «mejora» si el extremo
     superior del IC de Holm es < 0; «es_mejor_el_otro» si el inferior es > 0; si no, «no hay
     evidencia». Menos de 10 obras en común (Enmienda 1): «no_evaluable».
-    ``exclude_work_ids`` quita esas obras (sensibilidad de la Aclaración 8).
+    ``exclude_work_ids`` quita esas obras (sensibilidad sin las obras con la prueba expuesta).
     """
 
     rows = list(rows)

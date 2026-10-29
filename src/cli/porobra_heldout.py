@@ -12,8 +12,9 @@ interrumpe, lo ya calculado queda en disco. Una obra que falla se registra en
 ``analysis_failures`` del resumen y queda fuera de las comparaciones; las demás siguen.
 La comparación principal usa todas las obras analizadas (Enmienda 6);
 ``sensitivity_converged_only`` la repite sólo con las que tienen R-hat de log L < 1.1 y
-``sensitivity_without_exposed`` sin las obras con la prueba expuesta (Aclaraciones 7 y 8). Al final
-escribe ``porobra_audit.json`` (``src.analysis.porobra_audit``).
+``sensitivity_without_exposed`` sin las obras con la prueba expuesta (propuesta de la
+revisión, fuera del preregistro; no decide). Al final escribe ``porobra_audit.json``
+(``src.analysis.porobra_audit``): integridad y, aparte, si es la configuración de la sección A.
 """
 
 from __future__ import annotations
@@ -233,7 +234,7 @@ def main(argv: list[str] | None = None) -> Path:
                                  per_work["hdp_converged"])]
 
     summary = {
-        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaraciones 7 y 8",
+        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaración 7",
         "corpus": {
             "extraction": EXTRACTION,
             "n_candidates": int(len(catalog)),
@@ -257,6 +258,7 @@ def main(argv: list[str] | None = None) -> Path:
         ),
         "test_exposure": {
             "exposed_work_ids": list(porobra.TEST_EXPOSED_WORK_IDS),
+            "exposed_works": dict(porobra.TEST_EXPOSED_WORKS),
             "exposed_in_run": sorted(set(porobra.TEST_EXPOSED_WORK_IDS) & set(per_work["work_id"])),
             "note": porobra.TEST_EXPOSURE_NOTE,
         },
@@ -312,8 +314,9 @@ def main(argv: list[str] | None = None) -> Path:
     audit = porobra_audit.audit_run_directory(run_dir)
     (run_dir / porobra_audit.AUDIT_FILENAME).write_text(json.dumps(_jsonable(audit), indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Corrida escrita en {run_dir} ({summary['wall_clock_s']} s, {len(per_work)} obras).")
-    print(f"Auditoría: {audit['status']} ({porobra_audit.AUDIT_FILENAME}).")
-    deviations = next((c.get("deviations", {}) for c in audit["checks"] if c["name"] == "preregistered_config"), {})
+    print(f"Auditoría de integridad: {audit['status']}; preregistro: {audit['preregistration']['status']} "
+          f"({porobra_audit.AUDIT_FILENAME}).")
+    deviations = audit["preregistration"]["deviations"]
     if deviations:
         print(f"AVISO: no es la configuración de la sección A del preregistro ({', '.join(sorted(deviations))}); "
               "no se reporta como la corrida confirmatoria.")
