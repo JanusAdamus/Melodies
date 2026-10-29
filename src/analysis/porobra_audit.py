@@ -2,7 +2,8 @@
 
 Las auditorías de ``Comparacion/`` entienden los archivos del runner PDMX; esta revisa los
 de la corrida por obra: archivos presentes, hashes del manifiesto, denominadores de la
-partición 80/20, conteo del corpus, unicidad de obras y huellas de contenido, recálculo de
+partición 80/20, conteo del corpus (por fuente, contra los archivos de entrada del
+manifiesto y la columna ``source`` del CSV), unicidad de obras y huellas de contenido, recálculo de
 las cifras titulares desde ``per_work.csv`` y obras que fallaron en el análisis. Eso es la
 integridad: ``status`` es ``passed``, ``incomplete`` o ``failed``.
 
@@ -118,14 +119,61 @@ def _denominators(works: pd.DataFrame, summary: dict) -> dict:
     return {"name": "denominators", "status": _status(not bad), "bad_work_ids": bad, "min_events": min_events}
 
 
-def _corpus_accounting(works: pd.DataFrame, summary: dict) -> dict:
+def _input_counts(manifest: dict) -> dict:
+    """Archivos de entrada del manifiesto por fuente: los candidatos que leyó la corrida."""
+
+    counts: dict[str, int] = {}
+    for item in (manifest.get("inputs") or {}).get("files", []):
+        counts[str(item.get("source"))] = counts.get(str(item.get("source")), 0) + 1
+    return counts
+
+
+def _corpus_accounting(works: pd.DataFrame, summary: dict, manifest: dict) -> dict:
+    """El conteo del corpus cuadra consigo mismo, con los archivos de entrada y con el CSV.
+
+    ``n_by_source_candidates`` decide el tamaño del corpus del preregistro: debe sumar
+    ``n_candidates`` y ser, fuente por fuente, el de ``manifest["inputs"]["files"]``;
+    ``n_by_source_analyzed``, el de la columna ``source`` de ``per_work.csv``.
+    """
+
     corpus = summary.get("corpus", {})
     parts = ("n_failures", "n_duplicates", "n_excluded_short", "n_analysis_failures", "n_analyzed")
     accounted = sum(int(corpus.get(key, 0)) for key in parts)
-    by_source = sum(int(value) for value in corpus.get("n_by_source_analyzed", {}).values())
-    ok = corpus.get("n_candidates") == accounted and corpus.get("n_analyzed") == len(works) == by_source
-    return {"name": "corpus_accounting", "status": _status(ok), "n_candidates": corpus.get("n_candidates"),
-            "accounted": accounted, "n_rows": len(works)}
+    candidates = {str(key): int(value) for key, value in (corpus.get("n_by_source_candidates") or {}).items()}
+    analyzed = {str(key): int(value) for key, value in (corpus.get("n_by_source_analyzed") or {}).items()}
+    inputs = _input_counts(manifest)
+    in_csv = {str(key): int(value) for key, value in works["source"].astype(str).value_counts().items()}
+    problems = []
+    if corpus.get("n_candidates") != accounted:
+        problems.append(f"n_candidates {corpus.get('n_candidates')!r} y las partes suman {accounted}")
+    if sum(candidates.values()) != corpus.get("n_candidates"):
+        problems.append(f"n_by_source_candidates suma {sum(candidates.values())}, n_candidates es {corpus.get('n_candidates')!r}")
+    if candidates != inputs:
+        problems.append(f"n_by_source_candidates {candidates!r} y manifest inputs.files por fuente {inputs!r}")
+    if not corpus.get("n_analyzed") == len(works) == sum(analyzed.values()):
+        problems.append(f"n_analyzed {corpus.get('n_analyzed')!r}, {len(works)} filas, n_by_source_analyzed suma {sum(analyzed.values())}")
+    if analyzed != in_csv:
+        problems.append(f"n_by_source_analyzed {analyzed!r} y per_work.csv por fuente {in_csv!r}")
+    return {"name": "corpus_accounting", "status": _status(not problems), "n_candidates": corpus.get("n_candidates"),
+            "accounted": accounted, "n_rows": len(works), "n_by_source_inputs": inputs, "problems": problems}
+
+
+def _corpus_config_deviation(manifest: dict, config: dict) -> dict | None:
+    """Los topes del corpus en ``manifest["config"]`` frente a los archivos de entrada.
+
+    Sin ``symbtr_n`` no hay SymbTr; con él, entre 1 y ``symbtr_n`` (menos sólo si la carpeta
+    tiene menos). Con ``musetrainer_limit``, a lo sumo ese número de MuseTrainer.
+    """
+
+    inputs = _input_counts(manifest)
+    observed, expected = {}, {}
+    symbtr, symbtr_n = inputs.get("SymbTr", 0), config.get("symbtr_n")
+    if (symbtr != 0) if symbtr_n is None else not (isinstance(symbtr_n, int) and 1 <= symbtr <= symbtr_n):
+        observed["symbtr_n"], expected["symbtr_n"] = symbtr_n, f"compatible con {symbtr} archivos SymbTr"
+    musetrainer, limit = inputs.get("MuseTrainer", 0), config.get("musetrainer_limit")
+    if limit is not None and not (isinstance(limit, int) and musetrainer <= limit):
+        observed["musetrainer_limit"], expected["musetrainer_limit"] = limit, f"compatible con {musetrainer} archivos MuseTrainer"
+    return {"observed": observed, "expected": expected} if observed else None
 
 
 def _canonicalization(works: pd.DataFrame) -> dict:
@@ -322,6 +370,9 @@ def _preregistration(manifest: dict, summary: dict, works: pd.DataFrame) -> dict
     in_summary = _summary_deviation(summary, config)
     if in_summary:
         deviations["summary"] = in_summary
+    corpus_config = _corpus_config_deviation(manifest, config)
+    if corpus_config:
+        deviations["corpus_config"] = corpus_config
     for key, expected in PREREGISTERED_CONFIG.items():
         observed = config.get(key)
         if not (_same_dict(observed, expected) if isinstance(expected, dict) else _same(observed, expected)):
@@ -359,7 +410,7 @@ def audit_run_directory(run_dir: str | Path) -> dict:
         checks += [
             _manifest_hashes(root, manifest),
             _denominators(works, summary),
-            _corpus_accounting(works, summary),
+            _corpus_accounting(works, summary, manifest),
             _canonicalization(works),
             _recompute(works, summary),
             {"name": "analysis_failures", "status": _status(not failures), "work_ids": failures},
