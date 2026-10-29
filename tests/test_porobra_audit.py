@@ -199,8 +199,8 @@ def test_el_resumen_divulga_la_exposicion_y_repite_sin_esas_obras(corpus, tmp_pa
     exposure = summary["test_exposure"]
     assert exposure["exposed_work_ids"] == ["MuseTrainer:a.musicxml", "MuseTrainer:no_esta.mxl"]
     assert exposure["exposed_in_run"] == ["MuseTrainer:a.musicxml"]
-    assert "Aclaración 7" in exposure["note"]
+    assert "Aclaraciones 7 y 8" in exposure["note"]
     without = summary["sensitivity_without_exposed"]
     assert without["n_works"] == summary["comparisons"]["n_works"] - 1
     assert without["excluded_work_ids"] == ["MuseTrainer:a.musicxml"]
-    assert summary["preregistro"].endswith("Enmiendas 3, 5 y 6, Aclaración 7")
+    assert summary["preregistro"].endswith("Enmiendas 3, 5 y 6, Aclaraciones 7 y 8")
