@@ -633,49 +633,21 @@ def prepare_corpus(
                 tokens,
             )
         else:
-            # pool.map entrega en orden, así que lo consumido son los primeros de `pending`.
-            done_before = len(entries)
-            try:
-                with ProcessPoolExecutor(
-                    max_workers=n_workers,
-                    initializer=_silence_worker_warnings,
-                ) as pool:
-                    stream = pool.map(worker, pending, chunksize=chunksize)
-                    _consume_prepared(
-                        stream,
-                        entries,
-                        cache_handle,
-                        vocabulary,
-                        len(pending),
-                        progress_every,
-                        signature,
-                        tokens,
-                    )
-            except (BrokenProcessPool, OSError) as error:
-                # Con la máquina ocupada el pool puede morir (BrokenProcessPool, u OSError
-                # como «[WinError 6] Controlador no válido»). La preparación es determinista:
-                # lo que falta se prepara aquí en secuencia y el resultado es el mismo. Un
-                # error de la propia preparación reaparece al repetirla en este proceso.
-                consumed = len(entries) - done_before
-                warnings.warn(
-                    f"pool de procesos caído tras {consumed}/{len(pending)} partituras ({error!r}); "
-                    "el resto se prepara en secuencia",
-                    RuntimeWarning,
-                    stacklevel=2,
+            with ProcessPoolExecutor(
+                max_workers=n_workers,
+                initializer=_silence_worker_warnings,
+            ) as pool:
+                stream = _map_with_serial_fallback(pool, worker, pending, chunksize)
+                _consume_prepared(
+                    stream,
+                    entries,
+                    cache_handle,
+                    vocabulary,
+                    len(pending),
+                    progress_every,
+                    signature,
+                    tokens,
                 )
-                remaining = pending[consumed:]
-                with warnings.catch_warnings():
-                    _silence_worker_warnings()
-                    _consume_prepared(
-                        (worker(path) for path in remaining),
-                        entries,
-                        cache_handle,
-                        vocabulary,
-                        len(remaining),
-                        progress_every,
-                        signature,
-                        tokens,
-                    )
     finally:
         if cache_handle is not None:
             cache_handle.close()
@@ -686,6 +658,36 @@ def prepare_corpus(
         pieces=sorted(pieces, key=lambda item: item.piece_id),
         exclusions=sorted(exclusions, key=lambda item: item.piece_id),
     )
+
+
+def _map_with_serial_fallback(pool, worker, pending: list, chunksize: int):
+    """Resultados de ``pool.map`` en orden; si el pool muere, el resto en secuencia.
+
+    Con la máquina ocupada el pool puede morir (BrokenProcessPool, u OSError como
+    «[WinError 6] Controlador no válido»).  La preparación es determinista: lo que falta
+    se prepara aquí en secuencia y el resultado es el mismo.  Un error de la propia
+    preparación reaparece al repetirla en este proceso.  El respaldo sólo cambia la
+    fuente de resultados: los consume la misma llamada a ``_consume_prepared``.
+    """
+
+    done = 0
+    try:
+        # pool.map entrega en orden, así que lo entregado son los primeros de `pending`.
+        for prepared in pool.map(worker, pending, chunksize=chunksize):
+            yield prepared
+            done += 1
+    except (BrokenProcessPool, OSError) as error:
+        warnings.warn(
+            f"pool de procesos caído tras {done}/{len(pending)} partituras ({error!r}); "
+            "el resto se prepara en secuencia",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        for path in pending[done:]:
+            with warnings.catch_warnings():
+                _silence_worker_warnings()
+                prepared = worker(path)
+            yield prepared
 
 
 def _consume_prepared(

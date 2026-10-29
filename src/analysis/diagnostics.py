@@ -62,6 +62,10 @@ def matrix_to_dataframe(matrix: np.ndarray, row_labels: list[str], col_labels: l
 #: Nombre del eje de las tablas del HDP restringidas a `result.active_states`.
 REFERENCE_SAMPLE_AXIS = "reference_sample_state"
 
+#: Nombre del eje de las tablas del finito restringidas a `result.active_states`
+#: (estados distintos de la ruta de Viterbi, sin umbral de ocupación).
+VITERBI_STATE_AXIS = "viterbi_state"
+
 
 def active_submatrix(matrix: np.ndarray, active_states: list[int]) -> np.ndarray:
     return matrix[np.ix_(active_states, active_states)]
@@ -198,6 +202,15 @@ def build_finite_tables(
         }
     )
     active_labels = [result.state_space[state].label for state in result.active_states]
+    # Los estados de esta matriz son los de la ruta de Viterbi (sin umbral), no los
+    # que cuenta 'n_active_states'; el eje lo dice.
+    transition_active = matrix_to_dataframe(
+        active_submatrix(result.empirical_transition_matrix, result.active_states),
+        active_labels,
+        active_labels,
+    )
+    transition_active.index.name = VITERBI_STATE_AXIS
+    transition_active.columns.name = VITERBI_STATE_AXIS
     return {
         "observations": observations_df,
         "latent_sequence": sequence_df,
@@ -207,11 +220,7 @@ def build_finite_tables(
             [state.label for state in result.state_space],
             [state.label for state in result.state_space],
         ),
-        "transition_matrix_active": matrix_to_dataframe(
-            active_submatrix(result.empirical_transition_matrix, result.active_states),
-            active_labels,
-            active_labels,
-        ),
+        "transition_matrix_active": transition_active,
         "emission_matrix_full": matrix_to_dataframe(
             result.emission_matrix,
             [state.label for state in result.state_space],

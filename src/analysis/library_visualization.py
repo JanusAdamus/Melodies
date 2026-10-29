@@ -249,7 +249,7 @@ def build_analysis_explanation(analysis: pd.DataFrame) -> str:
         "- `compare_log_likelihood_scatter.png`: cada punto es una obra; si cae por encima de la diagonal, el HDP-HMM truncado obtuvo mejor log-verosimilitud que el HMM finito.",
         "- `compare_log_likelihood_boxplot.png`: resume la distribucion de log-verosimilitud en el corpus; valores menos negativos indican mejor ajuste.",
         "- `compare_log_likelihood_gain_by_piece.png`: muestra la diferencia `HDP-HMM truncado - HMM finito` por obra; valores positivos favorecen al HDP-HMM truncado.",
-        "- `compare_state_counts_scatter.png`: compara la cantidad de estados activos del HMM finito con los estados efectivos del HDP-HMM truncado.",
+        "- `compare_state_counts_scatter.png`: compara los estados efectivos del HMM finito con los del HDP-HMM truncado (en ambos, media posterior de estados con ocupación >= 2 % de los eventos).",
         "- `compare_state_counts_by_piece.png`: facilita ver si el HDP-HMM truncado logra un ajuste competitivo usando menos o mas estados por obra.",
         "- `composer_state_complexity.png`: resume la complejidad armonica promedio por compositor en el subconjunto analizado.",
         "",

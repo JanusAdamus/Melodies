@@ -206,29 +206,3 @@ inspeccionó. Esas 5 obras forman parte del corpus de la corrida definitiva. Ant
 el smoke de PDMX (50 partituras, 7 obras de prueba, 3 épocas, carpeta
 `artifacts/Comparacion/smoke_pdmx50_20261028_984dfde`) sí mostró NLL de prueba de la
 sección B; no motivó ningún cambio a la sección B.
-
-## Aclaración 8, 2026-10-28 (corrige el alcance de la Aclaración 7; antes de la corrida completa de A)
-
-Registrada por la revisión de la tarea 1.4; no cambia ninguna regla y queda para
-que Adrián la confirme en la Parada 1. La Aclaración 7 se deja como está; ésta
-corrige una frase suya con lo que consta en el repo.
-
-**Qué consta.** Cifras de NLL de prueba de una de esas 5 obras (Arabesque L. 66
-No. 1) quedaron escritas en la bitácora de la rama `feat/porobra-heldout` antes de
-las enmiendas: la entrada de la ronda 1 (ff9f998, 13:04, antes de la Enmienda 5,
-fcde76c, 13:54) dice «de prueba 2.03 a 2.11, contra 2.053 del unigrama», y la de la
-ronda 2 (700acba, 14:58, después de la Enmienda 5 y de la 6, 220b49f, 14:39) dice
-«prueba 2.231». Además, los `per_work.csv` de las corridas de tiempos (13:50 y
-14:13, fuera del repo) traen las columnas `*_test_nll` de exactamente esas 5 obras,
-y los smokes de 3 obras del CLI (desde las 11:02) también las calcularon. Por eso
-la frase «la NLL de prueba de esas obras no se inspeccionó» no vale para Arabesque:
-esas cifras se vieron. Que las Enmiendas 5 y 6 citen sólo cifras de validación y de
-ajuste sigue siendo cierto.
-
-**Qué se hace.**
-1. Las cinco obras siguen en la métrica principal de A (como dice la Aclaración 7).
-2. Sensibilidad (no decide): la misma comparación sin esas cinco obras
-   (`sensitivity_without_exposed` del resumen; la lista está en
-   `TEST_EXPOSED_WORK_IDS` de `src/analysis/porobra.py` y en `test_exposure`).
-3. El reporte de resultados nombra estas obras y dice si el veredicto cambia sin
-   ellas.
