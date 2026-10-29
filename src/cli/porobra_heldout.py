@@ -313,6 +313,10 @@ def main(argv: list[str] | None = None) -> Path:
     (run_dir / porobra_audit.AUDIT_FILENAME).write_text(json.dumps(_jsonable(audit), indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Corrida escrita en {run_dir} ({summary['wall_clock_s']} s, {len(per_work)} obras).")
     print(f"Auditoría: {audit['status']} ({porobra_audit.AUDIT_FILENAME}).")
+    deviations = next((c.get("deviations", {}) for c in audit["checks"] if c["name"] == "preregistered_config"), {})
+    if deviations:
+        print(f"AVISO: no es la configuración de la sección A del preregistro ({', '.join(sorted(deviations))}); "
+              "no se reporta como la corrida confirmatoria.")
     if analysis_failures:
         print(f"AVISO: {len(analysis_failures)} obra(s) fallaron en el análisis; ver analysis_failures en summary.json.")
     convergence = summary["convergence"]

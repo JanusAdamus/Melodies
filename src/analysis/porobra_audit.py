@@ -3,7 +3,9 @@
 Las auditorías de ``Comparacion/`` entienden los archivos del runner PDMX; esta revisa los
 de la corrida por obra: archivos presentes, hashes del manifiesto, denominadores de la
 partición 80/20, conteo del corpus, unicidad de obras y huellas de contenido, recálculo de
-las cifras titulares desde ``per_work.csv`` y obras que fallaron en el análisis.
+las cifras titulares desde ``per_work.csv``, obras que fallaron en el análisis y que la
+configuración del manifiesto sea la de la sección A del preregistro (si no lo es, el estado
+es ``not_preregistered`` y ``deviations`` dice qué cambió: un smoke nunca sale ``passed``).
 
     python -m src.analysis.porobra_audit <directorio de la corrida>
 
@@ -27,7 +29,33 @@ from src.analysis import porobra
 AUDIT_FILENAME = "porobra_audit.json"
 REQUIRED_ARTIFACTS = ("per_work.csv", "summary.json", "manifest.json")
 TOLERANCE = 1e-9
-_STATUS_ORDER = {"passed": 0, "incomplete": 1, "failed": 2}
+#: «not_preregistered»: la corrida es íntegra pero su configuración no es la de la sección A
+#: (p. ej., un smoke). Sólo «passed» habilita reportar la corrida como la confirmatoria.
+_STATUS_ORDER = {"passed": 0, "not_preregistered": 1, "incomplete": 2, "failed": 3}
+
+#: Sección A del preregistro (más Enmiendas 3 y 5), tal como la escribe ``manifest["config"]``.
+PREREGISTERED_CONFIG = {
+    "alphas": [0.1, 0.5, 1.0],
+    "k_grid": [2, 4, 8, 16, 32],
+    "finite_alphas": [0.1, 0.5, 1.0],
+    "etas": [1.0, 3.0, 6.0],
+    "n_chains": 4,
+    "chain_seeds": [1, 2, 3, 4],
+    "n_iters": 400,
+    "burn_in": 200,
+    "occupancy_threshold": 0.02,
+    "rhat_threshold": 1.1,
+    "min_events": 20,
+    "extraction": "melody",
+    "musetrainer_limit": None,
+    "symbtr_n": 100,
+    "symbtr_seed": 7,
+    "bootstrap_samples": 10_000,
+}
+#: Truncamiento del HDP: 20 es la corrida principal; 40, la sensibilidad preregistrada.
+PREREGISTERED_TRUNCATION = {20: "principal", 40: "sensibilidad_truncamiento_40"}
+#: Candidatos por fuente: MuseTrainer completo (69 partituras) y la muestra de 100 de SymbTr.
+PREREGISTERED_CORPUS = {"MuseTrainer": 69, "SymbTr": 100}
 
 
 def _sha256(path: Path) -> str:
@@ -112,6 +140,31 @@ def _recompute(works: pd.DataFrame, summary: dict) -> dict:
     return {"name": "headline_recompute", "status": _status(not mismatches), "mismatches": mismatches}
 
 
+def _same(observed, expected) -> bool:
+    if isinstance(expected, list):
+        return isinstance(observed, (list, tuple)) and len(observed) == len(expected) and all(
+            _same(a, b) for a, b in zip(observed, expected))
+    if isinstance(expected, float):
+        return isinstance(observed, (int, float)) and not isinstance(observed, bool) and abs(observed - expected) <= TOLERANCE
+    return observed == expected
+
+
+def _preregistered_config(manifest: dict, summary: dict) -> dict:
+    config = manifest.get("config") or {}
+    deviations = {key: {"observed": config.get(key), "expected": expected}
+                  for key, expected in PREREGISTERED_CONFIG.items() if not _same(config.get(key), expected)}
+    truncation = config.get("truncation")
+    if truncation not in PREREGISTERED_TRUNCATION:
+        deviations["truncation"] = {"observed": truncation, "expected": sorted(PREREGISTERED_TRUNCATION)}
+    corpus = dict(summary.get("corpus", {}).get("n_by_source_candidates", {}))
+    if corpus != PREREGISTERED_CORPUS:
+        deviations["corpus_size"] = {"observed": corpus, "expected": dict(PREREGISTERED_CORPUS)}
+    if manifest.get("dirty_worktree") is not False:
+        deviations["dirty_worktree"] = {"observed": manifest.get("dirty_worktree"), "expected": False}
+    return {"name": "preregistered_config", "status": "not_preregistered" if deviations else "passed",
+            "run_kind": PREREGISTERED_TRUNCATION.get(truncation), "deviations": deviations}
+
+
 def audit_run_directory(run_dir: str | Path) -> dict:
     root = Path(run_dir)
     missing = [name for name in REQUIRED_ARTIFACTS if not (root / name).exists()]
@@ -128,6 +181,7 @@ def audit_run_directory(run_dir: str | Path) -> dict:
             _canonicalization(works),
             _recompute(works, summary),
             {"name": "analysis_failures", "status": _status(not failures), "work_ids": failures},
+            _preregistered_config(manifest, summary),
         ]
     status = max((check["status"] for check in checks), key=_STATUS_ORDER.__getitem__)
     return {"status": status, "run_dir": root.as_posix(), "checks": checks}
