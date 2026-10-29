@@ -206,3 +206,20 @@ inspeccionó. Esas 5 obras forman parte del corpus de la corrida definitiva. Ant
 el smoke de PDMX (50 partituras, 7 obras de prueba, 3 épocas, carpeta
 `artifacts/Comparacion/smoke_pdmx50_20261028_984dfde`) sí mostró NLL de prueba de la
 sección B; no motivó ningún cambio a la sección B.
+
+## Aclaración 8, 2026-10-29 (corrige la Aclaración 7)
+
+La frase de la Aclaración 7 «la NLL de prueba de esas obras no se inspeccionó» no
+es exacta. Exposición a cifras de prueba de la sección A antes de la corrida
+confirmatoria, según la bitácora y los reportes de la tarea 1.4:
+- Arabesque L. 66 n.º 1: cifras de prueba escritas en la bitácora de la rama
+  `feat/porobra-heldout` (ff9f998, antes de la Enmienda 5; 700acba, después de la 6).
+- Passacaglia: NLL de prueba calculada e impresa por la revisión de la tarea 1.4.
+- 12 Variaciones de Twinkle Twinkle, Arabesque y Ave Maria D 839: NLL de prueba de
+  un smoke de 40 iteraciones leídas en un reporte el 2026-10-28, después de
+  registrar las Enmiendas 5 y 6.
+- Minueto BWV Anh. 114 y Tocata BWV 565: NLL de prueba calculada en las corridas de
+  tiempos (Aclaración 7), sin leerse.
+Las Enmiendas 5 y 6 se motivaron con cifras de validación, R-hat y tiempos. Las seis
+obras siguen en la métrica principal. Como análisis adicional, que no decide, el
+resumen repite la comparación sin ellas e indica si algún veredicto cambia.
