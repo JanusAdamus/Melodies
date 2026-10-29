@@ -194,30 +194,39 @@ modelos.
    La tesis no interpreta esos números como inferencia bayesiana sobre K.
 5. La regla de decisión de A y el estimando de la Aclaración 2 no cambian.
 
-## Aclaración 7, 2026-10-28 (divulgación; antes de la corrida completa de A)
+## Aclaración 7, 2026-10-28 (exposición a datos de prueba antes de las Enmiendas 5 y 6)
+
+Para que el lector juzgue las Enmiendas 5 y 6: las corridas de tiempos que las
+motivaron (5 primeras obras de MuseTrainer por orden de archivo, 400/200 y 800/400)
+calcularon y guardaron la NLL de prueba de esas 5 obras en sus archivos de salida,
+fuera del repo. Para decidir las enmiendas se miraron sólo las columnas de
+validación, R-hat, η elegido, estados y tiempos, y el diagnóstico por cadena usó
+sólo el ajuste interno y la validación; la NLL de prueba de esas obras no se
+inspeccionó. Esas 5 obras forman parte del corpus de la corrida definitiva. Antes,
+el smoke de PDMX (50 partituras, 7 obras de prueba, 3 épocas, carpeta
+`artifacts/Comparacion/smoke_pdmx50_20261028_984dfde`) sí mostró NLL de prueba de la
+sección B; no motivó ningún cambio a la sección B.
+
+## Aclaración 8, 2026-10-28 (corrige el alcance de la Aclaración 7; antes de la corrida completa de A)
 
 Registrada por la revisión de la tarea 1.4; no cambia ninguna regla y queda para
-que Adrián la confirme en la Parada 1. Corrige el alcance de los títulos de las
-Enmiendas 5 y 6: «antes de ver resultados» vale para la corrida completa, no para
-todas las obras.
+que Adrián la confirme en la Parada 1. La Aclaración 7 se deja como está; ésta
+corrige una frase suya con lo que consta en el repo.
 
-**Qué se vio.** El CLI por obra calcula siempre la NLL de prueba. Antes de escribir
-las Enmiendas 5 y 6 ya se había calculado la de las cinco primeras obras de
-MuseTrainer por orden de archivo (12 Variations of Twinkle Twinkle Little Star,
-Arabesque L. 66 No. 1, Ave Maria D839, Minueto BWV Anh. 114 y Toccata y fuga en re
-menor): en los smokes de 3 obras (el primero a las 11:02, con el commit 8b44437) y
-en la corrida de tiempos de 5 obras cuyo `per_work.csv` se escribió a las 13:50,
-antes de la Enmienda 5 (fcde76c, 13:54); otra corrida de las mismas 5 (800/400) se
-escribió a las 14:13, antes de la Enmienda 6 (220b49f, 14:39). La bitácora de la
-ronda 1 anotó cifras de prueba de Arabesque (finito 2.03 a 2.11 contra 2.053 del
-unigrama), y la elección de 5 inicios de Baum-Welch (75dffae, 11:52) se tomó
-después del primer smoke. Lo que la Enmienda 5 dice de su motivo («sólo cifras de
-validación») y lo que la Enmienda 6 dice del suyo («sólo datos de ajuste y
-validación») sigue siendo cierto de las cifras citadas, pero las cifras de prueba de
-esas obras existían.
+**Qué consta.** Cifras de NLL de prueba de una de esas 5 obras (Arabesque L. 66
+No. 1) quedaron escritas en la bitácora de la rama `feat/porobra-heldout` antes de
+las enmiendas: la entrada de la ronda 1 (ff9f998, 13:04, antes de la Enmienda 5,
+fcde76c, 13:54) dice «de prueba 2.03 a 2.11, contra 2.053 del unigrama», y la de la
+ronda 2 (700acba, 14:58, después de la Enmienda 5 y de la 6, 220b49f, 14:39) dice
+«prueba 2.231». Además, los `per_work.csv` de las corridas de tiempos (13:50 y
+14:13, fuera del repo) traen las columnas `*_test_nll` de exactamente esas 5 obras,
+y los smokes de 3 obras del CLI (desde las 11:02) también las calcularon. Por eso
+la frase «la NLL de prueba de esas obras no se inspeccionó» no vale para Arabesque:
+esas cifras se vieron. Que las Enmiendas 5 y 6 citen sólo cifras de validación y de
+ajuste sigue siendo cierto.
 
 **Qué se hace.**
-1. Las cinco obras siguen en la métrica principal de A.
+1. Las cinco obras siguen en la métrica principal de A (como dice la Aclaración 7).
 2. Sensibilidad (no decide): la misma comparación sin esas cinco obras
    (`sensitivity_without_exposed` del resumen; la lista está en
    `TEST_EXPOSED_WORK_IDS` de `src/analysis/porobra.py` y en `test_exposure`).
