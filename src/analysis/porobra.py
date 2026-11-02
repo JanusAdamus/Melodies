@@ -120,9 +120,9 @@ MIN_PAIRED_WORKS = 2
 #: Debajo de este n el bloque lleva ``small_n_warning``: es un rótulo, no una regla.
 SMALL_N_WARNING_WORKS = 30
 SMALL_N_NOTE = (
-    "Pocas obras: con diferencias simuladas sin efecto (N(0, 0.1)), el IC bootstrap percentil con Holm dio "
-    "algún veredicto en 0.905 de las repeticiones con n=2, 0.302 con n=5, 0.155 con n=10 y 0.087 con n=30 "
-    "(nominal 0.05; 0.057 con n=164). Este aviso no cambia el veredicto ni la regla; léase con cautela."
+    "Pocas obras: el IC bootstrap percentil con Holm rechaza con más frecuencia que su nivel nominal aunque "
+    "no haya efecto, y tanto más cuantas menos obras hay. Este aviso no cambia el veredicto ni la regla; "
+    "léase con cautela."
 )
 #: Seudoconteo de la distribución inicial del finito (una sola secuencia: casi no pesa).
 INITIAL_PSEUDOCOUNT = 1e-3
@@ -318,6 +318,8 @@ class HMMFit:
     emission_matrix: np.ndarray
     log_likelihood: float
     log_likelihood_trace: tuple = ()
+    #: log p(x|θ) + log p(θ) en los mismos θ que ``log_likelihood_trace``: lo que EM hace crecer.
+    objective_trace: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -340,6 +342,14 @@ def hmm_conditional_nll(initial, transition, emission, context, target) -> float
     return -float(scales[context.size :].sum()) / target.size
 
 
+def _log_prior(initial: np.ndarray, transition: np.ndarray, emission: np.ndarray, pseudocount: float) -> float:
+    """log de la previa de Dirichlet cuyo modo da el paso M (Dirichlet(seudoconteo + 1)), sin constantes."""
+
+    return float(
+        INITIAL_PSEUDOCOUNT * np.log(initial).sum() + pseudocount * (np.log(transition).sum() + np.log(emission).sum())
+    )
+
+
 def baum_welch(
     tokens: Sequence[int],
     *,
@@ -353,7 +363,9 @@ def baum_welch(
 
     ``pseudocount`` (el α de la Enmienda 5) se suma a cada conteo esperado de transición y
     de emisión; la distribución inicial lleva el seudoconteo fijo ``INITIAL_PSEUDOCOUNT``.
-    Ninguna probabilidad queda en 0. Para cuando la mejora de log p(x|θ) es < ``tolerance``.
+    Ninguna probabilidad queda en 0. Con seudoconteo EM maximiza la posterior penalizada y
+    log p(x|θ) puede bajar antes de converger: para cuando la mejora de log p(x|θ) + log p(θ)
+    es < ``tolerance``.
     """
 
     tokens = np.asarray(tokens, dtype=int)
@@ -363,20 +375,23 @@ def baum_welch(
     emission = rng.dirichlet(np.ones(VOCAB_SIZE), size=n_states)
     padded, lengths = tokens[None, :], np.array([tokens.size])
     trace: list[float] = []
+    objective: list[float] = []
     for _ in range(max_iterations):
         counts_initial, counts_transition, counts_emission, log_likelihood = _expectation_batch(
             initial, transition, emission, padded, lengths
         )
         trace.append(float(log_likelihood))
-        initial = (counts_initial + INITIAL_PSEUDOCOUNT) / (counts_initial + INITIAL_PSEUDOCOUNT).sum()
+        objective.append(float(log_likelihood) + _log_prior(initial, transition, emission, pseudocount))
+        initial =(counts_initial + INITIAL_PSEUDOCOUNT) / (counts_initial + INITIAL_PSEUDOCOUNT).sum()
         transition = counts_transition + pseudocount
         transition /= transition.sum(axis=1, keepdims=True)
         emission = counts_emission + pseudocount
         emission /= emission.sum(axis=1, keepdims=True)
-        if len(trace) > 1 and trace[-1] - trace[-2] < tolerance:
+        if len(objective) > 1 and objective[-1] - objective[-2] < tolerance:
             break
     final = float(_log_scales(initial, transition, emission, tokens).sum())
-    return HMMFit(initial, transition, emission, final, tuple(trace) + (final,))
+    final_objective = final + _log_prior(initial, transition, emission, pseudocount)
+    return HMMFit(initial, transition, emission, final, tuple(trace) + (final,), tuple(objective) + (final_objective,))
 
 
 def best_baum_welch(tokens: Sequence[int], *, n_states: int, seeds: Sequence[int], **kwargs) -> HMMFit:

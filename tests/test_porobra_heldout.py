@@ -133,12 +133,53 @@ def test_nll_condicional_del_hmm_es_cociente_de_verosimilitudes():
 def test_baum_welch_sube_la_verosimilitud_y_recupera_dos_estados():
     tokens, initial, transition, emission = _simulate_hmm(400, 2)
     fit = porobra.baum_welch(tokens, n_states=2, seed=0)
-    assert np.all(np.diff(fit.log_likelihood_trace) >= -1e-6)
+    assert np.all(np.diff(fit.objective_trace) >= -1e-6)
     true_ll, _ = forward_log_likelihood(initial, transition, emission, tokens)
     assert fit.log_likelihood >= true_ll - 1.0
     occupancy = porobra.posterior_occupied_states(fit, tokens, threshold=0.02, n_samples=50, seed=0)
     assert occupancy.mean == pytest.approx(2.0)
     assert occupancy.sd == pytest.approx(0.0)
+
+
+def _log_prior_de_dirichlet(fit, pseudocount: float) -> float:
+    """La previa cuyo modo es el paso M: Dirichlet(seudoconteo + 1), sin sus constantes."""
+
+    return float(porobra.INITIAL_PSEUDOCOUNT * np.log(fit.initial_probs).sum()
+                 + pseudocount * (np.log(fit.transition_matrix).sum() + np.log(fit.emission_matrix).sum()))
+
+
+@pytest.mark.parametrize(("n_states", "pseudocount"), [(2, 1.0), (8, 0.5), (16, 0.1), (4, 1e-3)])
+def test_em_con_seudoconteo_no_baja_el_objetivo_penalizado(n_states, pseudocount):
+    tokens = np.random.default_rng(0).integers(0, 12, 60)
+    fit = porobra.baum_welch(tokens, n_states=n_states, seed=0, pseudocount=pseudocount)
+    assert len(fit.objective_trace) == len(fit.log_likelihood_trace) >= 2
+    assert np.all(np.diff(fit.objective_trace) >= -1e-8)
+
+
+def test_el_objetivo_es_la_verosimilitud_mas_la_previa_con_todos_los_seudoconteos():
+    tokens = np.random.default_rng(0).integers(0, 12, 60)
+    fit = porobra.baum_welch(tokens, n_states=4, seed=0, pseudocount=0.5)
+    assert fit.objective_trace[-1] == pytest.approx(fit.log_likelihood + _log_prior_de_dirichlet(fit, 0.5), abs=1e-9)
+
+
+def test_una_caida_de_la_verosimilitud_no_detiene_a_em_antes_de_converger():
+    # Con seudoconteo EM sube la posterior penalizada, no log p(x|θ): la regla vieja paraba
+    # en la primera caída de la verosimilitud, muy lejos de la convergencia.
+    tokens = np.random.default_rng(0).integers(0, 12, 40)
+    tolerance = 1e-4
+    fit = porobra.baum_welch(tokens, n_states=2, seed=0, pseudocount=1.0, tolerance=tolerance)
+    fall = next(step for step, change in enumerate(np.diff(fit.log_likelihood_trace)) if change < tolerance)
+    assert fit.objective_trace[fall + 1] - fit.objective_trace[fall] >= tolerance
+    assert len(fit.log_likelihood_trace) > fall + 10
+    # Y para cuando el objetivo deja de mejorar: el último paso E (antes del valor final).
+    improvements = np.diff(fit.objective_trace[:-1])
+    assert improvements[-1] < tolerance and np.all(improvements[:-1] >= tolerance)
+
+
+def test_max_iterations_sigue_siendo_el_techo_de_em():
+    tokens = np.random.default_rng(0).integers(0, 12, 40)
+    fit = porobra.baum_welch(tokens, n_states=2, seed=0, pseudocount=1.0, max_iterations=5)
+    assert len(fit.log_likelihood_trace) == len(fit.objective_trace) == 6
 
 
 def test_baum_welch_es_reproducible():
@@ -406,6 +447,8 @@ def test_con_pocas_obras_el_bloque_lleva_la_advertencia_y_el_veredicto_no_cambia
     assert small["small_n_warning"] is True and "no cambia" in small["small_n_note"]
     assert {c["verdict"] for c in small["comparisons"]} == {"mejora"}
     assert small["min_paired_works"] == 2
+    # Sin tasas escritas a mano: la advertencia es cualitativa.
+    assert not any(character.isdigit() for character in small["small_n_note"])
     enough = porobra.compare_hdp(_rows(porobra.SMALL_N_WARNING_WORKS, -0.5), bootstrap_samples=200, seed=0)
     assert enough["small_n_warning"] is False and enough["small_n_note"] is None
 

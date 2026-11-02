@@ -18,7 +18,9 @@ de redondeo sólo entre floats (otro sistema operativo cambia el último bit de 
 Aparte, ``preregistration`` dice si la corrida es la de la sección A del preregistro
 (``preregistered``) o no (``not_preregistered``, con ``deviations``: qué cambió): la
 configuración del manifiesto, la regla de ampliar la rejilla del finito, la identidad del
-corpus (no sólo su conteo), el árbol limpio y el mismo commit de principio a fin;
+corpus (no sólo su conteo), el destino de cada candidato (analizada, duplicado, corta o falla;
+un error de entorno que tumba la extracción no cambia las obras en silencio), el árbol limpio
+y el mismo commit de principio a fin;
 ``manifest["config"]`` se compara además con la que sale del argv real
 (``manifest["command"]``) y con lo que dice el resumen. Un smoke íntegro sale ``passed`` y
 ``not_preregistered``. ``confirmatory`` sólo es verdadero si la corrida es íntegra,
@@ -41,6 +43,7 @@ import json
 import math
 from pathlib import Path
 import sys
+import unicodedata
 
 import numpy as np
 import pandas as pd
@@ -87,7 +90,8 @@ UNCHECKED_CONFIG_KEYS = ("n_workers",)
 PREREGISTERED_TRUNCATION = {20: "principal", 40: "sensibilidad_truncamiento_40"}
 NOT_PREREGISTERED_KIND = "no_preregistrada"
 RUN_KIND_NOTES = {
-    "principal": "corrida confirmatoria de la sección A (truncamiento 20)",
+    # Se escribe antes de auditar: sólo la auditoría dice si es la confirmatoria (``confirmatory``).
+    "principal": "candidata a confirmatoria de la sección A, truncamiento 20",
     "sensibilidad_truncamiento_40": (
         "sensibilidad preregistrada del truncamiento (40); no es la corrida confirmatoria y no decide"
     ),
@@ -102,6 +106,18 @@ PREREGISTERED_CORPUS_SHA256 = {
     "MuseTrainer": "8792921b1cd5e7ea7933eaa4ebf5805063c8015694c266ad8f052bfc00d48b9b",
     "SymbTr": "1c94ee649d9444d8fd15a34d5e894a33a3089c37230cd9bcaf7cf9ae3c9357a4",
 }
+#: Destino de esos candidatos cuando la extracción funciona (``corpus_outcomes``). Lo que no
+#: está aquí se analiza: la huella cubre los 169. Fijado en Windows y en WSL con esos clones.
+PREREGISTERED_CORPUS_OUTCOMES = {
+    "falla_extraccion": ("MuseTrainer:Mozart_-_Piano_Sonata_No._16_-_Allegro.mxl",),
+    "duplicado": (
+        "MuseTrainer:Minuet_in_G_Major_Bach.mxl",
+        "MuseTrainer:Passacaglia2.mxl",
+        "MuseTrainer:Prlude_Opus_28_No._4_in_E_Minor__Chopin.mxl",
+    ),
+    "corta": ("MuseTrainer:G_Minor_Bach.mxl",),
+}
+PREREGISTERED_CORPUS_OUTCOMES_SHA256 = "37c49b2f69f5ad90ad16a0db152c331f71b7b5d077ae12275dc5bd0c35655d34"
 #: Tolerancia del recálculo: otra libm cambia el último bit de un float sin cambiar nada más.
 RECOMPUTE_REL_TOLERANCE = 1e-12
 #: Junto a cero: una resta que da 0 en un sistema y 1e-17 en otro.
@@ -517,6 +533,46 @@ def _corpus_identity_deviation(manifest: dict) -> dict | None:
             "expected": {key: PREREGISTERED_CORPUS_SHA256.get(key) for key in keys}}
 
 
+def _outcome_key(key) -> str:
+    """``fuente:ruta``, con la ruta en POSIX y NFC: la misma clave en Windows y en Linux."""
+
+    return unicodedata.normalize("NFC", str(key).replace("\\", "/"))
+
+
+def corpus_outcomes(works: pd.DataFrame, summary: dict) -> dict[str, list[str]]:
+    """Qué fue de cada candidato: destino → claves ordenadas. Sólo nombres, ninguna cifra."""
+
+    corpus = summary.get("corpus") or {}
+    lists = {"falla_extraccion": "failures", "duplicado": "duplicates", "corta": "excluded_short_works"}
+    outcomes = {
+        "analizada": [_outcome_key(f"{source}:{path}") for source, path in zip(works["source"], works["relative_path"])],
+        "falla_analisis": [_outcome_key(item.get("work_id")) for item in summary.get("analysis_failures") or []],
+        **{outcome: [_outcome_key(f"{item.get('source')}:{item.get('relative_path')}") for item in corpus.get(key) or []]
+           for outcome, key in lists.items()},
+    }
+    return {outcome: sorted(keys) for outcome, keys in outcomes.items()}
+
+
+def corpus_outcomes_sha256(outcomes: dict) -> str:
+    """Huella de los destinos: no depende del orden de las claves ni de los destinos vacíos."""
+
+    lines = sorted(f"{outcome}\t{key}\n" for outcome, keys in outcomes.items() for key in keys)
+    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+
+
+def _corpus_outcomes_deviation(works: pd.DataFrame, summary: dict) -> dict | None:
+    """Cada candidato tuvo el destino fijado: un error de entorno no cambia en silencio las obras."""
+
+    outcomes = corpus_outcomes(works, summary)
+    digest = corpus_outcomes_sha256(outcomes)
+    if digest == PREREGISTERED_CORPUS_OUTCOMES_SHA256:
+        return None
+    expected = {key: list(PREREGISTERED_CORPUS_OUTCOMES.get(key, ())) for key in outcomes if key != "analizada"}
+    keys = [key for key in expected if outcomes[key] != expected[key]]
+    return {"observed": {"sha256": digest, **{key: outcomes[key] for key in keys}},
+            "expected": {"sha256": PREREGISTERED_CORPUS_OUTCOMES_SHA256, **{key: expected[key] for key in keys}}}
+
+
 def _provenance_deviations(manifest: dict, directory_name: str) -> dict:
     """El árbol limpio y el mismo commit de principio a fin (decisión 3 del preregistro)."""
 
@@ -535,10 +591,11 @@ def _provenance_deviations(manifest: dict, directory_name: str) -> dict:
     return deviations
 
 
-def _design_deviations(manifest: dict, candidates, works: pd.DataFrame, directory_name: str) -> dict:
+def _design_deviations(manifest: dict, summary: dict, works: pd.DataFrame, directory_name: str) -> dict:
     """En qué se aparta la corrida de la sección A: configuración, corpus, rejilla, commit y árbol."""
 
     config = manifest.get("config") or {}
+    candidates = summary.get("corpus", {}).get("n_by_source_candidates", {})
     deviations = {}
     for key, expected in PREREGISTERED_CONFIG.items():
         observed = config.get(key)
@@ -559,6 +616,9 @@ def _design_deviations(manifest: dict, candidates, works: pd.DataFrame, director
     identity = _corpus_identity_deviation(manifest)
     if identity:
         deviations["corpus_identity"] = identity
+    outcomes = _corpus_outcomes_deviation(works, summary)
+    if outcomes:
+        deviations["corpus_outcomes"] = outcomes
     return {**deviations, **_provenance_deviations(manifest, directory_name)}
 
 
@@ -566,10 +626,13 @@ def _run_kind(truncation, deviations: dict) -> str:
     return NOT_PREREGISTERED_KIND if deviations else PREREGISTERED_TRUNCATION[truncation]
 
 
-def describe_run(manifest: dict, candidates, works: pd.DataFrame, directory_name: str) -> dict:
-    """El bloque ``run`` de ``summary.json``: qué es esta corrida, para quien sólo lea ese archivo."""
+def describe_run(manifest: dict, summary: dict, works: pd.DataFrame, directory_name: str) -> dict:
+    """El bloque ``run`` de ``summary.json``: qué es esta corrida, para quien sólo lea ese archivo.
 
-    deviations = _design_deviations(manifest, candidates, works, directory_name)
+    ``summary`` necesita ``corpus`` y ``analysis_failures``.
+    """
+
+    deviations = _design_deviations(manifest, summary, works, directory_name)
     run_kind = _run_kind((manifest.get("config") or {}).get("truncation"), deviations)
     return {
         "truncation": (manifest.get("config") or {}).get("truncation"),
@@ -592,9 +655,8 @@ def _preregistration(manifest: dict, summary: dict, works: pd.DataFrame, directo
     corpus_config = _corpus_config_deviation(manifest, config)
     if corpus_config:
         deviations["corpus_config"] = corpus_config
-    candidates = summary.get("corpus", {}).get("n_by_source_candidates", {})
-    deviations.update(_design_deviations(manifest, candidates, works, directory_name))
-    run_kind = _run_kind(config.get("truncation"), deviations)
+    deviations.update(_design_deviations(manifest, summary, works, directory_name))
+    run_kind =_run_kind(config.get("truncation"), deviations)
     return {"status": "not_preregistered" if deviations else "preregistered",
             "run_kind": run_kind, "run_kind_note": RUN_KIND_NOTES[run_kind], "deviations": deviations}
 

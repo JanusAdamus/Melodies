@@ -16,9 +16,10 @@ La comparación principal usa todas las obras analizadas (Enmienda 6);
 adicional de la Aclaración 8; no decide); las dos dicen si algún veredicto cambia
 (``verdict_changes``) y, aparte, cuáles no se pudieron evaluar (``verdict_not_evaluable``).
 ``README.txt`` lleva la advertencia de la Enmienda 6 sobre los estados del HDP. El bloque
-``run`` del resumen y el ``README.txt`` dicen qué es la corrida (principal, sensibilidad o no
-preregistrada). El manifiesto guarda el commit y el árbol de cuando empezó y, en
-``git_at_end``, los de cuando terminó. Al final escribe ``porobra_audit.json``
+``run`` del resumen y el ``README.txt``, escritos antes de auditar, dicen qué es la corrida
+(candidata a confirmatoria, sensibilidad o no preregistrada). El manifiesto guarda el commit y
+el árbol de cuando empezó y, en ``git_at_end``, los de cuando terminó. Las fallas de extracción
+se avisan siempre, antes de analizar. Al final escribe ``porobra_audit.json``
 (``src.analysis.porobra_audit``): integridad y, aparte, si es la corrida de la sección A.
 """
 
@@ -290,6 +291,10 @@ def main(argv: list[str] | None = None) -> Path:
 
     catalog = _catalog(args)
     prepared = prepare_corpus(catalog, extraction=EXTRACTION)
+    if len(prepared.failures):
+        # Siempre y antes de analizar: un error de entorno puede dejar fuera un corpus entero.
+        names = ", ".join(f"{row.source}:{row.relative_path}" for row in prepared.failures.itertuples())
+        print(f"AVISO: {len(prepared.failures)} falla(s) de extracción, fuera de la corrida: {names}.", flush=True)
     pieces = prepared.pieces
     short = pieces[pieces["n_events"] < args.min_events]
     kept = pieces[pieces["n_events"] >= args.min_events].copy()
@@ -329,8 +334,23 @@ def main(argv: list[str] | None = None) -> Path:
         "files": files,
     }
     config_record = manifest_config(args)
+    corpus = {
+        "extraction": EXTRACTION,
+        "n_candidates": int(len(catalog)),
+        "n_by_source_candidates": _distribution(catalog["source"]),
+        "n_failures": int(len(prepared.failures)),
+        "failures": prepared.failures[["source", "relative_path", "path", "error_stage", "error"]].to_dict("records") if len(prepared.failures) else [],
+        "n_duplicates": int(len(prepared.duplicates)),
+        "duplicates": prepared.duplicates[["source", "relative_path", "path", "duplicate_of"]].to_dict("records") if len(prepared.duplicates) else [],
+        "min_events": int(args.min_events),
+        "n_excluded_short": int(len(short)),
+        "excluded_short_works": short[["source", "relative_path", "path", "n_events"]].to_dict("records"),
+        "n_analysis_failures": len(analysis_failures),
+        "n_analyzed": int(len(per_work)),
+        "n_by_source_analyzed": _distribution(per_work["source"]) if len(per_work) else {},
+    }
     run = porobra_audit.describe_run({**provenance, "config": _jsonable(config_record), "inputs": inputs},
-                                     _distribution(catalog["source"]), per_work, run_dir.name)
+                                     {"corpus": corpus, "analysis_failures": analysis_failures}, per_work, run_dir.name)
     (run_dir / "README.txt").write_text(_readme(run), encoding="utf-8")
     # Las comparaciones salen del CSV tal como quedó en disco: la auditoría las recalcula
     # desde el mismo archivo y, con la misma semilla, deben coincidir exacto.
@@ -341,21 +361,7 @@ def main(argv: list[str] | None = None) -> Path:
     summary = {
         "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaraciones 7, 8 y 9",
         "run": run,
-        "corpus": {
-            "extraction": EXTRACTION,
-            "n_candidates": int(len(catalog)),
-            "n_by_source_candidates": _distribution(catalog["source"]),
-            "n_failures": int(len(prepared.failures)),
-            "failures": prepared.failures[["source", "relative_path", "path", "error_stage", "error"]].to_dict("records") if len(prepared.failures) else [],
-            "n_duplicates": int(len(prepared.duplicates)),
-            "duplicates": prepared.duplicates[["source", "relative_path", "path", "duplicate_of"]].to_dict("records") if len(prepared.duplicates) else [],
-            "min_events": int(args.min_events),
-            "n_excluded_short": int(len(short)),
-            "excluded_short_works": short[["source", "relative_path", "path", "n_events"]].to_dict("records"),
-            "n_analysis_failures": len(analysis_failures),
-            "n_analyzed": int(len(per_work)),
-            "n_by_source_analyzed": _distribution(per_work["source"]) if len(per_work) else {},
-        },
+        "corpus": corpus,
         "analysis_failures": analysis_failures,
         "convergence": blocks["convergence"],
         "comparisons": blocks["comparisons"],
@@ -399,8 +405,8 @@ def main(argv: list[str] | None = None) -> Path:
           f"({porobra_audit.AUDIT_FILENAME}).")
     deviations = audit["preregistration"]["deviations"]
     if not audit["confirmatory"]:
-        print(f"AVISO: no es la corrida confirmatoria y sus veredictos no deciden: {audit['preregistration']['run_kind']}, "
-              f"{audit['preregistration']['run_kind_note']}, integridad {audit['status']}.")
+        print(f"AVISO: no es la corrida confirmatoria y sus veredictos no deciden; tipo: {audit['preregistration']['run_kind']} "
+              f"({audit['preregistration']['run_kind_note']}); integridad: {audit['status']}.")
     if deviations:
         print(f"AVISO: se aparta de la sección A del preregistro en: {', '.join(sorted(deviations))}.")
     if analysis_failures:

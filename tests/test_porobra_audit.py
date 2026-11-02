@@ -40,6 +40,14 @@ def _check(audit: dict, name: str) -> dict:
     return check
 
 
+def pin_outcomes(monkeypatch, outcomes: dict) -> None:
+    """Toma estos destinos como los fijados en el preregistro."""
+
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS_OUTCOMES_SHA256", porobra_audit.corpus_outcomes_sha256(outcomes))
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS_OUTCOMES", {
+        key: tuple(value) for key, value in outcomes.items() if key != "analizada" and value})
+
+
 def _as_preregistered(run_dir: Path, tmp_path: Path, monkeypatch, *, principal_truncation=None, **overrides) -> Path:
     """Copia la corrida y toma su configuración real como la «preregistrada».
 
@@ -54,6 +62,7 @@ def _as_preregistered(run_dir: Path, tmp_path: Path, monkeypatch, *, principal_t
     monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS", dict(summary["corpus"]["n_by_source_candidates"]))
     manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
     monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS_SHA256", porobra_audit.source_aggregates(manifest))
+    pin_outcomes(monkeypatch, porobra_audit.corpus_outcomes(porobra_audit.read_per_work(copy / "per_work.csv"), summary))
     config = manifest["config"]
     monkeypatch.setattr(porobra_audit, "PREREGISTERED_CONFIG", {
         key: value for key, value in config.items() if key not in (*porobra_audit.UNCHECKED_CONFIG_KEYS, "truncation")})
