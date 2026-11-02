@@ -105,11 +105,25 @@ TEST_EXPOSURE_NOTE = (
 WITHOUT_EXPOSED_RULE = (
     "Aclaración 8: análisis adicional sin las obras con exposición a cifras de prueba; no decide."
 )
+ALL_WORKS_RULE = (
+    "Aclaración 2 y Enmienda 6: comparación con todas las obras analizadas de esta corrida; decide sólo en "
+    "la corrida confirmatoria (bloque run de summary.json; confirmatory en porobra_audit.json)."
+)
 CONVERGED_ONLY_RULE = "Enmienda 6, punto 3: sensibilidad con la regla original (R-hat de log L < 1.1); no decide."
 #: La sección A compara con las obras que haya y reporta n: el mínimo de 10 obras pareadas de
 #: la Enmienda 1 sólo rige la frontera de Pareto (sección B). Con una sola obra todas las
-#: réplicas bootstrap valen lo mismo y su p sería 0: no es evaluable.
+#: réplicas bootstrap valen lo mismo y su p sería 0: no es evaluable. Con n = 2 ya hay veredicto
+#: y sigue siendo degenerado (dos obras del mismo signo: p bootstrap 0 y Wilcoxon 0.5). El
+#: preregistro no fija otro mínimo para A; subirlo es decisión de Adrián: mientras tanto, la
+#: advertencia de abajo lo dice sin cambiar ningún veredicto.
 MIN_PAIRED_WORKS = 2
+#: Debajo de este n el bloque lleva ``small_n_warning``: es un rótulo, no una regla.
+SMALL_N_WARNING_WORKS = 30
+SMALL_N_NOTE = (
+    "Pocas obras: con diferencias simuladas sin efecto (N(0, 0.1)), el IC bootstrap percentil con Holm dio "
+    "algún veredicto en 0.905 de las repeticiones con n=2, 0.302 con n=5, 0.155 con n=10 y 0.087 con n=30 "
+    "(nominal 0.05; 0.057 con n=164). Este aviso no cambia el veredicto ni la regla; léase con cautela."
+)
 #: Seudoconteo de la distribución inicial del finito (una sola secuencia: casi no pesa).
 INITIAL_PSEUDOCOUNT = 1e-3
 
@@ -727,6 +741,8 @@ def compare_hdp(
         "excluded_work_ids": excluded,
         "min_paired_works": MIN_PAIRED_WORKS,
         "n_works": len(rows),
+        "small_n_warning": len(rows) < SMALL_N_WARNING_WORKS,
+        "small_n_note": SMALL_N_NOTE if len(rows) < SMALL_N_WARNING_WORKS else None,
         "comparisons": comparisons,
         "holm_family": family,
     }
@@ -738,7 +754,7 @@ def summary_blocks(
     """Los bloques del resumen que deciden o se reportan con la regla, desde las filas por obra.
 
     El CLI los escribe en ``summary.json`` y la auditoría los recalcula desde ``per_work.csv``:
-    con la misma semilla deben coincidir exacto.
+    con la misma semilla deben coincidir (último bit de un float aparte, según el sistema).
     """
 
     records = list(records)
@@ -747,7 +763,7 @@ def summary_blocks(
         "convergence": convergence_summary(records),
         "comparisons": compare_hdp(
             records, bootstrap_samples=bootstrap_samples, seed=seed,
-            rule="Aclaración 2 y Enmienda 6: comparación principal con todas las obras analizadas; decide.",
+            rule=ALL_WORKS_RULE,
         ),
         "sensitivity_converged_only": compare_hdp(
             records, bootstrap_samples=bootstrap_samples, seed=seed, converged_only=True, rule=CONVERGED_ONLY_RULE

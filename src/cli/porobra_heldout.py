@@ -15,9 +15,11 @@ La comparación principal usa todas las obras analizadas (Enmienda 6);
 ``sensitivity_without_exposed`` sin las obras con exposición a cifras de prueba (análisis
 adicional de la Aclaración 8; no decide); las dos dicen si algún veredicto cambia
 (``verdict_changes``) y, aparte, cuáles no se pudieron evaluar (``verdict_not_evaluable``).
-``README.txt`` lleva la advertencia de la Enmienda 6 sobre los estados del HDP. Al final
-escribe ``porobra_audit.json`` (``src.analysis.porobra_audit``): integridad y, aparte, si es
-la configuración de la sección A.
+``README.txt`` lleva la advertencia de la Enmienda 6 sobre los estados del HDP. El bloque
+``run`` del resumen y el ``README.txt`` dicen qué es la corrida (principal, sensibilidad o no
+preregistrada). El manifiesto guarda el commit y el árbol de cuando empezó y, en
+``git_at_end``, los de cuando terminó. Al final escribe ``porobra_audit.json``
+(``src.analysis.porobra_audit``): integridad y, aparte, si es la corrida de la sección A.
 """
 
 from __future__ import annotations
@@ -55,8 +57,16 @@ def _git(*args: str) -> str:
     return subprocess.run(["git", "-C", str(REPO_ROOT), *args], capture_output=True, text=True, check=True).stdout.strip()
 
 
-def run_directory(output_root: str | Path, run_name: str) -> Path:
-    return Path(output_root) / f"{run_name}_{datetime.now():%Y%m%d}_{_git('rev-parse', 'HEAD')[:7]}"
+def _git_state() -> dict:
+    return {
+        "commit": _git("rev-parse", "HEAD"),
+        "dirty_worktree": bool(_git("status", "--porcelain", "--untracked-files=no")),
+    }
+
+
+def run_directory(output_root: str | Path, run_name: str, commit: str | None = None) -> Path:
+    commit = commit or _git("rev-parse", "HEAD")
+    return Path(output_root) / f"{run_name}_{datetime.now():%Y%m%d}_{commit[:7]}"
 
 
 def symbtr_paths(root: str | Path, *, n: int, seed: int) -> list[Path]:
@@ -178,17 +188,24 @@ def input_files(catalog: pd.DataFrame) -> list[dict]:
     y el mismo ``aggregate_sha256``.
     """
 
-    files = [{"source": row.source, "path": row.relative_path, "sha256": _sha256(row.path)} for row in catalog.itertuples()]
+    files = [{"source": row.source, "path": row.relative_path, "sha256": input_sha256(row.path)} for row in catalog.itertuples()]
     return sorted(files, key=lambda item: (item["source"], item["path"]))
+
+
+def input_sha256(path: str | Path) -> str:
+    """SHA-256 con CRLF como LF: git con autocrlf deja CRLF en Windows y LF en Debian (mismo corpus)."""
+
+    return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def aggregate_sha256(files: list[dict]) -> str:
     return hashlib.sha256("".join(f"{i['source']}\n{i['path']}\n{i['sha256']}\n" for i in files).encode("utf-8")).hexdigest()
 
 
-def _readme() -> str:
+def _readme(run: dict) -> str:
     return (
         "Corrida de src.cli.porobra_heldout (preregistro 2026-10-26, sección A).\n\n"
+        f"Esta corrida: truncamiento {run['truncation']}, tipo {run['run_kind']}: {run['note']}. {run['decides']}\n\n"
         "Archivos: per_work.csv (una fila por obra), summary.json (comparaciones, convergencia, "
         "sensibilidades), manifest.json (commit, comando, configuración, hashes) y porobra_audit.json.\n\n"
         "Advertencia sobre los estados del HDP-HMM en per_work.csv:\n"
@@ -264,7 +281,9 @@ def _distribution(values: pd.Series) -> dict:
 def main(argv: list[str] | None = None) -> Path:
     args = build_parser().parse_args(argv)
     started = time.perf_counter()
-    run_dir = run_directory(args.output_root, args.run_name)
+    # El código que corre es el de ahora: el manifiesto y la carpeta llevan este commit.
+    git_at_start, branch = _git_state(), _git("rev-parse", "--abbrev-ref", "HEAD")
+    run_dir = run_directory(args.output_root, args.run_name, commit=git_at_start["commit"])
     if run_dir.exists():
         raise FileExistsError(f"{run_dir} ya existe: nunca se sobrescribe una corrida.")
     config = _config(args)
@@ -292,7 +311,27 @@ def main(argv: list[str] | None = None) -> Path:
         if per_work[column].map(lambda value: isinstance(value, (dict, list))).any():
             per_work[column] = per_work[column].map(lambda value: json.dumps(_jsonable(value), sort_keys=True))
     per_work.to_csv(run_dir / "per_work.csv", index=False)
-    (run_dir / "README.txt").write_text(_readme(), encoding="utf-8")
+    files = input_files(catalog)
+    # Un commit o un árbol que cambió durante la corrida queda a la vista de la auditoría.
+    provenance = {
+        "commit": git_at_start["commit"],
+        "branch": branch,
+        "dirty_worktree": git_at_start["dirty_worktree"],
+        "git_at_end": _git_state(),
+    }
+    inputs = {
+        # Las raíces locales se guardan como referencia; no entran en el hash.
+        "musetrainer_root": args.musetrainer_root,
+        "symbtr_root": args.symbtr_root,
+        "path_base": "ruta relativa a la raíz de cada corpus (source), en POSIX",
+        "hash_base": "sha256 del contenido con CRLF como LF (no depende del fin de línea de la copia)",
+        "aggregate_sha256": aggregate_sha256(files),
+        "files": files,
+    }
+    config_record = manifest_config(args)
+    run = porobra_audit.describe_run({**provenance, "config": _jsonable(config_record), "inputs": inputs},
+                                     _distribution(catalog["source"]), per_work, run_dir.name)
+    (run_dir / "README.txt").write_text(_readme(run), encoding="utf-8")
     # Las comparaciones salen del CSV tal como quedó en disco: la auditoría las recalcula
     # desde el mismo archivo y, con la misma semilla, deben coincidir exacto.
     records = porobra_audit.comparison_records(porobra_audit.read_per_work(run_dir / "per_work.csv"))
@@ -301,6 +340,7 @@ def main(argv: list[str] | None = None) -> Path:
 
     summary = {
         "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaraciones 7, 8 y 9",
+        "run": run,
         "corpus": {
             "extraction": EXTRACTION,
             "n_candidates": int(len(catalog)),
@@ -341,22 +381,12 @@ def main(argv: list[str] | None = None) -> Path:
 
     summary["wall_clock_s"] = round(time.perf_counter() - started, 1)
     (run_dir / "summary.json").write_text(json.dumps(_jsonable(summary), indent=2, ensure_ascii=False), encoding="utf-8")
-    files = input_files(catalog)
     manifest = {
         "created": datetime.now().isoformat(timespec="seconds"),
-        "commit": _git("rev-parse", "HEAD"),
-        "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
-        "dirty_worktree": bool(_git("status", "--porcelain", "--untracked-files=no")),
+        **provenance,
         "command": [sys.executable, "-m", "src.cli.porobra_heldout", *(argv if argv is not None else sys.argv[1:])],
-        "config": manifest_config(args),
-        "inputs": {
-            # Las raíces locales se guardan como referencia; no entran en el hash.
-            "musetrainer_root": args.musetrainer_root,
-            "symbtr_root": args.symbtr_root,
-            "path_base": "ruta relativa a la raíz de cada corpus (source), en POSIX",
-            "aggregate_sha256": aggregate_sha256(files),
-            "files": files,
-        },
+        "config": config_record,
+        "inputs": inputs,
         "versions": _versions(),
         "hardware": {"platform": platform.platform(), "processor": platform.processor(), "cpu_count": os.cpu_count()},
         "outputs": {name: _sha256(run_dir / name) for name in OUTPUTS},
@@ -368,9 +398,11 @@ def main(argv: list[str] | None = None) -> Path:
     print(f"Auditoría de integridad: {audit['status']}; preregistro: {audit['preregistration']['status']} "
           f"({porobra_audit.AUDIT_FILENAME}).")
     deviations = audit["preregistration"]["deviations"]
+    if not audit["confirmatory"]:
+        print(f"AVISO: no es la corrida confirmatoria y sus veredictos no deciden: {audit['preregistration']['run_kind']}, "
+              f"{audit['preregistration']['run_kind_note']}, integridad {audit['status']}.")
     if deviations:
-        print(f"AVISO: no es la configuración de la sección A del preregistro ({', '.join(sorted(deviations))}); "
-              "no se reporta como la corrida confirmatoria.")
+        print(f"AVISO: se aparta de la sección A del preregistro en: {', '.join(sorted(deviations))}.")
     if analysis_failures:
         print(f"AVISO: {len(analysis_failures)} obra(s) fallaron en el análisis; ver analysis_failures en summary.json.")
     convergence = summary["convergence"]

@@ -12,15 +12,18 @@ fallaron en el análisis. Eso es la integridad: ``status`` es ``passed``, ``inco
 
 El recálculo repite desde ``per_work.csv``, con la semilla y los remuestreos del resumen,
 todo lo que decide (IC de Holm por pasos, rechazo, veredicto, IC del 95 %, ponderada por
-tokens, Wilcoxon con Holm, sensibilidades y convergencia) y exige igualdad exacta.
+tokens, Wilcoxon con Holm, sensibilidades y convergencia) y exige igualdad, con tolerancia
+de redondeo sólo entre floats (otro sistema operativo cambia el último bit de un p).
 
-Aparte, ``preregistration`` dice si la configuración del manifiesto es la de la sección A
-del preregistro (``preregistered``) o no (``not_preregistered``, con ``deviations``: qué
-cambió), incluida la regla de ampliar la rejilla del finito; ``manifest["config"]`` se
-compara además con la que sale del argv real (``manifest["command"]``) y con lo que dice el
-resumen. Un smoke íntegro sale ``passed`` y ``not_preregistered``. ``confirmatory`` sólo es
-verdadero si la corrida es íntegra, preregistrada y la principal (truncamiento 20): la de
-truncamiento 40 es la sensibilidad (``run_kind``).
+Aparte, ``preregistration`` dice si la corrida es la de la sección A del preregistro
+(``preregistered``) o no (``not_preregistered``, con ``deviations``: qué cambió): la
+configuración del manifiesto, la regla de ampliar la rejilla del finito, la identidad del
+corpus (no sólo su conteo), el árbol limpio y el mismo commit de principio a fin;
+``manifest["config"]`` se compara además con la que sale del argv real
+(``manifest["command"]``) y con lo que dice el resumen. Un smoke íntegro sale ``passed`` y
+``not_preregistered``. ``confirmatory`` sólo es verdadero si la corrida es íntegra,
+preregistrada y la principal (truncamiento 20): la de truncamiento 40 es la sensibilidad
+(``run_kind``, que con alguna desviación es ``no_preregistrada``).
 
     python -m src.analysis.porobra_audit <directorio de la corrida> [--require-preregistered]
 
@@ -82,14 +85,27 @@ PREREGISTERED_CONFIG = {
 UNCHECKED_CONFIG_KEYS = ("n_workers",)
 #: Truncamiento del HDP: 20 es la corrida principal; 40, la sensibilidad preregistrada.
 PREREGISTERED_TRUNCATION = {20: "principal", 40: "sensibilidad_truncamiento_40"}
+NOT_PREREGISTERED_KIND = "no_preregistrada"
 RUN_KIND_NOTES = {
     "principal": "corrida confirmatoria de la sección A (truncamiento 20)",
     "sensibilidad_truncamiento_40": (
         "sensibilidad preregistrada del truncamiento (40); no es la corrida confirmatoria y no decide"
     ),
+    NOT_PREREGISTERED_KIND: "se aparta de la sección A (ver deviations); no es la corrida confirmatoria y no decide",
 }
 #: Candidatos por fuente: MuseTrainer completo (69 partituras) y la muestra de 100 de SymbTr.
 PREREGISTERED_CORPUS = {"MuseTrainer": 69, "SymbTr": 100}
+#: Identidad de esos candidatos por fuente (``source_aggregates``, con ``input_sha256``, que no
+#: depende del fin de línea): external/library 9128876, scores/; external/SymbTr 246bbe3,
+#: MusicXML/, muestra de 100 con semilla 7. Los clones son los de los hashes de la bitácora.
+PREREGISTERED_CORPUS_SHA256 = {
+    "MuseTrainer": "8792921b1cd5e7ea7933eaa4ebf5805063c8015694c266ad8f052bfc00d48b9b",
+    "SymbTr": "1c94ee649d9444d8fd15a34d5e894a33a3089c37230cd9bcaf7cf9ae3c9357a4",
+}
+#: Tolerancia del recálculo: otra libm cambia el último bit de un float sin cambiar nada más.
+RECOMPUTE_REL_TOLERANCE = 1e-12
+#: Junto a cero: una resta que da 0 en un sistema y 1e-17 en otro.
+RECOMPUTE_ABS_TOLERANCE = 1e-12
 
 
 def _sha256(path: Path) -> str:
@@ -330,7 +346,11 @@ def _jsonable(value):
 
 
 def _differences(observed, expected, path: str = "") -> list[str]:
-    """Rutas donde dos estructuras JSON difieren (igualdad exacta, sin tolerancia)."""
+    """Rutas donde dos estructuras JSON difieren.
+
+    Igualdad exacta (y del mismo tipo) en todo salvo entre dos floats, que admiten
+    ``RECOMPUTE_*_TOLERANCE``: re-auditar en otro sistema operativo no es una alteración.
+    """
 
     if isinstance(expected, dict) and isinstance(observed, dict):
         found = []
@@ -345,9 +365,11 @@ def _differences(observed, expected, path: str = "") -> list[str]:
         return found
     if isinstance(expected, list) and isinstance(observed, list) and len(expected) == len(observed):
         return [item for index, (a, b) in enumerate(zip(observed, expected)) for item in _differences(a, b, f"{path}[{index}]")]
-    if type(observed) is not type(expected) or observed != expected:
-        return [f"{path}: {observed!r} en el resumen, {expected!r} al recalcular"]
-    return []
+    if type(observed) is float and type(expected) is float:
+        same = math.isclose(observed, expected, rel_tol=RECOMPUTE_REL_TOLERANCE, abs_tol=RECOMPUTE_ABS_TOLERANCE)
+    else:
+        same = type(observed) is type(expected) and observed == expected
+    return [] if same else [f"{path}: {observed!r} en el resumen, {expected!r} al recalcular"]
 
 
 def _recompute(works: pd.DataFrame, summary: dict) -> dict:
@@ -356,7 +378,7 @@ def _recompute(works: pd.DataFrame, summary: dict) -> dict:
     Comparación principal, las dos sensibilidades y la convergencia, con los remuestreos y la
     semilla del resumen: IC bootstrap por obra con Holm por pasos, rechazo, veredicto,
     bootstrap_95_ci, ponderada por tokens, Wilcoxon con Holm, fraction_converged y
-    not_converged_work_ids. Deben coincidir exacto: un resumen editado no pasa. La lista de
+    not_converged_work_ids. Deben coincidir (``_differences``): un resumen editado no pasa. La lista de
     obras expuestas del resumen debe ser la de ``porobra.TEST_EXPOSED_WORK_IDS`` y
     ``exposed_in_run``, su intersección con las obras de la corrida.
     """
@@ -462,21 +484,62 @@ def _summary_deviation(summary: dict, config: dict) -> dict | None:
     rhat = (summary.get("convergence") or {}).get("rhat_threshold")
     if not _same(rhat, config.get("rhat_threshold")):
         observed["convergence.rhat_threshold"], expected["convergence.rhat_threshold"] = rhat, config.get("rhat_threshold")
+    truncation = (summary.get("run") or {}).get("truncation")
+    if truncation != config.get("truncation"):
+        observed["run.truncation"], expected["run.truncation"] = truncation, config.get("truncation")
     return {"observed": observed, "expected": expected} if observed else None
 
 
-def _preregistration(manifest: dict, summary: dict, works: pd.DataFrame) -> dict:
+def source_aggregates(manifest: dict) -> dict[str, str | None]:
+    """``aggregate_sha256`` de ``inputs.files`` por fuente; ``None`` si un registro es ilegible."""
+
+    from src.cli import porobra_heldout  # el CLI importa este módulo: import diferido
+
+    files = (manifest.get("inputs") or {}).get("files") or []
+    aggregates: dict[str, str | None] = {}
+    for source in sorted({str(item.get("source")) for item in files}):
+        try:
+            aggregates[source] = porobra_heldout.aggregate_sha256([item for item in files if str(item.get("source")) == source])
+        except (KeyError, TypeError):
+            aggregates[source] = None
+    return aggregates
+
+
+def _corpus_identity_deviation(manifest: dict) -> dict | None:
+    """Los candidatos son los fijados en el preregistro, no sólo cuántos son."""
+
+    observed = source_aggregates(manifest)
+    keys = sorted(key for key in set(observed) | set(PREREGISTERED_CORPUS_SHA256)
+                  if observed.get(key) != PREREGISTERED_CORPUS_SHA256.get(key))
+    if not keys:
+        return None
+    return {"observed": {key: observed.get(key) for key in keys},
+            "expected": {key: PREREGISTERED_CORPUS_SHA256.get(key) for key in keys}}
+
+
+def _provenance_deviations(manifest: dict, directory_name: str) -> dict:
+    """El árbol limpio y el mismo commit de principio a fin (decisión 3 del preregistro)."""
+
+    deviations = {}
+    commit, at_end = manifest.get("commit"), manifest.get("git_at_end") or {}
+    if at_end.get("commit") != commit:
+        deviations["commit_changed_during_run"] = {"observed": at_end.get("commit"), "expected": commit}
+    suffix = directory_name.rsplit("_", 1)[-1]
+    if not isinstance(commit, str) or suffix != commit[:7]:
+        deviations["commit_directory"] = {"observed": suffix, "expected": str(commit)[:7]}
+    if manifest.get("dirty_worktree") is not False or at_end.get("dirty_worktree") is not False:
+        deviations["dirty_worktree"] = {
+            "observed": {"al_empezar": manifest.get("dirty_worktree"), "al_terminar": at_end.get("dirty_worktree")},
+            "expected": False,
+        }
+    return deviations
+
+
+def _design_deviations(manifest: dict, candidates, works: pd.DataFrame, directory_name: str) -> dict:
+    """En qué se aparta la corrida de la sección A: configuración, corpus, rejilla, commit y árbol."""
+
     config = manifest.get("config") or {}
     deviations = {}
-    command = _command_deviation(manifest, config)
-    if command:
-        deviations["command"] = command
-    in_summary = _summary_deviation(summary, config)
-    if in_summary:
-        deviations["summary"] = in_summary
-    corpus_config = _corpus_config_deviation(manifest, config)
-    if corpus_config:
-        deviations["corpus_config"] = corpus_config
     for key, expected in PREREGISTERED_CONFIG.items():
         observed = config.get(key)
         if not (_same_dict(observed, expected) if isinstance(expected, dict) else _same(observed, expected)):
@@ -491,14 +554,49 @@ def _preregistration(manifest: dict, summary: dict, works: pd.DataFrame) -> dict
     truncation = config.get("truncation")
     if truncation not in PREREGISTERED_TRUNCATION:
         deviations["truncation"] = {"observed": truncation, "expected": sorted(PREREGISTERED_TRUNCATION)}
-    corpus = summary.get("corpus", {}).get("n_by_source_candidates", {})
-    if corpus != PREREGISTERED_CORPUS:
-        deviations["corpus_size"] = {"observed": corpus, "expected": dict(PREREGISTERED_CORPUS)}
-    if manifest.get("dirty_worktree") is not False:
-        deviations["dirty_worktree"] = {"observed": manifest.get("dirty_worktree"), "expected": False}
-    run_kind = PREREGISTERED_TRUNCATION.get(truncation)
+    if candidates != PREREGISTERED_CORPUS:
+        deviations["corpus_size"] = {"observed": candidates, "expected": dict(PREREGISTERED_CORPUS)}
+    identity = _corpus_identity_deviation(manifest)
+    if identity:
+        deviations["corpus_identity"] = identity
+    return {**deviations, **_provenance_deviations(manifest, directory_name)}
+
+
+def _run_kind(truncation, deviations: dict) -> str:
+    return NOT_PREREGISTERED_KIND if deviations else PREREGISTERED_TRUNCATION[truncation]
+
+
+def describe_run(manifest: dict, candidates, works: pd.DataFrame, directory_name: str) -> dict:
+    """El bloque ``run`` de ``summary.json``: qué es esta corrida, para quien sólo lea ese archivo."""
+
+    deviations = _design_deviations(manifest, candidates, works, directory_name)
+    run_kind = _run_kind((manifest.get("config") or {}).get("truncation"), deviations)
+    return {
+        "truncation": (manifest.get("config") or {}).get("truncation"),
+        "run_kind": run_kind,
+        "note": RUN_KIND_NOTES[run_kind],
+        "deviations": sorted(deviations),
+        "decides": "Sus veredictos deciden sólo si porobra_audit.json dice confirmatory: true.",
+    }
+
+
+def _preregistration(manifest: dict, summary: dict, works: pd.DataFrame, directory_name: str) -> dict:
+    config = manifest.get("config") or {}
+    deviations = {}
+    command = _command_deviation(manifest, config)
+    if command:
+        deviations["command"] = command
+    in_summary = _summary_deviation(summary, config)
+    if in_summary:
+        deviations["summary"] = in_summary
+    corpus_config = _corpus_config_deviation(manifest, config)
+    if corpus_config:
+        deviations["corpus_config"] = corpus_config
+    candidates = summary.get("corpus", {}).get("n_by_source_candidates", {})
+    deviations.update(_design_deviations(manifest, candidates, works, directory_name))
+    run_kind = _run_kind(config.get("truncation"), deviations)
     return {"status": "not_preregistered" if deviations else "preregistered",
-            "run_kind": run_kind, "run_kind_note": RUN_KIND_NOTES.get(run_kind), "deviations": deviations}
+            "run_kind": run_kind, "run_kind_note": RUN_KIND_NOTES[run_kind], "deviations": deviations}
 
 
 def audit_run_directory(run_dir: str | Path) -> dict:
@@ -520,7 +618,7 @@ def audit_run_directory(run_dir: str | Path) -> dict:
             _recompute(works, summary),
             {"name": "analysis_failures", "status": _status(not failures), "work_ids": failures},
         ]
-        preregistration = _preregistration(manifest, summary, works)
+        preregistration = _preregistration(manifest, summary, works, root.resolve().name)
     status = max((check["status"] for check in checks), key=_STATUS_ORDER.__getitem__)
     return {
         "status": status,

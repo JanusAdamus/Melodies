@@ -400,6 +400,32 @@ def test_la_sensibilidad_con_pocas_obras_tambien_se_evalua():
     assert {c["verdict"] for c in sensitivity["comparisons"]} == {"mejora"}
 
 
+def test_con_pocas_obras_el_bloque_lleva_la_advertencia_y_el_veredicto_no_cambia():
+    # Con pocas obras el bootstrap percentil es degenerado: se rotula, no se decide otra cosa.
+    small = porobra.compare_hdp(_rows(porobra.SMALL_N_WARNING_WORKS - 1, -0.5), bootstrap_samples=200, seed=0)
+    assert small["small_n_warning"] is True and "no cambia" in small["small_n_note"]
+    assert {c["verdict"] for c in small["comparisons"]} == {"mejora"}
+    assert small["min_paired_works"] == 2
+    enough = porobra.compare_hdp(_rows(porobra.SMALL_N_WARNING_WORKS, -0.5), bootstrap_samples=200, seed=0)
+    assert enough["small_n_warning"] is False and enough["small_n_note"] is None
+
+
+def test_una_sensibilidad_con_pocas_obras_avisa_junto_al_cambio_de_veredicto():
+    rows = _rows(20, -0.5) + _rows(25, 1.5)
+    for index, row in enumerate(rows):
+        row["work_id"] = f"w{index}"
+    # Sólo quedan 3 obras convergidas, con otro signo que el resto.
+    for row in rows:
+        row["hdp_converged"] = False
+    for row in rows[:3]:
+        row["hdp_converged"] = True
+    blocks = porobra.summary_blocks(rows, bootstrap_samples=300, seed=0, exposed_work_ids=[])
+    converged = blocks["sensitivity_converged_only"]
+    assert converged["n_works"] == 3 and converged["any_verdict_changes"] is True
+    assert converged["small_n_warning"] is True
+    assert blocks["comparisons"]["small_n_warning"] is False
+
+
 def test_los_bloques_del_resumen_dicen_si_algun_veredicto_cambia():
     # Aclaración 8: el análisis sin las obras expuestas «indica si algún veredicto cambia».
     rows = _rows(20, -0.5) + _rows(25, 1.5)

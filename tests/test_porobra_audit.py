@@ -53,6 +53,7 @@ def _as_preregistered(run_dir: Path, tmp_path: Path, monkeypatch, *, principal_t
     summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
     monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS", dict(summary["corpus"]["n_by_source_candidates"]))
     manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS_SHA256", porobra_audit.source_aggregates(manifest))
     config = manifest["config"]
     monkeypatch.setattr(porobra_audit, "PREREGISTERED_CONFIG", {
         key: value for key, value in config.items() if key not in (*porobra_audit.UNCHECKED_CONFIG_KEYS, "truncation")})
@@ -61,6 +62,7 @@ def _as_preregistered(run_dir: Path, tmp_path: Path, monkeypatch, *, principal_t
                         {truncation: "principal", 40: "sensibilidad_truncamiento_40"})
     config.update(overrides)
     manifest["dirty_worktree"] = False
+    manifest["git_at_end"] = {"commit": manifest["commit"], "dirty_worktree": False}
     (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return copy
 
