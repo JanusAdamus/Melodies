@@ -123,3 +123,14 @@ Una entrada por tarea cerrada (ver PROMPT_CLAUDE.md, «Bitácora»).
 - Pruebas de tiempos (scratchpad, fuera del repo): 5 obras de MuseTrainer, 400/200: 848 s con 5 procesos; R-hat 0/5 < 1.1; 800/400: 1256 s, 1/5. Smoke PDMX 50 partituras: 2 min 49 s, auditoría `passed` (`artifacts/Comparacion/smoke_pdmx50_20261028_984dfde`).
 - La tesis (JanusAdamus/Tesis) la corrige Codex después; no tocarla.
 - Siguiente: terminar la 1.4 → mezclar → revisión final del generador → 1.5 → Parada 1.
+
+## 2026-11-01, análisis por obra: rótulos, procedencia, identidad del corpus y re-auditoría (`feat/porobra-heldout`)
+
+- `summary.json` y `README.txt` llevan qué es la corrida (bloque `run`: truncamiento, `run_kind`, desviaciones); `comparisons.rule` ya no afirma por su cuenta que decide; el CLI avisa siempre que `confirmatory` no es verdadero. `run_kind` es `no_preregistrada` con cualquier desviación.
+- El manifiesto guarda commit y árbol de cuando la corrida empezó, y los de cuando terminó en `git_at_end`. Son desviaciones: `commit_changed_during_run`, `commit_directory` (sufijo de la carpeta) y `dirty_worktree` (al empezar o al terminar).
+- `PREREGISTERED_CORPUS_SHA256` fija los 69 + 100 candidatos: external/library 9128876 y external/SymbTr 246bbe3, muestra de 100 con semilla 7, clones con los hashes de esta bitácora; otro corpus con los mismos conteos es `corpus_identity`. Consecuencia: la corrida confirmatoria en la laptop exige esos commits. El hash de entrada normaliza CRLF a LF: aquí `core.autocrlf=true` deja CRLF en los 100 de SymbTr y en Debian habría LF.
+- `headline_recompute`: igualdad exacta salvo entre floats (rel. y abs. 1e-12). Motivo: re-auditar en Linux una corrida de Windows daba `failed` por el último bit de p de Wilcoxon.
+- `small_n_warning` y `small_n_note` por bloque con menos de 30 obras: es un rótulo y no cambia veredictos (tasas simuladas en `porobra.SMALL_N_NOTE`).
+- Pendiente, decisión de Adrián (sin cambio de código):
+  1. Con la regla actual ninguna corrida real puede salir confirmatoria: `finite_k_hit_limit` es desviación y al menos 3 obras reales llegan a K = 512 (siguen en el techo con 2048). Hace falta una enmienda sobre la regla de ampliar la rejilla o sobre el techo, antes de gastar la corrida.
+  2. Si se fija un mínimo de obras para dar veredicto en A o sólo se conserva el rótulo de `MIN_PAIRED_WORKS`/`SMALL_N_WARNING_WORKS` (hoy 2 y 30).
