@@ -223,3 +223,18 @@ confirmatoria, según la bitácora y los reportes de la tarea 1.4:
 Las Enmiendas 5 y 6 se motivaron con cifras de validación, R-hat y tiempos. Las seis
 obras siguen en la métrica principal. Como análisis adicional, que no decide, el
 resumen repite la comparación sin ellas e indica si algún veredicto cambia.
+
+## Aclaración 9, 2026-11-01 (completa la Aclaración 8)
+
+La lista de la Aclaración 8 quedó incompleta. El 2026-10-29, una revisión de la
+tarea 1.4 corrió un smoke de 30 iteraciones (burn-in 15) con el Minueto BWV Anh. 114,
+Bella Ciao y Passacaglia y leyó cifras derivadas de sus partes de prueba: los
+veredictos de la comparación principal y de las sensibilidades, el extremo inferior
+del IC de decisión (≈ 0.128), la diferencia ponderada por tokens (≈ 0.413) y la p de
+Wilcoxon (0.25). Esas cifras también aparecen en el registro de esa revisión.
+
+Por tanto, Bella Ciao se agrega a la lista y la indicación «sin leerse» del Minueto
+ya no vale. Son 7 obras expuestas. Las siete siguen en la métrica principal, y el
+análisis adicional sin ellas, que no decide, las excluye a todas. Ninguna regla de
+decisión cambia. Desde esta fecha, las pruebas y revisiones previas a la corrida
+confirmatoria no leen cifras de prueba de obras reales.
