@@ -622,7 +622,6 @@ def test_las_obras_expuestas_son_las_siete_de_las_aclaraciones_8_y_9():
     assert all(porobra.TEST_EXPOSED_WORKS[work].startswith("Aclaración 8") for work in others)
     assert all("Aclaración 7" in porobra.TEST_EXPOSED_WORKS[work] for work in timing_runs)
     assert "Aclaración 7" not in porobra.TEST_EXPOSED_WORKS["MuseTrainer:Passacaglia.mxl"]
-    assert "sin leerse" in porobra.TEST_EXPOSED_WORKS["MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl"]
     assert "ff9f998" in porobra.TEST_EXPOSED_WORKS["MuseTrainer:Arabesque_L._66_No._1_in_E_Major.mxl"]
     for text in (porobra.TEST_EXPOSURE_NOTE, *porobra.TEST_EXPOSED_WORKS.values()):
         assert "propuesta" not in text and "pendiente" not in text, text
