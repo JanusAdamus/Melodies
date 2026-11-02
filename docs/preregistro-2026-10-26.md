@@ -238,3 +238,17 @@ ya no vale. Son 7 obras expuestas. Las siete siguen en la métrica principal, y 
 análisis adicional sin ellas, que no decide, las excluye a todas. Ninguna regla de
 decisión cambia. Desde esta fecha, las pruebas y revisiones previas a la corrida
 confirmatoria no leen cifras de prueba de obras reales.
+
+## Aclaración 10, 2026-11-01 (exposición accidental después de la Aclaración 9)
+
+El 2026-11-01, una revisión de la tarea 1.4 hizo una búsqueda de texto en sus
+archivos temporales que, por accidente, mostró 3 líneas con un mismo valor numérico
+del `summary.json` de una corrida real corta (20 iteraciones, burn-in 10, 2 cadenas;
+commit 5f52884). El revisor lo reportó sin repetir el valor, no sabe a qué campo
+corresponde y dice no haberlo interpretado ni usado. Pudo ser una cifra derivada de
+las partes de prueba, así que se trata como tal. No se volvió a abrir para averiguarlo.
+
+Esa corrida usó sólo 3 obras: 12 Variaciones de Twinkle Twinkle, Arabesque L. 66 n.º 1
+y Ave Maria D 839, ya expuestas según la Aclaración 8. Siguen siendo 7 obras expuestas;
+ninguna regla de decisión cambia. Desde entonces, las revisiones tampoco hacen
+búsquedas de texto sobre las salidas de las corridas.
