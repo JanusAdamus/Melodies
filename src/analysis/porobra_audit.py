@@ -118,8 +118,15 @@ def _manifest_hashes(root: Path, manifest: dict) -> dict:
             "missing_fields": missing_fields, "unhashed_inputs": unhashed_inputs, "aggregate_mismatch": aggregate_mismatch}
 
 
+def _is_count(value) -> bool:
+    """Un entero de verdad: ``int()`` truncaría 2.5, y 3.0, "3" o True pasarían por 3 o 1."""
+
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _denominators(works: pd.DataFrame, summary: dict) -> dict:
-    min_events = int(summary.get("corpus", {}).get("min_events", porobra.MIN_EVENTS))
+    declared = summary.get("corpus", {}).get("min_events", porobra.MIN_EVENTS)
+    min_events = declared if _is_count(declared) else porobra.MIN_EVENTS
     bad = []
     for row in works.itertuples():
         expected = porobra.contiguous_split(int(row.n_events), min_events=1)
@@ -128,7 +135,8 @@ def _denominators(works: pd.DataFrame, summary: dict) -> dict:
         if (row.n_events < min_events or observed != (expected.n_fit, expected.n_test, expected.n_inner_train, expected.n_validation)
                 or not all(math.isfinite(value) and value > 0 for value in nll)):
             bad.append(str(row.work_id))
-    return {"name": "denominators", "status": _status(not bad), "bad_work_ids": bad, "min_events": min_events}
+    return {"name": "denominators", "status": _status(not bad and _is_count(declared)), "bad_work_ids": bad,
+            "min_events": declared}
 
 
 def _input_counts(manifest: dict) -> dict:
@@ -140,22 +148,37 @@ def _input_counts(manifest: dict) -> dict:
     return counts
 
 
+def _source_counts(corpus: dict, key: str, problems: list[str]) -> dict[str, int]:
+    """Los conteos por fuente que son enteros; lo que no lo es queda en ``problems``."""
+
+    counts = corpus.get(key, {})
+    if not isinstance(counts, dict):
+        problems.append(f"{key} no es un diccionario de conteos: {counts!r}")
+        return {}
+    for source, value in counts.items():
+        if not _is_count(value):
+            problems.append(f"{key}[{source!r}] no es un conteo entero: {value!r}")
+    return {str(source): value for source, value in counts.items() if _is_count(value)}
+
+
 def _corpus_accounting(works: pd.DataFrame, summary: dict, manifest: dict) -> dict:
     """El conteo del corpus cuadra consigo mismo, con los archivos de entrada y con el CSV.
 
     ``n_by_source_candidates`` decide el tamaño del corpus del preregistro: debe sumar
     ``n_candidates`` y ser, fuente por fuente, el de ``manifest["inputs"]["files"]``;
-    ``n_by_source_analyzed``, el de la columna ``source`` de ``per_work.csv``.
+    ``n_by_source_analyzed``, el de la columna ``source`` de ``per_work.csv``. Un conteo que
+    no es entero es un problema, no una excepción.
     """
 
     corpus = summary.get("corpus", {})
     parts = ("n_failures", "n_duplicates", "n_excluded_short", "n_analysis_failures", "n_analyzed")
-    accounted = sum(int(corpus.get(key, 0)) for key in parts)
-    candidates = {str(key): int(value) for key, value in (corpus.get("n_by_source_candidates") or {}).items()}
-    analyzed = {str(key): int(value) for key, value in (corpus.get("n_by_source_analyzed") or {}).items()}
+    problems = [f"{key} no es un conteo entero: {corpus[key]!r}"
+                for key in ("n_candidates", *parts) if key in corpus and not _is_count(corpus[key])]
+    accounted = sum(value for value in (corpus.get(key, 0) for key in parts) if _is_count(value))
+    candidates = _source_counts(corpus, "n_by_source_candidates", problems)
+    analyzed = _source_counts(corpus, "n_by_source_analyzed", problems)
     inputs = _input_counts(manifest)
     in_csv = {str(key): int(value) for key, value in works["source"].astype(str).value_counts().items()}
-    problems = []
     if corpus.get("n_candidates") != accounted:
         problems.append(f"n_candidates {corpus.get('n_candidates')!r} y las partes suman {accounted}")
     if sum(candidates.values()) != corpus.get("n_candidates"):
@@ -468,7 +491,7 @@ def _preregistration(manifest: dict, summary: dict, works: pd.DataFrame) -> dict
     truncation = config.get("truncation")
     if truncation not in PREREGISTERED_TRUNCATION:
         deviations["truncation"] = {"observed": truncation, "expected": sorted(PREREGISTERED_TRUNCATION)}
-    corpus = dict(summary.get("corpus", {}).get("n_by_source_candidates", {}))
+    corpus = summary.get("corpus", {}).get("n_by_source_candidates", {})
     if corpus != PREREGISTERED_CORPUS:
         deviations["corpus_size"] = {"observed": corpus, "expected": dict(PREREGISTERED_CORPUS)}
     if manifest.get("dirty_worktree") is not False:

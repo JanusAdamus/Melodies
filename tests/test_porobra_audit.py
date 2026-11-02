@@ -329,6 +329,64 @@ def test_conteo_del_corpus_que_no_cuadra_falla(run_dir, tmp_path):
     assert _check(porobra_audit.audit_run_directory(copy), "corpus_accounting")["status"] == "failed"
 
 
+#: Cómo se estropea un conteo: los que lanzaban excepción y los que int() o == dejaban pasar.
+NOT_INTEGER = {
+    "texto": lambda n: "x",
+    "nulo": lambda n: None,
+    "decimal": lambda n: n + 0.5,
+    "float_entero": lambda n: float(n),
+    "texto_numerico": lambda n: str(n),
+    "lista": lambda n: [n],
+}
+
+
+def _audit_with_corpus(run_dir: Path, tmp_path: Path, edit) -> dict:
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    edit(summary["corpus"])
+    _rewrite_summary(copy, summary)
+    return porobra_audit.audit_run_directory(copy)
+
+
+@pytest.mark.parametrize("how", sorted(NOT_INTEGER))
+@pytest.mark.parametrize("key", ["n_candidates", "n_failures", "n_duplicates", "n_excluded_short",
+                                 "n_analysis_failures", "n_analyzed"])
+def test_un_conteo_no_entero_da_failed_sin_lanzar(run_dir, tmp_path, key, how):
+    audit = _audit_with_corpus(run_dir, tmp_path, lambda c: c.update({key: NOT_INTEGER[how](c[key])}))
+    check = _check(audit, "corpus_accounting")
+    assert check["status"] == "failed" and any(key in problem for problem in check["problems"]), check
+    assert audit["status"] == "failed" and audit["confirmatory"] is False
+
+
+@pytest.mark.parametrize("how", sorted(NOT_INTEGER))
+@pytest.mark.parametrize("key", ["n_by_source_candidates", "n_by_source_analyzed"])
+def test_un_conteo_por_fuente_no_entero_da_failed_sin_lanzar(run_dir, tmp_path, key, how):
+    def edit(corpus):
+        source = sorted(corpus[key])[0]
+        corpus[key][source] = NOT_INTEGER[how](corpus[key][source])
+
+    audit = _audit_with_corpus(run_dir, tmp_path, edit)
+    check = _check(audit, "corpus_accounting")
+    assert check["status"] == "failed" and any(key in problem for problem in check["problems"]), check
+    assert audit["status"] == "failed"
+
+
+@pytest.mark.parametrize("key", ["n_by_source_candidates", "n_by_source_analyzed"])
+@pytest.mark.parametrize("value", ["x", 3, ["MuseTrainer"], None], ids=["texto", "entero", "lista", "nulo"])
+def test_conteos_por_fuente_que_no_son_un_diccionario_dan_failed_sin_lanzar(run_dir, tmp_path, key, value):
+    audit = _audit_with_corpus(run_dir, tmp_path, lambda c: c.update({key: value}))
+    check = _check(audit, "corpus_accounting")
+    assert check["status"] == "failed" and any(key in problem for problem in check["problems"]), check
+    assert audit["status"] == "failed"
+
+
+@pytest.mark.parametrize("how", sorted(NOT_INTEGER))
+def test_min_events_no_entero_da_failed_sin_lanzar(run_dir, tmp_path, how):
+    audit = _audit_with_corpus(run_dir, tmp_path, lambda c: c.update(min_events=NOT_INTEGER[how](c["min_events"])))
+    assert _check(audit, "denominators")["status"] == "failed"
+    assert audit["status"] == "failed" and audit["confirmatory"] is False
+
+
 #: Ediciones de los conteos por fuente del resumen (hash al día) que no cuadran con los
 #: archivos de entrada del manifiesto o con la columna «source» de per_work.csv.
 COUNT_EDITS = {
