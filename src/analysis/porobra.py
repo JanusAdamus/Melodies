@@ -1,4 +1,4 @@
-"""Análisis por obra held-out: preregistro 2026-10-26, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaraciones 7 y 8.
+"""Análisis por obra held-out: preregistro 2026-10-26, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaraciones 7, 8 y 9.
 
 Por obra, partición contigua: el primer 80 % de los eventos ajusta y el último 20 % evalúa;
 dentro del 80 %, su último 20 % valida los hiperparámetros (α de los n-gramas, K del finito,
@@ -71,8 +71,9 @@ _SMOKE_40 = (
     "NLL de prueba de un smoke de 40 iteraciones leída en un reporte el 2026-10-28, después de "
     "registrar las Enmiendas 5 y 6"
 )
+_SMOKE_30 = "cifras derivadas de la prueba leídas en un smoke de 30 iteraciones de la revisión de la tarea 1.4"
 #: Obras del corpus de A con exposición a cifras de prueba antes de la corrida confirmatoria,
-#: según la Aclaración 8 (9117caf, corrige la 7), con el motivo. Siguen en la métrica
+#: según las Aclaraciones 8 (9117caf, corrige la 7) y 9 (674bcf9), con el motivo. Siguen en la métrica
 #: principal; ``sensitivity_without_exposed`` es el análisis adicional sin ellas que la
 #: Aclaración 8 registra y que no decide.
 TEST_EXPOSED_WORKS = {
@@ -83,16 +84,20 @@ TEST_EXPOSED_WORKS = {
     ),
     "MuseTrainer:Ave_Maria_D839_-_Schubert_-_Solo_Piano_Arrg..mxl": f"Aclaración 8: {_SMOKE_40}; {_TIMING_RUNS}",
     "MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl": (
-        "Aclaración 8: NLL de prueba calculada en las corridas de tiempos (Aclaración 7), sin leerse"
+        "Aclaración 8: NLL de prueba calculada en las corridas de tiempos (Aclaración 7); "
+        f"Aclaración 9: {_SMOKE_30}"
     ),
     "MuseTrainer:Bach_Toccata_and_Fugue_in_D_Minor_Piano_solo.mxl": (
         "Aclaración 8: NLL de prueba calculada en las corridas de tiempos (Aclaración 7), sin leerse"
     ),
-    "MuseTrainer:Passacaglia.mxl": "Aclaración 8: NLL de prueba calculada e impresa por la revisión de la tarea 1.4",
+    "MuseTrainer:Bella_Ciao.mxl": f"Aclaración 9: {_SMOKE_30}",
+    "MuseTrainer:Passacaglia.mxl": (
+        f"Aclaración 8: NLL de prueba calculada e impresa por la revisión de la tarea 1.4; Aclaración 9: {_SMOKE_30}"
+    ),
 }
 TEST_EXPOSED_WORK_IDS = tuple(TEST_EXPOSED_WORKS)
 TEST_EXPOSURE_NOTE = (
-    "Aclaración 8 (corrige la 7): estas obras tuvieron exposición a cifras de prueba de la sección A "
+    "Aclaración 8 (corrige la 7, completada por la 9): estas obras tuvieron exposición a cifras de prueba de la sección A "
     "antes de la corrida confirmatoria (motivo por obra en exposed_works). Siguen en la métrica "
     "principal. sensitivity_without_exposed es el análisis adicional que la Aclaración 8 registra: "
     "repite la comparación sin ellas e indica si algún veredicto cambia; no decide."

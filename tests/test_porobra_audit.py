@@ -603,7 +603,7 @@ def test_una_obra_que_falla_deja_la_auditoria_en_failed(corpus, tmp_path, monkey
 # --- obras con la prueba expuesta ----------------------------------------------------
 
 
-def test_las_obras_expuestas_son_las_seis_de_la_aclaracion_8():
+def test_las_obras_expuestas_son_las_siete_de_las_aclaraciones_8_y_9():
     timing_runs = (
         "MuseTrainer:12_Variations_of_Twinkle_Twinkle_Little_Star.mxl",
         "MuseTrainer:Arabesque_L._66_No._1_in_E_Major.mxl",
@@ -613,9 +613,13 @@ def test_las_obras_expuestas_son_las_seis_de_la_aclaracion_8():
     )
     # La Aclaración 8 (9117caf) registra las seis: las cinco de las corridas de tiempos de
     # la Aclaración 7 y Passacaglia, cuya NLL de prueba calculó e imprimió la revisión 1.4.
-    assert porobra.TEST_EXPOSED_WORK_IDS == timing_runs + ("MuseTrainer:Passacaglia.mxl",)
+    assert porobra.TEST_EXPOSED_WORK_IDS == timing_runs + ("MuseTrainer:Bella_Ciao.mxl", "MuseTrainer:Passacaglia.mxl")
+    # Aclaración 9: el Minueto dejó de estar «sin leerse».
+    assert "sin leerse" not in porobra.TEST_EXPOSED_WORKS["MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl"]
     assert set(porobra.TEST_EXPOSED_WORKS) == set(porobra.TEST_EXPOSED_WORK_IDS)
-    assert all(reason.startswith("Aclaración 8") for reason in porobra.TEST_EXPOSED_WORKS.values())
+    assert porobra.TEST_EXPOSED_WORKS["MuseTrainer:Bella_Ciao.mxl"].startswith("Aclaración 9")
+    others = [work for work in porobra.TEST_EXPOSED_WORK_IDS if work != "MuseTrainer:Bella_Ciao.mxl"]
+    assert all(porobra.TEST_EXPOSED_WORKS[work].startswith("Aclaración 8") for work in others)
     assert all("Aclaración 7" in porobra.TEST_EXPOSED_WORKS[work] for work in timing_runs)
     assert "Aclaración 7" not in porobra.TEST_EXPOSED_WORKS["MuseTrainer:Passacaglia.mxl"]
     assert "sin leerse" in porobra.TEST_EXPOSED_WORKS["MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl"]
@@ -653,7 +657,7 @@ def test_el_resumen_divulga_la_exposicion_y_repite_sin_esas_obras(corpus, tmp_pa
     without = summary["sensitivity_without_exposed"]
     assert without["n_works"] == summary["comparisons"]["n_works"] - 1
     assert without["excluded_work_ids"] == ["MuseTrainer:a.musicxml"]
-    assert summary["preregistro"].endswith("Enmiendas 3, 5 y 6, Aclaraciones 7 y 8")
+    assert summary["preregistro"].endswith("Enmiendas 3, 5 y 6, Aclaraciones 7, 8 y 9")
     assert "Aclaración 8" in without["rule"] and "no decide" in without["rule"]
     # El recálculo de la auditoría usa la misma lista de obras expuestas.
     audit = json.loads((run_dir / porobra_audit.AUDIT_FILENAME).read_text(encoding="utf-8"))

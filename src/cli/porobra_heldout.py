@@ -299,7 +299,7 @@ def main(argv: list[str] | None = None) -> Path:
                                     exposed_work_ids=porobra.TEST_EXPOSED_WORK_IDS)
 
     summary = {
-        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaraciones 7 y 8",
+        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaraciones 7, 8 y 9",
         "corpus": {
             "extraction": EXTRACTION,
             "n_candidates": int(len(catalog)),
