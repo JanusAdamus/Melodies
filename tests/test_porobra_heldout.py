@@ -417,6 +417,39 @@ def test_los_bloques_del_resumen_dicen_si_algun_veredicto_cambia():
     assert blocks["convergence"]["n_works"] == 45
 
 
+def test_no_evaluable_no_es_un_cambio_de_veredicto_y_se_reporta_aparte():
+    # Sin las obras expuestas puede quedar una sola obra: eso no es un cambio, sino «no se puede decir».
+    rows = _rows(20, -0.5)
+    exposed = [row["work_id"] for row in rows[1:]]
+    blocks = porobra.summary_blocks(rows, bootstrap_samples=500, seed=0, exposed_work_ids=exposed)
+    assert {c["verdict"] for c in blocks["comparisons"]["comparisons"]} == {"mejora"}
+    without = blocks["sensitivity_without_exposed"]
+    assert {c["verdict"] for c in without["comparisons"]} == {"no_evaluable"}
+    assert without["any_verdict_changes"] is False and without["verdict_changes"] == []
+    assert without["verdict_not_evaluable"] == [
+        {"model_b": c["model_b"], "principal": "mejora", "sensitivity": "no_evaluable"} for c in without["comparisons"]
+    ]
+    converged = blocks["sensitivity_converged_only"]
+    assert converged["any_verdict_changes"] is False and converged["verdict_not_evaluable"] == []
+
+
+def test_si_tambien_la_principal_es_no_evaluable_se_reporta_aparte():
+    blocks = porobra.summary_blocks(_rows(1, -0.5), bootstrap_samples=200, seed=0, exposed_work_ids=[])
+    without = blocks["sensitivity_without_exposed"]
+    assert without["verdict_changes"] == [] and without["any_verdict_changes"] is False
+    assert {item["principal"] for item in without["verdict_not_evaluable"]} == {"no_evaluable"}
+    assert len(without["verdict_not_evaluable"]) == len(without["comparisons"])
+
+
+def test_un_cambio_real_no_aparece_como_no_evaluable():
+    rows = _rows(20, -0.5) + _rows(25, 1.5)
+    for index, row in enumerate(rows[20:]):
+        row["work_id"] = f"x{index}"
+    blocks = porobra.summary_blocks(rows, bootstrap_samples=500, seed=0, exposed_work_ids=[row["work_id"] for row in rows[20:]])
+    without = blocks["sensitivity_without_exposed"]
+    assert without["any_verdict_changes"] is True and without["verdict_not_evaluable"] == []
+
+
 def test_con_una_sola_obra_no_es_evaluable():
     result = porobra.compare_hdp(_rows(1, -0.5), bootstrap_samples=200, seed=0)
     assert result["n_works"] == 1

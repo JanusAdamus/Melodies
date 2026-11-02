@@ -13,7 +13,8 @@ interrumpe, lo ya calculado queda en disco. Una obra que falla se registra en
 La comparación principal usa todas las obras analizadas (Enmienda 6);
 ``sensitivity_converged_only`` la repite sólo con las que tienen R-hat de log L < 1.1 y
 ``sensitivity_without_exposed`` sin las obras con exposición a cifras de prueba (análisis
-adicional de la Aclaración 8; no decide); las dos dicen si algún veredicto cambia.
+adicional de la Aclaración 8; no decide); las dos dicen si algún veredicto cambia
+(``verdict_changes``) y, aparte, cuáles no se pudieron evaluar (``verdict_not_evaluable``).
 ``README.txt`` lleva la advertencia de la Enmienda 6 sobre los estados del HDP. Al final
 escribe ``porobra_audit.json`` (``src.analysis.porobra_audit``): integridad y, aparte, si es
 la configuración de la sección A.

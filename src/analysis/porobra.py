@@ -757,15 +757,20 @@ def summary_blocks(
         ),
     }
     # Aclaración 8: el resumen «indica si algún veredicto cambia» sin las obras expuestas.
+    # «no_evaluable» no es un cambio (no hay veredicto con qué comparar): va aparte.
     principal = {c["model_b"]: c["verdict"] for c in blocks["comparisons"]["comparisons"]}
     for key in ("sensitivity_converged_only", "sensitivity_without_exposed"):
         block = blocks[key]
-        block["verdict_changes"] = [
+        pairs = [
             {"model_b": c["model_b"], "principal": principal[c["model_b"]], "sensitivity": c["verdict"]}
             for c in block["comparisons"]
-            if c["verdict"] != principal[c["model_b"]]
+        ]
+        not_evaluable = [pair for pair in pairs if "no_evaluable" in (pair["principal"], pair["sensitivity"])]
+        block["verdict_changes"] = [
+            pair for pair in pairs if pair not in not_evaluable and pair["principal"] != pair["sensitivity"]
         ]
         block["any_verdict_changes"] = bool(block["verdict_changes"])
+        block["verdict_not_evaluable"] = not_evaluable
     return blocks
 
 
