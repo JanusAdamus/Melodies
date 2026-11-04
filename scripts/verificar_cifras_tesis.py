@@ -694,6 +694,17 @@ def _resolver(obj: Any, ruta: Sequence[Any]) -> list[Any]:
     return current
 
 
+def _valor_celda(texto: str, celda: int | str | None) -> float:
+    """Valor de una celda del CSV; con ``celda``, la celda es una lista JSON (índice o ``"rango"``)."""
+
+    if celda is None:
+        return float(texto)
+    values = [float(v) for v in json.loads(texto)]
+    if celda == "rango":
+        return max(values) - min(values)
+    return values[int(celda)]
+
+
 def _recalcular_cifra(entry: dict, archivo: Path, cache: dict) -> float:
     operacion = entry.get("operacion")
     if "ruta" in entry:
@@ -706,6 +717,10 @@ def _recalcular_cifra(entry: dict, archivo: Path, cache: dict) -> float:
                 raise KeyError(ruta[-1])
             return float(ruta[-1])
         values = _resolver(cache[archivo], ruta)
+        if operacion == "longitud":
+            if len(values) != 1 or not isinstance(values[0], list):
+                raise ValueError("la ruta no da una lista")
+            return float(len(values[0]))
         if operacion == "media_sobre_cadenas":
             finite = [float(v) for v in values if v is not None and math.isfinite(float(v))]
             return statistics.fmean(finite)
@@ -720,7 +735,7 @@ def _recalcular_cifra(entry: dict, archivo: Path, cache: dict) -> float:
         rows = [cache[archivo][line - 2] for line in entry["filas_csv"]]
         if operacion == "conteo":
             return float(len(rows))
-        values = [float(row[entry["columna"]]) for row in rows]
+        values = [_valor_celda(row[entry["columna"]], entry.get("celda")) for row in rows]
         if operacion is None:
             if len(values) != 1:
                 raise ValueError(f"{len(values)} filas para una cifra sin operación")

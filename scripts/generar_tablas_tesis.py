@@ -16,7 +16,7 @@ sin redondear, el archivo, el campo o columna y la fila, y cómo recalcularlo: `
 (claves dentro del JSON; ``*`` recorre los valores de un diccionario) o ``columna`` y
 ``filas_csv`` (líneas del CSV, la 1 es el encabezado), más la ``operacion`` si la hay
 (``negado``, ``por_cien``, ``complemento_por_cien``, ``clave``, ``media``,
-``desviacion_estandar``, ``conteo``, ``maximo_en_MiB``, ``media_sobre_cadenas``).
+``desviacion_estandar``, ``conteo``, ``longitud``, ``maximo_en_MiB``, ``media_sobre_cadenas``).
 ``scripts/verificar_cifras_tesis.py`` recalcula cada cifra con eso.  Además
 ``figuras.json`` (figuras de las corridas, copiadas a ``figuras/`` con su sha256) y
 ``generador_resumen.json`` (corridas, tablas, avisos y pendientes).
@@ -27,20 +27,27 @@ estimando por obra (``work_mean_holm_decision_ci``): «mejora» si el extremo su
 evaluable» si Holm no se evaluó (p. ej. menos de 10 obras en común).  En PDMX las
 comparaciones con el transformador se orientan «transformador − clásico».
 
-Por obra rige la Enmienda 6: la métrica principal incluye todas las obras analizadas;
-la comparación restringida a obras con R-hat de log L bajo el umbral es un análisis de
-sensibilidad que no decide.  El generador reconoce, recalculando desde ``per_work.csv``,
-sobre qué obras está cada bloque de comparaciones del resumen:
-
-* ``summary["comparisons"]`` sobre todas las obras → tabla principal;
-* ``summary["comparisons"]`` sólo sobre las que convergen (``compare_hdp`` de la rama
-  ``feat/porobra-heldout`` en 700acba aún hace eso) → tabla de sensibilidad, y la
-  principal queda ``\\pendiente``;
-* ``summary["sensitivity_converged_only"]`` (misma forma que ``summary["comparisons"]``)
-  → tabla de sensibilidad.
-
-Los estados del HDP-HMM por cadena, el R-hat de la NLL predictiva y la NLL de cada
-cadena (Enmienda 6, puntos 2 y 4) aún no los escribe la corrida: quedan ``\\pendiente``.
+Por obra se lee sólo el formato final de ``src/cli/porobra_heldout.py`` (un formato
+anterior se rechaza): ``per_work.csv``, ``summary.json`` (con el bloque ``run``),
+``manifest.json`` y ``porobra_audit.json``.  Una corrida cuya auditoría de integridad no
+pasó no se escribe; una que no es la confirmatoria (``confirmatory`` falso) se escribe
+con la nota y el aviso de que sus veredictos no deciden.  La auditoría debe ser de esta
+corrida (``run_dir``), ``per_work.csv`` y ``summary.json`` los que hasheó el manifiesto
+(``outputs``), y el bloque ``run`` del resumen debe cuadrar con la auditoría (tipo y
+desviaciones) y con el truncamiento del manifiesto.  Las columnas
+``hdp_states_pooled_chains_*`` deben estar pero no se escriben (Enmienda 6, punto 4).  Rige la Enmienda 6: la métrica
+principal (``comparisons``) incluye todas las obras analizadas; las sensibilidades, que no
+deciden, son ``sensitivity_converged_only`` (Enmienda 6, punto 3),
+``sensitivity_without_exposed`` (Aclaraciones 8 a 10) y ``sensitivity_without_k_ceiling``
+(Enmienda 11), cada una en su tabla con los cambios de veredicto frente a la principal
+(«no evaluable» no es cambio).  De cada bloque se recalcula desde ``per_work.csv`` su
+población (obras excluidas, sólo convergidas), ``n_works``, ``n_pairs``, la media por
+obra, el aviso de menos de 30 obras y el mínimo de 10 obras para un veredicto (Enmienda 11).
+Se reportan además el α del finito (Enmienda 5), las obras con K en el tope y con el
+reajuste del finito en el tope de iteraciones de EM, y por obra y cadena el R-hat
+predictivo, la NLL de cada cadena con su rango y los estados por cadena (Enmienda 6,
+puntos 2 y 4), sin la media agregada de cadenas.  Una cifra de una lista guardada en una
+celda del CSV lleva ``celda`` en la procedencia (índice, o ``"rango"``: máximo − mínimo).
 
 Una corrida que no se da deja sus tablas con ``\\pendiente{...}`` y sin números: nada se
 inventa.  Ningún número se teclea aquí; todo sale de un artefacto.
@@ -93,7 +100,9 @@ TOLERANCIA_RECALCULO = 1e-9
 # distintos; en la corrida de humo difieren hasta 1.8e-7 (transformador).
 TOLERANCIA_ENTRE_ARTEFACTOS = 1e-5
 MIB = 1024 * 1024
-CLAVE_SENSIBILIDAD = "sensitivity_converged_only"
+# Enmienda 11: con menos de 10 obras, cifras sin veredicto; con menos de 30, aviso
+MIN_OBRAS_VEREDICTO = 10
+AVISO_POCAS_OBRAS = 30
 # claves de «fila» que no entran en el id: cambian de una corrida a otra
 FILA_SIN_ID = {"linea_csv", "filas_csv", "work_ids"}
 
@@ -101,11 +110,14 @@ TABLAS_POROBRA = (
     "porobra_corpus.tex",
     "porobra_comparaciones.tex",
     "porobra_comparaciones_sensibilidad.tex",
+    "porobra_sensibilidad_sin_expuestas.tex",
+    "porobra_sensibilidad_sin_techo_k.tex",
     "porobra_nll.tex",
     "porobra_estados.tex",
     "porobra_convergencia.tex",
     "porobra_hiperparametros.tex",
     "porobra_por_obra.tex",
+    "porobra_por_obra_cadenas.tex",
 )
 TABLAS_PDMX = (
     "pdmx_resultados.tex",
@@ -118,10 +130,40 @@ PENDIENTE = {
     "porobra": "corrida por obra de la Fase 2 (tarea 2.1)",
     "pdmx": "corrida PDMX de la Fase 2 (tarea 2.2)",
 }
-PENDIENTE_POR_CADENA = ("estados del HDP-HMM por cadena (Enmienda 6, punto 4): la corrida no los reporta por cadena, "
-                        "y sin convergencia entre cadenas su resumen conjunto no es una media posterior")
-PENDIENTE_NLL_POR_CADENA = ("por obra, R-hat de la NLL predictiva por muestra, NLL de prueba de cada cadena y su rango "
-                            "(Enmienda 6, punto 2): la corrida no los trae")
+# formato final de src/cli/porobra_heldout.py (Enmiendas 5, 6 y 11; Aclaraciones 8 a 10)
+CLAVES_RESUMEN = ("run", "corpus", "analysis_failures", "convergence", "comparisons", "sensitivity_converged_only",
+                  "test_exposure", "sensitivity_without_exposed", "sensitivity_without_k_ceiling", "selected_hyperparameters")
+CLAVES_HIPERPARAMETROS = ("hdp_eta", "finite_k", "finite_alpha", "finite_k_hit_limit", "finite_em_hit_max_iterations",
+                          "unigram_alpha", "bigram_alpha")
+COLUMNAS_POR_OBRA = ("work_id", "source", "n_test", "hdp_test_nll", "finite_test_nll", "bigram_test_nll", "unigram_test_nll",
+                     "hdp_converged", "hdp_rhat", "hdp_predictive_rhat", "hdp_test_nll_by_chain", "hdp_test_nll_chain_range",
+                     "hdp_states_mean_by_chain", "hdp_states_sd_by_chain", "hdp_states_pooled_chains_mean",
+                     "hdp_states_pooled_chains_sd", "hdp_eta", "finite_k", "finite_alpha",
+                     "finite_k_hit_limit", "finite_em_hit_max_iterations", "finite_states_mean", "finite_states_sd")
+ESTADOS_HOLM_POROBRA = {**ESTADOS_HOLM, "too_few_paired_works": r"menos de \estructural{10} obras"}
+# (bloque del resumen, tabla, sólo convergidas, obras excluidas, nota)
+SENSIBILIDADES_POROBRA = (
+    ("sensitivity_converged_only", "porobra_comparaciones_sensibilidad.tex", True, "",
+     r"Análisis de sensibilidad (Enmienda 6, punto 3; no decide): sólo obras con $\hat R$ de log L por debajo del umbral."),
+    ("sensitivity_without_exposed", "porobra_sensibilidad_sin_expuestas.tex", False, "expuestas",
+     "Análisis adicional (Aclaración 8, completada por las Aclaraciones 9 y 10; no decide): sin las obras con exposición a "
+     "cifras de prueba antes de la corrida confirmatoria."),
+    ("sensitivity_without_k_ceiling", "porobra_sensibilidad_sin_techo_k.tex", False, "techo",
+     "Análisis de sensibilidad (Enmienda 11; no decide): sin las obras cuyo HMM finito eligió el tope de la rejilla de $K$."),
+)
+NOTA_POCAS_OBRAS = (r"Bloque con menos de \estructural{30} obras: léase con cautela; el aviso no cambia la regla ni el "
+                    "veredicto (Enmienda 11).")
+NOTA_NO_EVALUABLE = (r"No evaluable: con menos de \estructural{10} obras se reportan las cifras sin veredicto, y eso no "
+                     "cuenta como cambio de veredicto (Enmienda 11).")
+NOTA_ESTADOS_HDP = ("Estados del HDP-HMM por cadena (Enmienda 6, punto 4): sin convergencia entre cadenas no son una media "
+                    "posterior y no se interpretan como inferencia bayesiana sobre $K$; no se comparan con los del finito.")
+NOTA_TECHO_K = ("La rejilla de $K$ del finito se amplía mientras se elige el máximo y termina en el tope; elegir el tope no es "
+                r"desviación (Enmienda 11). Seudoconteo $\alpha$ del finito elegido junto con $K$ en validación (Enmienda 5).")
+NOTA_EXPUESTAS = (r"\textsuperscript{\dag} Obra con exposición a cifras de prueba antes de la corrida confirmatoria "
+                  "(Aclaraciones 8 a 10); sigue en la métrica principal.")
+NOTA_MARCA_TECHO = (r"\textsuperscript{\ddag} El finito eligió el tope de la rejilla de $K$ (Enmienda 11): su $K$ no se "
+                    "interpreta como número de estados; la obra sigue en la métrica principal.")
+NOTA_MARCA_EM = r"\textsuperscript{\S} El reajuste del finito terminó por el tope de iteraciones de EM, no por la tolerancia."
 
 
 class ArtefactoInconsistente(ValueError):
@@ -270,9 +312,16 @@ class Tabla:
                                valor_fuente=valor_fuente, receta={"ruta": list(ruta)})
 
     def csv(self, valor: Any, decimales: int, *, archivo: str, columna: str, filas_csv: Sequence[int],
-            fila: Mapping[str, Any] | None = None, operacion: str | None = None, valor_fuente: Any = None) -> str:
+            fila: Mapping[str, Any] | None = None, operacion: str | None = None, valor_fuente: Any = None,
+            celda: int | str | None = None) -> str:
+        """``celda``: la celda es una lista en JSON; un índice toma ese elemento y ``"rango"``, máximo − mínimo."""
+
+        receta: dict[str, Any] = {"columna": columna, "filas_csv": [int(x) for x in filas_csv]}
+        if celda is not None:
+            receta["celda"] = celda
+            fila = {**(fila or {}), "celda": celda}
         return self._registrar(valor, decimales, archivo=archivo, campo=columna, fila=fila, operacion=operacion,
-                               valor_fuente=valor_fuente, receta={"columna": columna, "filas_csv": [int(x) for x in filas_csv]})
+                               valor_fuente=valor_fuente, receta=receta)
 
     def intervalo(self, ci: Sequence[Any] | None, decimales: int, *, archivo: str, ruta: Sequence[Any],
                   fila: Mapping[str, Any] | None = None, negar: bool = False) -> str:
@@ -322,56 +371,127 @@ def tabla_pendiente(nombre: str, motivo: str) -> Tabla:
 def _filas_porobra(corrida: Corrida) -> tuple[list[dict], str]:
     path, etiqueta = corrida.archivo("per_work.csv")
     rows = _leer_csv(path)
+    faltan = [c for c in COLUMNAS_POR_OBRA if rows and c not in rows[0]]
+    if faltan:
+        raise ArtefactoInconsistente(f"{etiqueta} no tiene las columnas del formato final de la corrida por obra: {', '.join(faltan)}")
     for index, row in enumerate(rows, start=2):  # fila 1 = encabezado del CSV
         row["_linea_csv"] = index
     return rows, etiqueta
 
 
-def _filas_convergidas(rows: list[dict]) -> list[dict]:
-    return [row for row in rows if _verdadero(row["hdp_converged"])]
+def _lista(row: Mapping, columna: str) -> list[float]:
+    return [float(x) for x in json.loads(row[columna])]
 
 
-def _poblacion(rows: list[dict], bloque: Mapping, etiqueta: str) -> str | None:
-    """Sobre qué obras está un bloque de comparaciones: «todas» o «convergidas».
+def _formato_final(summary: Mapping, etiqueta: str) -> None:
+    faltan = [k for k in CLAVES_RESUMEN if k not in summary]
+    faltan += [f"convergence.{k}" for k in ("n_converged", "fraction_converged") if k not in summary.get("convergence", {})]
+    faltan += [f"selected_hyperparameters.{k}" for k in CLAVES_HIPERPARAMETROS if k not in summary.get("selected_hyperparameters", {})]
+    faltan += [f"run.{k}" for k in ("truncation", "run_kind", "deviations") if k not in (summary.get("run") or {})]
+    if faltan:
+        raise ArtefactoInconsistente(f"{etiqueta}: formato anterior al final de la corrida por obra; falta {', '.join(faltan)}")
 
-    Se recalcula desde ``per_work.csv`` el número de pares y la media por obra de cada
-    comparación; si nada cuadra, los artefactos se contradicen.  Si todas las obras
-    convergen, las dos poblaciones coinciden y se dice «todas».
+
+# archivos de la corrida con hash en manifest["outputs"] (src/cli/porobra_heldout.py, OUTPUTS)
+SALIDAS_CON_HASH = ("per_work.csv", "summary.json")
+
+
+def _misma_corrida(corrida: Corrida, summary: Mapping, manifest: Mapping, audit: Mapping, *, summary_label: str,
+                   manifest_label: str, audit_label: str) -> None:
+    """La auditoría, el manifiesto y el resumen deben hablar de estos mismos archivos.
+
+    Un ``porobra_audit.json`` de otra corrida, o un ``per_work.csv`` o ``summary.json``
+    rehechos después del manifiesto, darían tablas con el rótulo de una auditoría que no
+    las revisó.
     """
 
-    poblaciones = {"todas": rows, "convergidas": _filas_convergidas(rows)}
-    encontradas = set()
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, Mapping):
+        raise ArtefactoInconsistente(f"{manifest_label}: sin outputs (hashes de los archivos de la corrida)")
+    for nombre in SALIDAS_CON_HASH:
+        path, _ = corrida.archivo(nombre)
+        if outputs.get(nombre) != _sha256(path):
+            raise ArtefactoInconsistente(f"{manifest_label}: outputs.{nombre} no es el sha256 de {nombre} "
+                                         "(archivo cambiado después de la corrida)")
+    run_dir = str(audit.get("run_dir") or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    if run_dir != corrida.directorio.resolve().name:
+        raise ArtefactoInconsistente(f"{audit_label}: run_dir={audit.get('run_dir')!r} no es esta corrida "
+                                     f"({corrida.directorio.name})")
+    failures = summary.get("analysis_failures") or []
+    if audit.get("status") == "passed" and failures:
+        raise ArtefactoInconsistente(f"{audit_label}: status passed con analysis_failures en {summary_label} "
+                                     "(la auditoría las marca failed): la auditoría no es de este resumen")
+    run = summary["run"]
+    prereg = audit.get("preregistration") or {}
+    kind = prereg.get("run_kind")
+    # el bloque run sólo ve las desviaciones de diseño; la auditoría añade comando, resumen y topes del corpus
+    if kind != "no_preregistrada" and run.get("run_kind") != kind:
+        raise ArtefactoInconsistente(f"{summary_label}: run.run_kind={run.get('run_kind')!r} y {audit_label} dice {kind!r}")
+    if not set(run.get("deviations") or []) <= set(prereg.get("deviations") or {}):
+        raise ArtefactoInconsistente(f"{summary_label}: run.deviations={run.get('deviations')!r} no están en las de {audit_label}")
+    truncation = (manifest.get("config") or {}).get("truncation")
+    if run.get("truncation") != truncation:
+        raise ArtefactoInconsistente(f"{summary_label}: run.truncation={run.get('truncation')!r} y {manifest_label} "
+                                     f"config.truncation={truncation!r}")
+
+
+def _verificar_bloque(rows: list[dict], bloque: Mapping, clave: str, etiqueta: str, *, converged_only: bool,
+                      excluidas: Sequence[str]) -> None:
+    """Un bloque de comparaciones debe salir de ``per_work.csv`` con la población que dice su regla.
+
+    Se recalculan desde el CSV las obras del bloque, el número de pares y la media por obra
+    de cada comparación, el aviso de pocas obras, el mínimo de obras para un veredicto
+    (Enmienda 11) y que el veredicto declarado sea el de la regla sobre el IC de Holm.
+    """
+
+    donde = f"{etiqueta}: {clave}"
+    if bool(bloque.get("converged_only")) != converged_only:
+        raise ArtefactoInconsistente(f"{donde}: converged_only={bloque.get('converged_only')!r}, su regla pide {converged_only}")
+    if sorted(bloque.get("excluded_work_ids") or []) != sorted(excluidas):
+        raise ArtefactoInconsistente(f"{donde}: excluded_work_ids={bloque.get('excluded_work_ids')!r}, per_work.csv da {sorted(excluidas)!r}")
+    poblacion = [r for r in rows if (_verdadero(r["hdp_converged"]) or not converged_only) and r["work_id"] not in set(excluidas)]
+    if int(bloque["n_works"]) != len(poblacion):
+        raise ArtefactoInconsistente(f"{donde}: n_works={bloque['n_works']} y per_work.csv da {len(poblacion)} obras")
+    if bool(bloque.get("small_n_warning")) != (len(poblacion) < AVISO_POCAS_OBRAS):
+        raise ArtefactoInconsistente(f"{donde}: small_n_warning={bloque.get('small_n_warning')!r} con {len(poblacion)} obras")
     for index, comparison in enumerate(bloque["comparisons"]):
         other = comparison["model_b"]
         computed = veredicto(comparison.get("work_mean_holm_status"), comparison.get("work_mean_holm_decision_ci"))
         declared = comparison.get("verdict")
         if declared is not None and VEREDICTOS_RESUMEN.get(declared, declared) != computed:
-            raise ArtefactoInconsistente(
-                f"{etiqueta}, comparación {index} (hdp − {other}): veredicto declarado {declared!r}, "
-                f"la regla sobre work_mean_holm_decision_ci da {computed!r}"
-            )
+            raise ArtefactoInconsistente(f"{donde}, comparación {index} (hdp − {other}): veredicto declarado {declared!r}, "
+                                         f"la regla sobre work_mean_holm_decision_ci da {computed!r}")
+        paired = [r for r in poblacion if _finito(r["hdp_test_nll"]) is not None and _finito(r[f"{other}_test_nll"]) is not None]
         if comparison.get("status") != "ok":
+            if paired:
+                raise ArtefactoInconsistente(f"{donde}, comparación {index}: sin datos y per_work.csv tiene {len(paired)} pares")
             continue
-        cuadran = []
-        detalle = []
-        for nombre, grupo in poblaciones.items():
-            paired = [r for r in grupo if _finito(r["hdp_test_nll"]) is not None and _finito(r[f"{other}_test_nll"]) is not None]
-            mean = statistics.fmean(float(r["hdp_test_nll"]) - float(r[f"{other}_test_nll"]) for r in paired) if paired else None
-            detalle.append(f"{nombre}: {len(paired)} obras, media {mean!r}")
-            if paired and len(paired) == int(comparison["n_pairs"]) and abs(mean - float(comparison["mean_difference"])) <= TOLERANCIA_RECALCULO:
-                cuadran.append(nombre)
-        if not cuadran:
-            raise ArtefactoInconsistente(
-                f"{etiqueta}, comparación {index} (hdp − {other}): n_pairs={comparison['n_pairs']} y "
-                f"mean_difference={comparison['mean_difference']!r} no salen de per_work.csv ({'; '.join(detalle)})"
-            )
-        encontradas.add(cuadran[0])
-    if len(encontradas) > 1:
-        raise ArtefactoInconsistente(f"{etiqueta}: unas comparaciones usan todas las obras y otras sólo las que convergen")
-    return encontradas.pop() if encontradas else None
+        mean = statistics.fmean(float(r["hdp_test_nll"]) - float(r[f"{other}_test_nll"]) for r in paired) if paired else None
+        if not paired or len(paired) != int(comparison["n_pairs"]) or abs(mean - float(comparison["mean_difference"])) > TOLERANCIA_RECALCULO:
+            raise ArtefactoInconsistente(f"{donde}, comparación {index} (hdp − {other}): n_pairs={comparison['n_pairs']} y "
+                                         f"mean_difference={comparison['mean_difference']!r} no salen de per_work.csv "
+                                         f"({len(paired)} obras, media {mean!r})")
+        evaluable = comparison.get("work_mean_holm_status") == "ok"
+        if evaluable != (len(paired) >= MIN_OBRAS_VEREDICTO):
+            raise ArtefactoInconsistente(f"{donde}, comparación {index}: work_mean_holm_status="
+                                         f"{comparison.get('work_mean_holm_status')!r} con {len(paired)} obras (mínimo 10, Enmienda 11)")
 
 
-def _comparaciones(tabla: Tabla, comparisons: list[dict], *, archivo: str, prefijo: Sequence[Any], orientar_a: str | None = None) -> None:
+def _cambios(principal: Mapping, bloque: Mapping, donde: str) -> tuple[list[dict], list[dict]]:
+    """Cambios de veredicto frente a la principal; «no_evaluable» no es un cambio (Enmienda 11)."""
+
+    antes = {c["model_b"]: c["verdict"] for c in principal["comparisons"]}
+    pares = [{"model_b": c["model_b"], "principal": antes[c["model_b"]], "sensitivity": c["verdict"]} for c in bloque["comparisons"]]
+    no_evaluables = [p for p in pares if "no_evaluable" in (p["principal"], p["sensitivity"])]
+    cambios = [p for p in pares if p not in no_evaluables and p["principal"] != p["sensitivity"]]
+    if bloque.get("verdict_changes") != cambios or bloque.get("verdict_not_evaluable", no_evaluables) != no_evaluables:
+        raise ArtefactoInconsistente(f"{donde}: verdict_changes={bloque.get('verdict_changes')!r} no es lo que dan los veredictos "
+                                     f"({cambios!r})")
+    return cambios, no_evaluables
+
+
+def _comparaciones(tabla: Tabla, comparisons: list[dict], *, archivo: str, prefijo: Sequence[Any], orientar_a: str | None = None,
+                   estados: Mapping[str, str] = ESTADOS_HOLM) -> None:
     for index, comparison in enumerate(comparisons):
         a, b = comparison["model_a"], comparison["model_b"]
         negar = orientar_a is not None and b == orientar_a
@@ -390,7 +510,7 @@ def _comparaciones(tabla: Tabla, comparisons: list[dict], *, archivo: str, prefi
                 f"{archivo}, {campo_de_ruta(ruta)}: work_mean_holm_rejects_zero={rejects} contradice el IC de decisión {decision}"
             )
         if status != "ok" and status:
-            verdict = f"no evaluable ({ESTADOS_HOLM.get(status, escapar(status))})"
+            verdict = f"no evaluable ({estados.get(status, escapar(status))})"
 
         def num(key, decimales, *, signo=True):
             value = comparison.get(key)
@@ -416,55 +536,87 @@ def _comparaciones(tabla: Tabla, comparisons: list[dict], *, archivo: str, prefi
         )
 
 
-ENCABEZADO_COMPARACION = (
-    "A",
-    "B",
-    "Obras",
-    r"A $-$ B (media por obra)",
-    "IC Holm (decide)",
-    "Veredicto",
-    r"A $-$ B (por nota)",
-    "IC bootstrap",
-    "Wilcoxon $p$ (Holm)",
-)
-NOTA_REGLA_A = ("Veredicto: regla del preregistro (sección A, Aclaración 2) sobre el IC bootstrap por obra ajustado por "
-                "Holm por pasos.")
+def _encabezado_comparacion(decide: bool) -> tuple[str, ...]:
+    return tuple(c.replace("IC Holm (decide)", "IC Holm (regla)") if not decide else c for c in ENCABEZADO_COMPARACION)
 
 
-def _tabla_comparaciones_porobra(nombre: str, bloque: Mapping, *, archivo: str, prefijo: Sequence[Any], nota: str) -> Tabla:
-    t = Tabla(nombre, "llrrllrrr", ENCABEZADO_COMPARACION)
-    _comparaciones(t, bloque["comparisons"], archivo=archivo, prefijo=[*prefijo, "comparisons"])
-    t.notas.extend([nota, NOTA_REGLA_A])
+def _tabla_comparaciones_porobra(nombre: str, bloque: Mapping, *, archivo: str, prefijo: Sequence[Any], notas: Sequence[str],
+                                 decide: bool) -> Tabla:
+    t = Tabla(nombre, "llrrllrrr", _encabezado_comparacion(decide))
+    _comparaciones(t, bloque["comparisons"], archivo=archivo, prefijo=[*prefijo, "comparisons"], estados=ESTADOS_HOLM_POROBRA)
+    t.notas.extend(notas)
+    if bloque.get("small_n_warning"):
+        t.notas.append(NOTA_POCAS_OBRAS)
+    if any(c.get("work_mean_holm_status") == "too_few_paired_works" for c in bloque["comparisons"]):
+        t.notas.append(NOTA_NO_EVALUABLE)
+    t.notas.append(NOTA_REGLA_A)
     return t
 
 
-def tablas_porobra(corrida: Corrida) -> tuple[list[Tabla], list[str]]:
+def _nota_cambios(cambios: list[dict], no_evaluables: list[dict]) -> str:
+    def v(code):
+        return VEREDICTOS_RESUMEN.get(code, escapar(code))
+
+    if cambios:
+        texto = "Cambia el veredicto frente a la comparación principal: " + "; ".join(
+            f"HDP-HMM $-$ {NOMBRES.get(p['model_b'], escapar(p['model_b']))}: {v(p['principal'])} $\\to$ {v(p['sensitivity'])}"
+            for p in cambios) + "."
+    else:
+        texto = "Ningún veredicto cambia frente a la comparación principal."
+    if no_evaluables:
+        texto += (" Sin veredicto en " + ", ".join(NOMBRES.get(p["model_b"], escapar(p["model_b"])) for p in no_evaluables)
+                  + ": no cuenta como cambio de veredicto (Enmienda 11).")
+    return texto
+
+
+def tablas_porobra(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
     rows, csv_label = _filas_porobra(corrida)
     summary_path, summary_label = corrida.archivo("summary.json")
     summary = _leer_json(summary_path)
-    _leer_json(corrida.archivo("manifest.json")[0])  # la corrida debe estar completa
+    _formato_final(summary, summary_label)
+    manifest_path, manifest_label = corrida.archivo("manifest.json")
+    manifest = _leer_json(manifest_path)
+    audit_path, audit_label = corrida.archivo("porobra_audit.json")
+    audit = _leer_json(audit_path)
+    if audit.get("status") != "passed":
+        raise ArtefactoInconsistente(f"{audit_label}: la auditoría de integridad no pasó (status={audit.get('status')!r}); "
+                                     "sus cifras no se escriben")
+    _misma_corrida(corrida, summary, manifest, audit, summary_label=summary_label, manifest_label=manifest_label,
+                   audit_label=audit_label)
+    confirmatoria = bool(audit.get("confirmatory"))
+    prereg = audit.get("preregistration") or {}
     avisos: list[str] = []
     tablas: list[Tabla] = []
-    converged = _filas_convergidas(rows)
-    todas_convergen = len(converged) == len(rows)
+    nota_corrida = []
+    if not confirmatoria:
+        tipo = prereg.get("run_kind") or (summary.get("run") or {}).get("run_kind")
+        desvios = sorted(prereg.get("deviations") or {})
+        avisos.append(f"porobra: {corrida.directorio.name} no es la confirmatoria de la sección A (porobra_audit.json: tipo "
+                      f"{tipo}{', desviaciones ' + ', '.join(desvios) if desvios else ''}); sus veredictos no deciden.")
+        nota_corrida.append(f"Esta corrida no es la confirmatoria (porobra\\_audit.json, tipo {ident(tipo)}): sus veredictos no deciden.")
 
-    # comparaciones: principal (todas las obras, Enmienda 6) y sensibilidad (sólo las que convergen)
-    principal = sensibilidad = None
-    poblacion = _poblacion(rows, summary["comparisons"], f"{summary_label}: comparisons")
-    if poblacion is None:  # ninguna comparación evaluable: decide la forma del resumen
-        poblacion = "convergidas" if ("n_works_converged" in summary["comparisons"] and not todas_convergen) else "todas"
-    if poblacion == "todas":
-        principal = (summary["comparisons"], ["comparisons"])
-        if todas_convergen:
-            sensibilidad = principal
-    else:
-        sensibilidad = (summary["comparisons"], ["comparisons"])
-        avisos.append(f"porobra: {summary_label} compara sólo las obras que convergen ({len(converged)} de {len(rows)}; regla "
-                      f"sustituida por la Enmienda 6); se reporta como sensibilidad y la comparación principal queda pendiente.")
-    if CLAVE_SENSIBILIDAD in summary:
-        if _poblacion(rows, summary[CLAVE_SENSIBILIDAD], f"{summary_label}: {CLAVE_SENSIBILIDAD}") not in (None, "convergidas"):
-            raise ArtefactoInconsistente(f"{summary_label}: {CLAVE_SENSIBILIDAD} no está restringida a las obras que convergen")
-        sensibilidad = (summary[CLAVE_SENSIBILIDAD], [CLAVE_SENSIBILIDAD])
+    # comparaciones: principal (todas las obras, Enmienda 6) y las tres sensibilidades
+    exposure = summary["test_exposure"]
+    ids = {r["work_id"] for r in rows}
+    expuestas = sorted(set(exposure.get("exposed_work_ids") or []) & ids)
+    if sorted(exposure.get("exposed_in_run") or []) != expuestas:
+        raise ArtefactoInconsistente(f"{summary_label}: test_exposure.exposed_in_run no es la intersección de exposed_work_ids "
+                                     "con las obras de per_work.csv")
+    techo = [r["work_id"] for r in rows if _verdadero(r["finite_k_hit_limit"])]
+    principal = summary["comparisons"]
+    _verificar_bloque(rows, principal, "comparisons", summary_label, converged_only=False, excluidas=[])
+    tablas.append(_tabla_comparaciones_porobra(
+        "porobra_comparaciones.tex", principal, archivo=summary_label, prefijo=["comparisons"], decide=confirmatoria,
+        notas=["Todas las obras analizadas: ninguna se excluye por la convergencia del HDP-HMM (Enmienda 6).", *nota_corrida]))
+    for clave, nombre, converged_only, excluidas, nota in SENSIBILIDADES_POROBRA:
+        bloque = summary[clave]
+        excl = {"expuestas": expuestas, "techo": techo, "": []}[excluidas]
+        _verificar_bloque(rows, bloque, clave, summary_label, converged_only=converged_only, excluidas=excl)
+        cambios, no_evaluables = _cambios(principal, bloque, f"{summary_label}: {clave}")
+        tablas.append(_tabla_comparaciones_porobra(nombre, bloque, archivo=summary_label, prefijo=[clave], decide=False,
+                                                   notas=[nota, _nota_cambios(cambios, no_evaluables), *nota_corrida]))
+        if cambios:
+            avisos.append(f"porobra: {clave} cambia {len(cambios)} veredicto(s) frente a la comparación principal.")
 
     # corpus
     corpus = summary["corpus"]
@@ -479,6 +631,8 @@ def tablas_porobra(corrida: Corrida) -> tuple[list[Tabla], list[str]]:
     for source, count in sorted(corpus["n_by_source_analyzed"].items()):
         t.fila([f"Analizadas ({escapar(source)})", t.json(count, 0, archivo=summary_label, ruta=["corpus", "n_by_source_analyzed", source])])
     t.fila(["Analizadas (total)", t.json(corpus["n_analyzed"], 0, archivo=summary_label, ruta=["corpus", "n_analyzed"])])
+    t.fila(["Analizadas con exposición a cifras de prueba (Aclaraciones 8 a 10)",
+            t.json(len(expuestas), 0, archivo=summary_label, ruta=["test_exposure", "exposed_in_run"], operacion="longitud")])
     tablas.append(t)
     failures = summary.get("analysis_failures") or []
     if len(failures) != int(corpus.get("n_analysis_failures", len(failures))):
@@ -488,24 +642,6 @@ def tablas_porobra(corrida: Corrida) -> tuple[list[Tabla], list[str]]:
                       + ", ".join(str(f.get("work_id")) for f in failures) + ".")
     if int(corpus["n_analyzed"]) != len(rows):
         raise ArtefactoInconsistente(f"{summary_label}: corpus.n_analyzed={corpus['n_analyzed']} y per_work.csv tiene {len(rows)} obras")
-
-    if principal is None:
-        tablas.append(tabla_pendiente("porobra_comparaciones.tex",
-                                      f"comparación principal de la sección A sobre las {len(rows)} obras analizadas (Enmienda 6, "
-                                      f"punto 1): la corrida {corrida.directorio.name} sólo compara las que convergen"))
-    else:
-        tablas.append(_tabla_comparaciones_porobra(
-            "porobra_comparaciones.tex", principal[0], archivo=summary_label, prefijo=principal[1],
-            nota="Todas las obras analizadas: ninguna se excluye por la convergencia del HDP-HMM (Enmienda 6)."))
-    if sensibilidad is None:
-        tablas.append(tabla_pendiente("porobra_comparaciones_sensibilidad.tex",
-                                      "análisis de sensibilidad de la sección A, sólo obras con R-hat de log L bajo el umbral "
-                                      f"(Enmienda 6, punto 3): la corrida {corrida.directorio.name} no lo trae"))
-    else:
-        nota = ("Análisis de sensibilidad (Enmienda 6, punto 3; no decide): sólo obras con $\\hat R$ de log L por debajo del umbral."
-                + (" Todas convergen: coincide con la comparación principal." if todas_convergen else ""))
-        tablas.append(_tabla_comparaciones_porobra("porobra_comparaciones_sensibilidad.tex", sensibilidad[0], archivo=summary_label,
-                                                   prefijo=sensibilidad[1], nota=nota))
 
     # NLL por modelo, sobre todas las obras analizadas (Enmienda 6)
     grupos = [("todas", "Todas", rows)] + [
@@ -531,12 +667,25 @@ def tablas_porobra(corrida: Corrida) -> tuple[list[Tabla], list[str]]:
     t.notas.append("NLL por nota en la parte de prueba (nats); todas las obras analizadas (Enmienda 6).")
     tablas.append(t)
 
-    # estados ocupados: el finito; el HDP-HMM espera el reporte por cadena
-    t = Tabla("porobra_estados.tex", "lrrr", ("Fuente", "Obras", "Finito: media", "Finito: d.e."))
+    # cadenas: misma cantidad en cada obra y en el manifiesto; el rango declarado, el de las cadenas
+    n_cadenas = {len(_lista(r, "hdp_test_nll_by_chain")) for r in rows} | {len(_lista(r, "hdp_states_mean_by_chain")) for r in rows}
+    declaradas = (manifest.get("config") or {}).get("n_chains")
+    if len(n_cadenas) != 1 or (declaradas is not None and n_cadenas != {int(declaradas)}):
+        raise ArtefactoInconsistente(f"{csv_label}: número de cadenas por obra {sorted(n_cadenas)}, el manifiesto dice {declaradas}")
+    n_cadenas = n_cadenas.pop()
+    for r in rows:
+        by_chain = _lista(r, "hdp_test_nll_by_chain")
+        if abs(max(by_chain) - min(by_chain) - float(r["hdp_test_nll_chain_range"])) > TOLERANCIA_RECALCULO:
+            raise ArtefactoInconsistente(f"{csv_label}: {r['work_id']}: hdp_test_nll_chain_range no es el rango de hdp_test_nll_by_chain")
+
+    # estados ocupados: el finito (media posterior) y, del HDP-HMM, sólo cuánto difieren sus cadenas
+    t = Tabla("porobra_estados.tex", "lrrrr", ("Fuente", "Obras", "Finito: media", "Finito: d.e.",
+                                               "HDP-HMM: rango entre cadenas (media entre obras)"))
     for clave, etiqueta, grupo in grupos:
         used = [r for r in grupo if _finito(r["finite_states_mean"]) is not None]
         values = [float(r["finite_states_mean"]) for r in used]
         lines = [r["_linea_csv"] for r in used]
+        rangos = [max(_lista(r, "hdp_states_mean_by_chain")) - min(_lista(r, "hdp_states_mean_by_chain")) for r in grupo]
         fila = {"fuente": clave}
         t.fila([
             etiqueta,
@@ -545,71 +694,134 @@ def tablas_porobra(corrida: Corrida) -> tuple[list[Tabla], list[str]]:
                   fila=fila, operacion="media"),
             t.csv(statistics.stdev(values) if len(values) > 1 else None, 1, archivo=csv_label, columna="finite_states_mean",
                   filas_csv=lines, fila=fila, operacion="desviacion_estandar"),
+            t.csv(statistics.fmean(rangos) if rangos else None, 1, archivo=csv_label, columna="hdp_states_mean_by_chain",
+                  filas_csv=[r["_linea_csv"] for r in grupo], fila=fila, operacion="media", celda="rango"),
         ])
     t.notas.append("Estados del HMM finito con ocupación de al menos el umbral del preregistro; media posterior por obra, "
                    "resumida entre todas las obras analizadas.")
-    t.pendientes.append(PENDIENTE_POR_CADENA)
+    t.notas.append(NOTA_ESTADOS_HDP)
     tablas.append(t)
-    por_cadena = sorted(c for c in rows[0] if "chain" in c) if rows else []
-    if por_cadena:
-        avisos.append(f"porobra: per_work.csv trae columnas por cadena que el generador aún no lee: {', '.join(por_cadena)}.")
 
     # convergencia (R-hat de log L entre cadenas; sólo se reporta)
     conv = summary["convergence"]
-    if int(conv["n_works"]) != len(rows) or int(conv["n_not_converged"]) != len(rows) - len(converged):
+    converged = [r for r in rows if _verdadero(r["hdp_converged"])]
+    if (int(conv["n_works"]) != len(rows) or int(conv["n_converged"]) != len(converged)
+            or abs(float(conv["fraction_converged"]) - len(converged) / len(rows)) > TOLERANCIA_RECALCULO
+            or sorted(conv.get("not_converged_work_ids") or []) != sorted(r["work_id"] for r in rows if r not in converged)):
         raise ArtefactoInconsistente(f"{summary_label}: convergence no coincide con hdp_converged de per_work.csv")
     t = Tabla("porobra_convergencia.tex", "lr", ("Concepto", "Valor"))
     t.fila(["Umbral de $\\hat R$", t.json(conv["rhat_threshold"], 2, archivo=summary_label, ruta=["convergence", "rhat_threshold"])])
     t.fila(["Obras analizadas", t.json(conv["n_works"], 0, archivo=summary_label, ruta=["convergence", "n_works"])])
-    t.fila(["Obras con $\\hat R \\geq$ umbral", t.json(conv["n_not_converged"], 0, archivo=summary_label,
-                                                     ruta=["convergence", "n_not_converged"])])
+    t.fila(["Obras con $\\hat R <$ umbral", t.json(conv["n_converged"], 0, archivo=summary_label, ruta=["convergence", "n_converged"])])
     t.fila(["Porcentaje con $\\hat R <$ umbral",
-            t.json(100 * (1 - float(conv["fraction_not_converged"])), 1, archivo=summary_label,
-                   ruta=["convergence", "fraction_not_converged"], operacion="complemento_por_cien",
-                   valor_fuente=conv["fraction_not_converged"]) + r"\,\%"])
+            t.json(100 * float(conv["fraction_converged"]), 1, archivo=summary_label, ruta=["convergence", "fraction_converged"],
+                   operacion="por_cien", valor_fuente=conv["fraction_converged"]) + r"\,\%"])
     t.notas.append("$\\hat R$ de log L entre las cadenas del HDP-HMM. Ninguna obra se excluye por convergencia (Enmienda 6).")
     tablas.append(t)
 
-    # hiperparámetros elegidos en validación
+    # hiperparámetros elegidos en validación (Enmiendas 3 y 5) y topes del finito (Enmienda 11)
     hyper = summary["selected_hyperparameters"]
+    for key, column in (("hdp_eta", "hdp_eta"), ("finite_k", "finite_k"), ("finite_alpha", "finite_alpha"),
+                        ("unigram_alpha", "unigram_alpha"), ("bigram_alpha", "bigram_alpha")):
+        declared = {float(k): int(v) for k, v in hyper[key].items()}
+        counted: dict[float, int] = {}
+        for r in rows:
+            counted[float(r[column])] = counted.get(float(r[column]), 0) + 1
+        if declared != counted:
+            raise ArtefactoInconsistente(f"{summary_label}: selected_hyperparameters.{key} no es la distribución de {column} en per_work.csv")
+    em = [r["work_id"] for r in rows if _verdadero(r["finite_em_hit_max_iterations"])]
+    for key, esperado in (("finite_k_hit_limit", techo), ("finite_em_hit_max_iterations", em)):
+        if sorted(hyper[key]) != sorted(esperado):
+            raise ArtefactoInconsistente(f"{summary_label}: selected_hyperparameters.{key} no coincide con per_work.csv")
+    tope = (manifest.get("config") or {}).get("max_states")
+    if tope is None or any(int(float(r["finite_k"])) != int(tope) for r in rows if r["work_id"] in techo):
+        raise ArtefactoInconsistente(f"{manifest_label}: max_states={tope!r} no es el K de las obras con finite_k_hit_limit")
     t = Tabla("porobra_hiperparametros.tex", "lrr", ("Hiperparámetro", "Valor elegido", "Obras"))
     for key, label, decimales in (("hdp_eta", "$\\eta$ del HDP-HMM", 1), ("finite_k", "$K$ del finito", 0),
                                   ("finite_alpha", "$\\alpha$ del finito", 1),
                                   ("unigram_alpha", "$\\alpha$ del unigrama", 1), ("bigram_alpha", "$\\alpha$ del bigrama", 1)):
-        for value, count in sorted(hyper.get(key, {}).items(), key=lambda item: float(item[0])):
+        for value, count in sorted(hyper[key].items(), key=lambda item: float(item[0])):
             ruta = ["selected_hyperparameters", key, value]
             t.fila([label,
                     t.json(float(value), decimales, archivo=summary_label, ruta=ruta, operacion="clave"),
                     t.json(count, 0, archivo=summary_label, ruta=ruta)])
-    if "finite_alpha" not in hyper:
-        t.pendientes.append(f"$\\alpha$ del finito elegido en validación (Enmienda 5): la corrida {escapar(corrida.directorio.name)} no lo trae")
-    if hyper.get("finite_k_hit_limit"):
-        avisos.append(f"porobra: {len(hyper['finite_k_hit_limit'])} obras con la rejilla del finito en el techo.")
+    t.fila(["Obras con $K$ en el tope de la rejilla",
+            t.json(tope, 0, archivo=manifest_label, ruta=["config", "max_states"]),
+            t.json(len(techo), 0, archivo=summary_label, ruta=["selected_hyperparameters", "finite_k_hit_limit"], operacion="longitud")])
+    t.fila(["Obras con el reajuste del finito en el tope de iteraciones de EM", "---",
+            t.json(len(em), 0, archivo=summary_label, ruta=["selected_hyperparameters", "finite_em_hit_max_iterations"],
+                   operacion="longitud")])
+    t.notas.append(NOTA_TECHO_K)
     tablas.append(t)
+    if techo:
+        avisos.append(f"porobra: {len(techo)} obras eligieron el tope de K del finito (Enmienda 11: no es desviación; su K no "
+                      "se interpreta como número de estados).")
+    if em:
+        avisos.append(f"porobra: {len(em)} obras terminaron el reajuste del finito por el tope de iteraciones de EM.")
 
-    # por obra (apéndice)
-    con_alpha = bool(rows) and "finite_alpha" in rows[0]
-    encabezado = ["Obra", "Fuente", "Notas prueba", "HDP-HMM", "Finito", "Bigrama", "Unigrama", "Estados finito",
-                  "$\\hat R$ (log L)", "$\\eta$", "$K$"] + (["$\\alpha$ finito"] if con_alpha else [])
-    t = Tabla("porobra_por_obra.tex", "llrrrrrlrrr" + ("r" if con_alpha else ""), tuple(encabezado), largo=True)
+    # por obra (apéndice): NLL e hiperparámetros
+    encabezado = ("Obra", "Fuente", "Notas prueba", "HDP-HMM", "Finito", "Bigrama", "Unigrama", "Estados finito",
+                  "$\\eta$", "$\\alpha$ finito", "$K$")
+    t = Tabla("porobra_por_obra.tex", "llrrrrrlrrr", encabezado, largo=True)
     for row in rows:
         fila = {"work_id": row["work_id"]}
 
-        def c(column, decimales):
-            return t.csv(row.get(column), decimales, archivo=csv_label, columna=column, filas_csv=[row["_linea_csv"]], fila=fila)
+        def c(column, decimales, **kw):
+            return t.csv(row.get(column), decimales, archivo=csv_label, columna=column, filas_csv=[row["_linea_csv"]], fila=fila, **kw)
 
-        t.fila([ident(row["work_id"]), escapar(row["source"]), c("n_test", 0),
-                *(c(f"{m}_test_nll", 3) for m in POROBRA_MODELOS),
+        marca_obra = r"\textsuperscript{\dag}" if row["work_id"] in expuestas else ""
+        marca_em = r"\textsuperscript{\S}" if row["work_id"] in em else ""
+        marca_k = r"\textsuperscript{\ddag}" if row["work_id"] in techo else ""
+        t.fila([ident(row["work_id"]) + marca_obra, escapar(row["source"]), c("n_test", 0),
+                c("hdp_test_nll", 3), c("finite_test_nll", 3) + marca_em, c("bigram_test_nll", 3), c("unigram_test_nll", 3),
                 f"{c('finite_states_mean', 1)} $\\pm$ {c('finite_states_sd', 1)}",
+                c("hdp_eta", 1), c("finite_alpha", 1), c("finite_k", 0) + marca_k])
+    t.notas.extend([NOTA_EXPUESTAS, NOTA_MARCA_TECHO, NOTA_MARCA_EM])
+    tablas.append(t)
+
+    # por obra (apéndice): diagnóstico por cadena del HDP-HMM (Enmienda 6, puntos 2 y 4)
+    encabezado = ("Obra", "$\\hat R$ (log L)", "$\\hat R$ (NLL predictiva)",
+                  *(f"NLL $c_{{{i}}}$" for i in range(1, n_cadenas + 1)), "Rango", "Estados por cadena: media", "D.e.")
+    t = Tabla("porobra_por_obra_cadenas.tex", "lrr" + "r" * n_cadenas + "rll", encabezado, largo=True)
+    for row in rows:
+        fila = {"work_id": row["work_id"]}
+
+        def c(column, decimales, **kw):
+            return t.csv(row.get(column) if "celda" not in kw else _lista(row, column)[kw["celda"]], decimales, archivo=csv_label,
+                         columna=column, filas_csv=[row["_linea_csv"]], fila=fila, **kw)
+
+        t.fila([ident(row["work_id"]),
                 c("hdp_rhat", 2) + ("" if _verdadero(row["hdp_converged"]) else r"\textsuperscript{*}"),
-                c("hdp_eta", 1), c("finite_k", 0), *([c("finite_alpha", 1)] if con_alpha else [])])
-    t.notas.append("\\textsuperscript{*} $\\hat R$ de log L por encima del umbral; la obra sigue en la métrica principal (Enmienda 6).")
-    t.pendientes.append(PENDIENTE_NLL_POR_CADENA)
+                c("hdp_predictive_rhat", 2),
+                *(c("hdp_test_nll_by_chain", 3, celda=i) for i in range(n_cadenas)),
+                c("hdp_test_nll_chain_range", 3),
+                ", ".join(c("hdp_states_mean_by_chain", 1, celda=i) for i in range(n_cadenas)),
+                ", ".join(c("hdp_states_sd_by_chain", 1, celda=i) for i in range(n_cadenas))])
+    t.notas.extend(["\\textsuperscript{*} $\\hat R$ de log L por encima del umbral; la obra sigue en la métrica principal (Enmienda 6).",
+                    "NLL de prueba de cada cadena por separado y su rango; $\\hat R$ de la NLL predictiva por muestra (Enmienda 6, punto 2).",
+                    NOTA_ESTADOS_HDP])
     tablas.append(t)
 
     orden = {nombre: i for i, nombre in enumerate(TABLAS_POROBRA)}
     tablas.sort(key=lambda tabla: orden[tabla.nombre])
-    return tablas, avisos
+    meta = {"confirmatoria": confirmatoria, "tipo": prereg.get("run_kind"), "auditoria": audit.get("status")}
+    return tablas, avisos, meta
+
+
+ENCABEZADO_COMPARACION = (
+    "A",
+    "B",
+    "Obras",
+    r"A $-$ B (media por obra)",
+    "IC Holm (decide)",
+    "Veredicto",
+    r"A $-$ B (por nota)",
+    "IC bootstrap",
+    "Wilcoxon $p$ (Holm)",
+)
+NOTA_REGLA_A = ("Veredicto: regla del preregistro (sección A, Aclaración 2) sobre el IC bootstrap por obra ajustado por "
+                "Holm por pasos.")
+
 
 
 # --- corrida PDMX (preregistro B) -----------------------------------------------------
@@ -625,7 +837,7 @@ def _estado_analisis(status: Mapping | None, nombre: str) -> list[str]:
     return avisos
 
 
-def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str]]:
+def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
     tablas: list[Tabla] = []
     summary_path, summary_label = corrida.archivo("results_summary.csv")
     summary_rows = _leer_csv(summary_path)
@@ -772,7 +984,7 @@ def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str]]:
             "declarada" if diag.get("convergence_claimed") else "no declarada",
         ])
     tablas.append(t)
-    return tablas, avisos
+    return tablas, avisos, {}
 
 
 # --- figuras y escritura --------------------------------------------------------------
@@ -819,21 +1031,21 @@ def main(argv: list[str] | None = None) -> Path:
         raise FileExistsError(f"{salida} no está vacío: el generador nunca sobrescribe.")
 
     # primero se leen y verifican todos los artefactos; sólo después se escribe
-    resultados: list[tuple[str, Corrida | None, list[Tabla], list[str]]] = []
+    resultados: list[tuple[str, Corrida | None, list[Tabla], list[str], dict]] = []
     for clave, directorio, construir, nombres in (("porobra", args.porobra, tablas_porobra, TABLAS_POROBRA),
                                                  ("pdmx", args.pdmx, tablas_pdmx, TABLAS_PDMX)):
         if directorio is None:
-            resultados.append((clave, None, [tabla_pendiente(n, PENDIENTE[clave]) for n in nombres], []))
+            resultados.append((clave, None, [tabla_pendiente(n, PENDIENTE[clave]) for n in nombres], [], {}))
             continue
         corrida = Corrida(Path(directorio))
-        tablas, avisos = construir(corrida)
+        tablas, avisos, meta = construir(corrida)
         assert [t.nombre for t in tablas] == list(nombres)
-        resultados.append((clave, corrida, tablas, avisos))
+        resultados.append((clave, corrida, tablas, avisos, meta))
 
     salida.mkdir(parents=True, exist_ok=True)
     resumen: dict[str, Any] = {"corridas": {}, "tablas": [], "pendientes": [], "avisos": []}
     lista_figuras: list[dict] = []
-    for clave, corrida, tablas, avisos in resultados:
+    for clave, corrida, tablas, avisos, meta in resultados:
         for tabla in tablas:
             _escribir(salida, tabla, corrida.fuentes if corrida else {}, corrida.directorio if corrida else None)
             if tabla.cifras:
@@ -847,6 +1059,7 @@ def main(argv: list[str] | None = None) -> Path:
             "directorio": corrida.directorio.resolve().as_posix(),
             "commit": _leer_json(manifest).get("commit") if manifest.is_file() else None,
             "fuentes_sha256": corrida.fuentes,
+            **meta,
         }
         resumen["avisos"].extend(avisos)
     (salida / "figuras.json").write_text(json.dumps({"figuras": lista_figuras}, indent=2, ensure_ascii=False), encoding="utf-8")

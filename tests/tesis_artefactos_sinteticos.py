@@ -1,12 +1,15 @@
 """Artefactos sintéticos con el formato de las corridas reales, para probar el generador
 de tablas y el verificador de cifras de la tesis sin correr modelos.
 
-* Por obra: el de ``src/cli/porobra_heldout.py`` (rama ``feat/porobra-heldout``):
-  ``per_work.csv``, ``summary.json`` y ``manifest.json``.  ``formato="700acba"`` (por
-  omisión) es el de la punta actual de esa rama (α del finito por validación, Enmienda 5;
-  fallas de análisis aisladas); ``formato="ff9f998"`` el anterior.  ``poblacion`` dice
-  sobre qué obras está la comparación del resumen: ``"todas"`` (Enmienda 6) o
-  ``"convergidas"`` (regla original, la que aplica ``compare_hdp`` en 700acba).
+* Por obra: el formato final de ``src/cli/porobra_heldout.py`` (``per_work.csv``,
+  ``summary.json``, ``manifest.json``, ``porobra_audit.json``).  Las filas por obra son
+  sintéticas (NLL elegidas a mano, nada de obras reales); los bloques del resumen los
+  calcula el código real (``porobra.summary_blocks``) desde esas filas, y el CSV se escribe
+  como lo escribe el CLI (listas y diccionarios en JSON).  Con 12 obras: la última no
+  converge, las dos primeras llevan ids de obras expuestas (Aclaraciones 8 y 9), tres
+  eligen el tope K = 512 (Enmienda 11; sin ellas quedan 9 obras: «no_evaluable») y una
+  termina el reajuste del finito por el tope de iteraciones de EM.  El manifiesto lleva los
+  hashes de ``outputs`` y la auditoría la ruta de la corrida (``run_dir``), como el CLI.
 * PDMX: el de ``Comparacion/runner.py``: ``results_summary.csv``,
   ``headline_estimates.json``, ``pairwise_comparisons.json``, ``pareto_summary.json``,
   ``engineering_costs.csv`` y ``hdp_chain_diagnostics.json``.
@@ -15,161 +18,197 @@ de tablas y el verificador de cifras de la tesis sin correr modelos.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import math
 from pathlib import Path
 
-POROBRA_MODELS = ("hdp", "finite", "bigram", "unigram")
+import pandas as pd
+
+from src.analysis import porobra
+
+POROBRA_RUN_NAME = "porobra_heldout_20261101_abcdef1"
+EXPOSED_SYNTHETIC = ("MuseTrainer:Bella_Ciao.mxl", "MuseTrainer:Passacaglia.mxl")
+K_CEILING_INDICES = (2, 3, 4)
+EM_CAP_INDEX = 5
+CHAIN_OFFSETS = (-0.02, 0.0, 0.01, 0.03)
 
 
-def _holm(status: str, decision_ci, rejects) -> dict:
-    return {
-        "work_mean_holm_status": status,
-        "work_mean_holm_decision_ci": decision_ci,
-        "work_mean_holm_rejects_zero": rejects,
-        "work_mean_holm_ci": decision_ci,
-    }
-
-
-def porobra_rows() -> list[dict]:
-    """Doce obras; la última no converge.  Las NLL están elegidas a mano."""
+def porobra_rows(n: int = 12) -> list[dict]:
+    """``n`` obras sintéticas, ordenadas por ``work_id`` como las deja el CLI."""
 
     rows = []
-    for index in range(12):
-        source = "MuseTrainer" if index < 8 else "SymbTr"
-        rows.append(
-            {
-                "work_id": f"{source}:obra_{index:02d}.mxl",
-                "source": source,
-                "relative_path": f"obra_{index:02d}.mxl",
-                "makam": "" if source == "MuseTrainer" else "hicaz",
-                "content_fingerprint": f"huella{index}",
-                "n_events": 100 + index,
-                "n_fit": 80,
-                "n_test": 20 + index,
-                "hdp_test_nll": 2.0 + 0.01 * index,
-                "finite_test_nll": 2.1 + 0.01 * index,
-                "bigram_test_nll": 2.0 + 0.01 * index + (0.02 if index % 2 else -0.02),
-                "unigram_test_nll": 2.4 + 0.01 * index,
-                "hdp_converged": index != 11,
-                "hdp_rhat": 1.01 if index != 11 else 1.4,
-                "hdp_eta": 3.0,
-                "hdp_states_mean": 4.0 + 0.1 * index,
-                "hdp_states_sd": 0.5,
-                "finite_k": 8,
-                "finite_alpha": 0.1 if index < 9 else 1.0,
-                "finite_k_hit_limit": False,
-                "finite_states_mean": 5.0 + 0.05 * index,
-                "finite_states_sd": 0.25,
-                "unigram_alpha": 0.5,
-                "bigram_alpha": 1.0,
-            }
-        )
-    return rows
+    for index in range(n):
+        source = "MuseTrainer" if index < (2 * n) // 3 else "SymbTr"
+        work_id = EXPOSED_SYNTHETIC[index] if index < len(EXPOSED_SYNTHETIC) else f"{source}:obra_{index:02d}.mxl"
+        base = 2.0 + 0.01 * index
+        by_chain = [base + offset for offset in CHAIN_OFFSETS]
+        ceiling = index in K_CEILING_INDICES
+        grid = [2, 4, 8, 16, 32, 64, 128, 256, 512] if ceiling else [2, 4, 8, 16, 32]
+        converged = index != n - 1
+        states = [4.0 + 0.1 * index + d for d in (0.0, 0.2, -0.1, 0.1)]
+        rows.append({
+            "work_id": work_id,
+            "source": source,
+            "relative_path": work_id.split(":", 1)[1],
+            "makam": "" if source == "MuseTrainer" else "hicaz",
+            "content_fingerprint": f"huella{index}",
+            "n_events": 125 + 5 * index,
+            "n_fit": 100 + 4 * index,
+            "n_test": 25 + index,
+            "n_inner_train": 80 + 3 * index,
+            "n_validation": 20 + index,
+            "unigram_alpha": 0.5,
+            "unigram_alpha_validation_nll": {"0.1": 2.5, "0.5": 2.4, "1.0": 2.45},
+            "unigram_test_nll": base + 0.4 + 0.01 * (index % 2),
+            "bigram_alpha": 1.0,
+            "bigram_alpha_validation_nll": {"0.1": 2.3, "0.5": 2.2, "1.0": 2.1},
+            "bigram_test_nll": base + (0.02 if index % 2 else -0.02),
+            "finite_k": 512 if ceiling else 8,
+            "finite_alpha": 0.1 if index < 9 else 1.0,
+            "finite_restarts": 5,
+            "finite_validation_nll": {"0.1": {"8": 2.3}},
+            "finite_selected_validation_nll": 2.3,
+            "finite_k_grid": grid,
+            "finite_grid_extensions": len(grid) - 5,
+            "finite_k_hit_limit": ceiling,
+            "finite_em_hit_max_iterations": index == EM_CAP_INDEX,
+            "finite_test_nll": base + 0.1 + 0.005 * (index % 3),
+            "finite_states_mean": 5.0 + 0.05 * index,
+            "finite_states_sd": 0.25,
+            "finite_insample_ll_per_note": -2.0,
+            "hdp_eta": 1.0 if index == 8 else 3.0,
+            "hdp_eta_validation_nll": {"1.0": 2.2, "3.0": 2.1, "6.0": 2.15},
+            "hdp_test_nll": base + 0.005,
+            "hdp_rhat": 1.01 if converged else 1.4,
+            "hdp_converged": converged,
+            "hdp_test_nll_by_chain": by_chain,
+            "hdp_test_nll_chain_range": max(by_chain) - min(by_chain),
+            "hdp_predictive_rhat": 1.02 if converged else 1.3,
+            "hdp_states_mean_by_chain": states,
+            "hdp_states_sd_by_chain": [0.5, 0.4, 0.6, 0.5],
+            "hdp_states_pooled_chains_mean": sum(states) / len(states),
+            "hdp_states_pooled_chains_sd": 0.55,
+            "hdp_insample_ll_per_note": -1.9,
+            "hdp_posterior_mean_log_likelihood_per_note": -1.95,
+            "hdp_wall_clock_s": 10.0,
+            "wall_clock_s": 12.0,
+        })
+    return sorted(rows, key=lambda row: row["work_id"])
 
 
-def _mean_difference(kept, other) -> float:
-    return sum(row["hdp_test_nll"] - row[f"{other}_test_nll"] for row in kept) / len(kept)
+def _distribution(values) -> dict:
+    series = pd.Series(list(values))
+    return {str(key): int(count) for key, count in series.value_counts().sort_index().items()}
 
 
-def porobra_comparisons(kept: list[dict]) -> list[dict]:
-    comparisons = []
-    holm = {
-        "finite": _holm("ok", [-0.15, -0.05], True),
-        "bigram": _holm("ok", [-0.04, 0.03], False),
-        "unigram": _holm("ok", [-0.5, -0.3], True),
-    }
-    verdicts = {"finite": "mejora", "bigram": "no_hay_evidencia", "unigram": "mejora"}
-    for other in ("finite", "bigram", "unigram"):
-        comparisons.append(
-            {
-                "model_a": "hdp",
-                "model_b": other,
-                "status": "ok",
-                "n_pairs": len(kept),
-                "mean_difference": _mean_difference(kept, other),
-                "bootstrap_95_ci": [-0.2, 0.1],
-                "token_weighted_difference": -0.09,
-                "token_weighted_bootstrap_95_ci": [-0.12, -0.06],
-                "p_value": 0.01,
-                "p_value_holm": 0.03,
-                "wilcoxon_holm_status": "ok",
-                **holm[other],
-                "decision_estimand": "mean_over_works_of_work_nll_difference",
-                "verdict": verdicts[other],
-            }
-        )
-    return comparisons
+def _jsonable(value):
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return value
 
 
-def porobra_summary(rows: list[dict], *, poblacion: str = "todas", sensibilidad: bool = True, formato: str = "700acba") -> dict:
-    converged = [row for row in rows if row["hdp_converged"]]
-    kept = rows if poblacion == "todas" else converged
-    summary = {
-        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmienda 3",
+def porobra_summary(rows: list[dict], *, bootstrap_samples: int = 1000, run_kind: str = "principal",
+                    truncation: int = 20, analysis_failures: list[dict] | None = None) -> dict:
+    """``summary.json`` con los bloques que calcula el código real desde las filas.
+
+    Sin ``analysis_failures`` por omisión: la auditoría marca «failed» una corrida que las tiene.
+    """
+
+    analysis_failures = list(analysis_failures or [])
+    records = [{"work_id": r["work_id"], "n_test": int(r["n_test"]), "hdp_converged": bool(r["hdp_converged"]),
+                "finite_k_hit_limit": bool(r["finite_k_hit_limit"]),
+                **{f"{m}_test_nll": float(r[f"{m}_test_nll"]) for m in porobra.MODELS}} for r in rows]
+    blocks = porobra.summary_blocks(records, bootstrap_samples=bootstrap_samples, seed=0,
+                                    exposed_work_ids=porobra.TEST_EXPOSED_WORK_IDS)
+    analyzed = _distribution(r["source"] for r in rows)
+    return _jsonable({
+        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5, 6 y 11, Aclaraciones 7, 8, 9 y 10",
+        "run": {"truncation": truncation, "run_kind": run_kind, "note": "sintética", "deviations": [],
+                "decides": "Sus veredictos deciden sólo si porobra_audit.json dice confirmatory: true.",
+                "extraction_failures": ["MuseTrainer:obra_rota.mxl"]},
         "corpus": {
             "extraction": "melody",
-            "n_candidates": 15,
-            "n_by_source_candidates": {"MuseTrainer": 10, "SymbTr": 5},
+            "n_candidates": len(rows) + 4,
+            "n_by_source_candidates": {k: v + (3 if k == "MuseTrainer" else 1) for k, v in analyzed.items()},
             "n_failures": 1,
-            "failures": [],
+            "failures": [{"source": "MuseTrainer", "relative_path": "obra_rota.mxl", "path": "x", "error_stage": "parse",
+                          "error": "MusicXMLImportException"}],
             "n_duplicates": 1,
-            "duplicates": [],
+            "duplicates": [{"source": "MuseTrainer", "relative_path": "obra_dup.mxl", "path": "x", "duplicate_of": "y"}],
             "min_events": 20,
             "n_excluded_short": 1,
-            "excluded_short_works": [],
+            "excluded_short_works": [{"source": "SymbTr", "relative_path": "corta.xml", "path": "x", "n_events": 12}],
+            "n_analysis_failures": len(analysis_failures),
             "n_analyzed": len(rows),
-            "n_by_source_analyzed": {"MuseTrainer": 8, "SymbTr": 4},
+            "n_by_source_analyzed": analyzed,
         },
-        "convergence": {
-            "rhat_threshold": 1.1,
-            "n_works": len(rows),
-            "n_not_converged": len(rows) - len(converged),
-            "fraction_not_converged": (len(rows) - len(converged)) / len(rows),
-            "not_converged_work_ids": [row["work_id"] for row in rows if not row["hdp_converged"]],
-            "exceeds_10_percent": False,
-            "action_required": None,
+        "analysis_failures": analysis_failures,
+        "convergence": blocks["convergence"],
+        "comparisons": blocks["comparisons"],
+        "sensitivity_converged_only": blocks["sensitivity_converged_only"],
+        "test_exposure": {
+            "exposed_work_ids": list(porobra.TEST_EXPOSED_WORK_IDS),
+            "exposed_works": dict(porobra.TEST_EXPOSED_WORKS),
+            "exposed_in_run": sorted(set(porobra.TEST_EXPOSED_WORK_IDS) & {r["work_id"] for r in rows}),
+            "note": porobra.TEST_EXPOSURE_NOTE,
         },
-        "comparisons": {
-            "decision_rule": "media por obra",
-            "bootstrap_samples": 10000,
-            "seed": 0,
-            "n_works_converged": len(converged),
-            "comparisons": porobra_comparisons(kept),
-            "holm_family": {},
-        },
+        "sensitivity_without_exposed": blocks["sensitivity_without_exposed"],
+        "sensitivity_without_k_ceiling": blocks["sensitivity_without_k_ceiling"],
+        "hdp_states_note": porobra.HDP_STATES_NOTE,
         "selected_hyperparameters": {
-            "hdp_eta": {"3.0": len(rows)},
-            "finite_k": {"8": len(rows)},
-            "finite_k_hit_limit": [],
-            "unigram_alpha": {"0.5": len(rows)},
-            "bigram_alpha": {"1.0": len(rows)},
+            "hdp_eta": _distribution(r["hdp_eta"] for r in rows),
+            "finite_k": _distribution(r["finite_k"] for r in rows),
+            "finite_alpha": _distribution(r["finite_alpha"] for r in rows),
+            "finite_k_hit_limit": [r["work_id"] for r in rows if r["finite_k_hit_limit"]],
+            "finite_em_hit_max_iterations": [r["work_id"] for r in rows if r["finite_em_hit_max_iterations"]],
+            "unigram_alpha": _distribution(r["unigram_alpha"] for r in rows),
+            "bigram_alpha": _distribution(r["bigram_alpha"] for r in rows),
         },
         "wall_clock_s": 12.5,
+    })
+
+
+def porobra_audit(*, status: str = "passed", confirmatory: bool = True, run_kind: str = "principal",
+                  deviations: dict | None = None) -> dict:
+    return {
+        "status": status,
+        "preregistration": {"status": "not_preregistered" if deviations else "preregistered", "run_kind": run_kind,
+                            "run_kind_note": "sintética", "deviations": deviations or {}},
+        "confirmatory": confirmatory,
+        "run_dir": "sintética",
+        "checks": [],
     }
-    if formato == "700acba":
-        summary["corpus"]["n_analysis_failures"] = 1
-        summary["analysis_failures"] = [{"work_id": "MuseTrainer:obra_falla.mxl", "error": "ValueError: sintético"}]
-        alphas = [row["finite_alpha"] for row in rows]
-        summary["selected_hyperparameters"]["finite_alpha"] = {str(a): alphas.count(a) for a in sorted(set(alphas))}
-    else:
-        for row in rows:
-            row.pop("finite_alpha", None)
-    if poblacion == "todas" and sensibilidad:
-        summary["sensitivity_converged_only"] = {"n_works_converged": len(converged), "comparisons": porobra_comparisons(converged)}
-    return summary
 
 
-def write_porobra_run(root: Path, *, name: str = "porobra_heldout_20261101_abcdef1", rows=None, summary=None) -> Path:
+def write_porobra_run(root: Path, *, name: str = POROBRA_RUN_NAME, rows=None, summary=None, audit=None,
+                      config: dict | None = None) -> Path:
+    """Escribe la corrida como el CLI: ``per_work.csv`` con pandas, listas y diccionarios en JSON."""
+
     run = root / name
     run.mkdir(parents=True)
     rows = porobra_rows() if rows is None else rows
     summary = porobra_summary(rows) if summary is None else summary
-    with (run / "per_work.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
+    frame = pd.DataFrame(rows)
+    for column in frame.columns:
+        if frame[column].map(lambda value: isinstance(value, (dict, list))).any():
+            frame[column] = frame[column].map(lambda value: json.dumps(value, sort_keys=True))
+    frame.to_csv(run / "per_work.csv", index=False)
     (run / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    (run / "manifest.json").write_text(json.dumps({"commit": "abcdef1234567", "config": {"truncation": 20}}), encoding="utf-8")
+    manifest_config = {"truncation": 20, "max_states": 512, "n_chains": 4, "rhat_threshold": 1.1, "min_events": 20,
+                       **(config or {})}
+    (run / "README.txt").write_text("sintética\n", encoding="utf-8")
+    outputs = {name: hashlib.sha256((run / name).read_bytes()).hexdigest() for name in ("per_work.csv", "summary.json", "README.txt")}
+    (run / "manifest.json").write_text(json.dumps({"commit": "abcdef1234567", "config": manifest_config, "outputs": outputs}),
+                                       encoding="utf-8")
+    audit = porobra_audit() if audit is None else audit
+    if audit.get("run_dir") == "sintética":
+        audit = {**audit, "run_dir": run.as_posix()}  # como el CLI: la ruta de la corrida auditada
+    (run / "porobra_audit.json").write_text(json.dumps(audit, indent=2), encoding="utf-8")
     return run
 
 

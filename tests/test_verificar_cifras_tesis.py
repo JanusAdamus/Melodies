@@ -439,3 +439,17 @@ def test_cli_fails_on_a_wrong_sign_claim(tmp_path):
     result = subprocess.run([sys.executable, str(SCRIPT), "--tesis", str(thesis), "--procedencia", str(prov)],
                             capture_output=True, text=True)
     assert result.returncode == 1
+
+
+def test_list_cells_and_list_lengths_are_recomputed(ver, tmp_path):
+    # per_work.csv guarda las listas por cadena en JSON; summary.json, listas de obras
+    path = tmp_path / "per_work.csv"
+    path.write_text('work_id,hdp_test_nll_by_chain\na,"[2.0, 2.1, 2.3]"\nb,"[1.0, 1.5]"\n', encoding="utf-8")
+    cache: dict = {}
+    assert ver._recalcular_cifra({"columna": "hdp_test_nll_by_chain", "filas_csv": [2], "celda": 2}, path, cache) == 2.3
+    rango = ver._recalcular_cifra({"columna": "hdp_test_nll_by_chain", "filas_csv": [2, 3], "celda": "rango",
+                                   "operacion": "media"}, path, cache)
+    assert rango == pytest.approx((0.3 + 0.5) / 2)
+    summary = tmp_path / "summary.json"
+    summary.write_text(json.dumps({"test_exposure": {"exposed_in_run": ["a", "b"]}}), encoding="utf-8")
+    assert ver._recalcular_cifra({"ruta": ["test_exposure", "exposed_in_run"], "operacion": "longitud"}, summary, {}) == 2

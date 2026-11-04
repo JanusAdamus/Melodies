@@ -3,7 +3,8 @@
 Lee una corrida por obra y una corrida PDMX, escribe tablas ``.tex`` y, al lado de cada
 una, un JSON con la procedencia de cada número (archivo, campo, fila).  Los veredictos
 siguen la regla del preregistro con el IC de Holm del estimando por obra; la métrica
-principal por obra incluye todas las obras (Enmienda 6).
+principal por obra incluye todas las obras (Enmienda 6).  La corrida por obra es la del
+formato final (Enmiendas 5, 6 y 11, Aclaraciones 8 a 10) con artefactos sintéticos.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import pytest
 from tests.tesis_artefactos_sinteticos import (
     PDMX_NLL,
     pdmx_comparisons,
+    porobra_audit,
     porobra_rows,
     porobra_summary,
     write_pdmx_run,
@@ -71,11 +73,9 @@ def _row(out: Path, table: str, *first: str) -> list[str]:
     return found[0]
 
 
-def _porobra(gen, tmp_path, **kwargs) -> Path:
-    rows = porobra_rows()
-    summary = porobra_summary(rows, **kwargs)
+def _porobra(gen, tmp_path) -> Path:
     out = tmp_path / "out"
-    gen.main(["--porobra", str(write_porobra_run(tmp_path / "runs", rows=rows, summary=summary)), "--salida", str(out)])
+    gen.main(["--porobra", str(write_porobra_run(tmp_path / "runs")), "--salida", str(out)])
     return out
 
 
@@ -110,6 +110,24 @@ def test_an_inverted_interval_is_not_a_verdict(gen):
 # --- por obra ----------------------------------------------------------------------------
 
 
+def _mean(rows, other):
+    return statistics.fmean(r["hdp_test_nll"] - r[f"{other}_test_nll"] for r in rows)
+
+
+def _fmt(value, decimals=3):
+    text = f"{value:.{decimals}f}"
+    return "$-$" + text[1:] if text.startswith("-") else text
+
+
+def _porobra_run(gen, tmp_path, *, rows=None, summary=None, audit=None):
+    rows = porobra_rows() if rows is None else rows
+    summary = porobra_summary(rows) if summary is None else summary
+    out = tmp_path / "out"
+    run = write_porobra_run(tmp_path / "runs", rows=rows, summary=summary, audit=audit)
+    gen.main(["--porobra", str(run), "--salida", str(out)])
+    return out
+
+
 def test_porobra_comparisons_table_has_verdicts_and_full_provenance(gen, ver, tmp_path):
     out = _porobra(gen, tmp_path)
     tex = (out / "porobra_comparaciones.tex").read_text(encoding="utf-8")
@@ -122,75 +140,278 @@ def test_porobra_comparisons_table_has_verdicts_and_full_provenance(gen, ver, tm
     # cada número de la tabla tiene exactamente una entrada de procedencia, en orden y con signo
     written = [("-" if n.negativo else "") + n.texto for n in ver.extraer_numeros(tex).numeros]
     assert written == [entry["texto"] for entry in provenance["cifras"]]
-    # métrica principal: las 12 obras; la media HDP − finito es −0.100
-    assert _row(out, "porobra_comparaciones.tex", "HDP-HMM", "HMM finito")[2:6] == ["12", "$-$0.100", "[$-$0.150, $-$0.050]", "mejora"]
+    rows = porobra_rows()
+    finite = _row(out, "porobra_comparaciones.tex", "HDP-HMM", "HMM finito")
+    assert finite[2:4] == ["12", _fmt(_mean(rows, "finite"))]
+    assert finite[5] == "mejora"
     assert _row(out, "porobra_comparaciones.tex", "HDP-HMM", "Bigrama")[5] == "no hay evidencia"
+    assert r"\pendiente" not in tex
 
 
 def test_porobra_main_metric_includes_every_work_enmienda_6(gen, tmp_path):
     out = _porobra(gen, tmp_path)
     tex = (out / "porobra_comparaciones.tex").read_text(encoding="utf-8")
-    assert "Enmienda 6" in tex and "Sólo obras con" not in tex
-    # NLL: media sobre las 12 obras, también la que no converge
+    assert "Enmienda 6" in tex
     nll = _row(out, "porobra_nll.tex", "Todas", "HDP-HMM")
     values = [r["hdp_test_nll"] for r in porobra_rows()]
     assert nll[2:] == ["12", f"{statistics.fmean(values):.3f}", f"{statistics.stdev(values):.3f}"]
-    finite = _row(out, "porobra_nll.tex", "Todas", "HMM finito")
-    finite_values = [r["finite_test_nll"] for r in porobra_rows()]
-    assert finite[3:] == [f"{statistics.fmean(finite_values):.3f}", f"{statistics.stdev(finite_values):.3f}"]
-    symbtr = _row(out, "porobra_nll.tex", "SymbTr", "HDP-HMM")
-    assert symbtr[2] == "4"
-    # la obra que no converge sigue en la tabla por obra, marcada, y no «fuera de la métrica»
-    por_obra = (out / "porobra_por_obra.tex").read_text(encoding="utf-8")
-    assert "fuera de la métrica principal" not in por_obra
-    assert r"1.40\textsuperscript{*}" in por_obra
+    assert _row(out, "porobra_nll.tex", "SymbTr", "HDP-HMM")[2] == "4"
+    # la obra que no converge sigue en las tablas por obra, marcada
+    cadenas = (out / "porobra_por_obra_cadenas.tex").read_text(encoding="utf-8")
+    assert r"1.40\textsuperscript{*}" in cadenas
 
 
-def test_porobra_sensitivity_table_is_the_converged_only_comparison(gen, tmp_path):
+def test_porobra_main_table_warns_below_30_works_and_not_above(gen, tmp_path):
     out = _porobra(gen, tmp_path)
-    cells = _row(out, "porobra_comparaciones_sensibilidad.tex", "HDP-HMM", "HMM finito")
-    assert cells[2] == "11"
-    tex = (out / "porobra_comparaciones_sensibilidad.tex").read_text(encoding="utf-8")
-    assert "sensibilidad" in tex.lower() and "no decide" in tex
+    assert r"menos de \estructural{30} obras" in (out / "porobra_comparaciones.tex").read_text(encoding="utf-8")
+    out30 = _porobra_run(gen, tmp_path / "n30", rows=porobra_rows(30))
+    assert r"menos de \estructural{30} obras" not in (out30 / "porobra_comparaciones.tex").read_text(encoding="utf-8")
 
 
-def test_old_rule_comparisons_become_the_sensitivity_and_main_is_pending(gen, tmp_path):
-    # compare_hdp de 700acba todavía excluye obras que no convergen: eso es la sensibilidad,
-    # no la métrica principal de la Enmienda 6
-    out = _porobra(gen, tmp_path, poblacion="convergidas")
-    main = (out / "porobra_comparaciones.tex").read_text(encoding="utf-8")
-    assert r"\pendiente{" in main and "Enmienda 6" in main
-    assert _provenance(out, "porobra_comparaciones.tex")["cifras"] == []
-    assert _row(out, "porobra_comparaciones_sensibilidad.tex", "HDP-HMM", "HMM finito")[2] == "11"
-    summary = json.loads((out / "generador_resumen.json").read_text(encoding="utf-8"))
-    assert any("Enmienda 6" in aviso for aviso in summary["avisos"])
-    assert "porobra_comparaciones.tex" in {item["tabla"] for item in summary["pendientes"]}
+@pytest.mark.parametrize(
+    ("tabla", "n", "verdict", "regla"),
+    [
+        ("porobra_comparaciones_sensibilidad.tex", "11", "mejora", "Enmienda 6"),
+        ("porobra_sensibilidad_sin_expuestas.tex", "10", "mejora", "Aclaración 8"),
+        ("porobra_sensibilidad_sin_techo_k.tex", "9", r"no evaluable (menos de \estructural{10} obras)", "Enmienda 11"),
+    ],
+)
+def test_porobra_sensitivity_tables_one_per_block(gen, tmp_path, tabla, n, verdict, regla):
+    out = _porobra(gen, tmp_path)
+    cells = _row(out, tabla, "HDP-HMM", "HMM finito")
+    assert cells[2] == n and cells[5] == verdict
+    tex = (out / tabla).read_text(encoding="utf-8")
+    assert "no decide" in tex and regla in tex and r"\pendiente" not in tex
+    assert "Ningún veredicto cambia" in tex
 
 
-def test_when_every_work_converges_both_tables_are_the_same_comparison(gen, tmp_path):
+def test_porobra_no_evaluable_is_not_a_verdict_change(gen, tmp_path):
+    out = _porobra(gen, tmp_path)
+    tex = (out / "porobra_sensibilidad_sin_techo_k.tex").read_text(encoding="utf-8")
+    assert "no cuenta como cambio de veredicto" in tex
+    assert r"menos de \estructural{10} obras" in tex
+
+
+def test_porobra_verdict_change_is_written(gen, tmp_path):
     rows = porobra_rows()
-    rows[-1]["hdp_converged"], rows[-1]["hdp_rhat"] = True, 1.02
-    summary = porobra_summary(rows, poblacion="convergidas")  # el formato de 700acba, sin obras fuera
-    out = tmp_path / "out"
-    gen.main(["--porobra", str(write_porobra_run(tmp_path / "runs", rows=rows, summary=summary)), "--salida", str(out)])
-    assert _row(out, "porobra_comparaciones.tex", "HDP-HMM", "HMM finito")[2] == "12"
-    assert _row(out, "porobra_comparaciones_sensibilidad.tex", "HDP-HMM", "HMM finito")[2] == "12"
-    assert "coincide" in (out / "porobra_comparaciones_sensibilidad.tex").read_text(encoding="utf-8")
+    summary = porobra_summary(rows)
+    block = summary["sensitivity_converged_only"]
+    block["comparisons"][1]["work_mean_holm_decision_ci"] = [-0.2, -0.01]
+    block["comparisons"][1]["work_mean_holm_rejects_zero"] = True
+    block["comparisons"][1]["verdict"] = "mejora"
+    block["verdict_changes"] = [{"model_b": "bigram", "principal": "no_hay_evidencia", "sensitivity": "mejora"}]
+    block["any_verdict_changes"] = True
+    out = _porobra_run(gen, tmp_path, rows=rows, summary=summary)
+    tex = (out / "porobra_comparaciones_sensibilidad.tex").read_text(encoding="utf-8")
+    assert "Cambia el veredicto" in tex and "Bigrama" in tex and "no hay evidencia" in tex
 
 
-def test_main_metric_without_sensitivity_leaves_it_pending(gen, tmp_path):
-    out = _porobra(gen, tmp_path, sensibilidad=False)
-    assert r"\pendiente{" in (out / "porobra_comparaciones_sensibilidad.tex").read_text(encoding="utf-8")
+def test_porobra_verdict_changes_must_agree_with_the_verdicts(gen, tmp_path):
+    rows = porobra_rows()
+    summary = porobra_summary(rows)
+    summary["sensitivity_without_exposed"]["verdict_changes"] = [
+        {"model_b": "finite", "principal": "mejora", "sensitivity": "no_hay_evidencia"}]
+    run = write_porobra_run(tmp_path / "runs", rows=rows, summary=summary)
+    with pytest.raises(gen.ArtefactoInconsistente, match="verdict_changes"):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
 
 
-def test_porobra_hdp_states_wait_for_per_chain_report(gen, tmp_path):
+@pytest.mark.parametrize(
+    ("bloque", "cambio"),
+    [
+        ("sensitivity_without_k_ceiling", {"excluded_work_ids": []}),
+        ("sensitivity_without_exposed", {"excluded_work_ids": ["MuseTrainer:Bella_Ciao.mxl"]}),
+        ("sensitivity_converged_only", {"converged_only": False}),
+        ("comparisons", {"excluded_work_ids": ["MuseTrainer:Bella_Ciao.mxl"]}),
+    ],
+)
+def test_porobra_block_population_is_checked(gen, tmp_path, bloque, cambio):
+    rows = porobra_rows()
+    summary = porobra_summary(rows)
+    summary[bloque].update(cambio)
+    run = write_porobra_run(tmp_path / "runs", rows=rows, summary=summary)
+    with pytest.raises(gen.ArtefactoInconsistente):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
+
+
+def test_porobra_small_n_warning_is_checked(gen, tmp_path):
+    rows = porobra_rows()
+    summary = porobra_summary(rows)
+    summary["comparisons"]["small_n_warning"] = False
+    run = write_porobra_run(tmp_path / "runs", rows=rows, summary=summary)
+    with pytest.raises(gen.ArtefactoInconsistente, match="small_n_warning"):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
+
+
+def test_porobra_hdp_states_are_reported_per_chain(gen, tmp_path):
     out = _porobra(gen, tmp_path)
     states = (out / "porobra_estados.tex").read_text(encoding="utf-8")
-    assert r"\pendiente{" in states and "por cadena" in states
-    # el finito sí: media y d.e. sobre las 12 obras, de su propia columna
+    assert r"\pendiente" not in states and "por cadena" in states and "media posterior" in states
     finite = [r["finite_states_mean"] for r in porobra_rows()]
-    assert _row(out, "porobra_estados.tex", "Todas")[1:] == ["12", f"{statistics.fmean(finite):.1f}", f"{statistics.stdev(finite):.1f}"]
-    assert "hdp_states_mean" not in {e["campo"] for e in _provenance(out, "porobra_estados.tex")["cifras"]}
+    todas = _row(out, "porobra_estados.tex", "Todas")
+    assert todas[1:4] == ["12", f"{statistics.fmean(finite):.1f}", f"{statistics.stdev(finite):.1f}"]
+    # HDP-HMM: rango entre cadenas de la media de estados, promediado entre obras (0.3 en todas)
+    assert todas[4] == "0.3"
+    campos = {e["campo"] for e in _provenance(out, "porobra_estados.tex")["cifras"]}
+    assert "hdp_states_pooled_chains_mean" not in campos
+    assert "hdp_states_mean_by_chain" in campos
+
+
+def test_porobra_per_chain_table_has_predictive_rhat_nll_by_chain_and_range(gen, tmp_path):
+    out = _porobra(gen, tmp_path)
+    rows = porobra_rows()
+    row = rows[0]
+    cells = _row(out, "porobra_por_obra_cadenas.tex", r"\texttt{" + row["work_id"].replace("_", r"\_") + "}")
+    assert cells[1] == "1.01" and cells[2] == "1.02"
+    assert cells[3:7] == [f"{v:.3f}" for v in row["hdp_test_nll_by_chain"]]
+    assert cells[7] == f"{row['hdp_test_nll_chain_range']:.3f}"
+    assert cells[8] == ", ".join(f"{v:.1f}" for v in row["hdp_states_mean_by_chain"])
+    assert cells[9] == ", ".join(f"{v:.1f}" for v in row["hdp_states_sd_by_chain"])
+    entries = [e for e in _provenance(out, "porobra_por_obra_cadenas.tex")["cifras"] if e["campo"] == "hdp_test_nll_by_chain"]
+    assert [e["celda"] for e in entries[:4]] == [0, 1, 2, 3]
+    assert r"\pendiente" not in (out / "porobra_por_obra_cadenas.tex").read_text(encoding="utf-8")
+
+
+def test_porobra_chain_range_must_agree_with_the_chains(gen, tmp_path):
+    rows = porobra_rows()
+    rows[3]["hdp_test_nll_chain_range"] += 0.01
+    run = write_porobra_run(tmp_path / "runs", rows=rows, summary=porobra_summary(rows))
+    with pytest.raises(gen.ArtefactoInconsistente, match="hdp_test_nll_chain_range"):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
+
+
+def test_porobra_per_work_table_marks_ceiling_exposure_and_em_cap(gen, tmp_path):
+    out = _porobra(gen, tmp_path)
+    tex = (out / "porobra_por_obra.tex").read_text(encoding="utf-8")
+    rows = porobra_rows()
+
+    def celdas(work_id):
+        return _row(out, "porobra_por_obra.tex", r"\texttt{" + work_id.replace("_", r"\_") + "}")
+
+    ceiling = [r for r in rows if r["finite_k_hit_limit"]][0]
+    assert celdas(ceiling["work_id"])[10] == r"512\textsuperscript{\ddag}"
+    em = [r for r in rows if r["finite_em_hit_max_iterations"]][0]
+    assert celdas(em["work_id"])[4].endswith(r"\textsuperscript{\S}")
+    expuesta = [cells for cells in _rows(out, "porobra_por_obra.tex") if "Bella" in cells[0]]
+    assert expuesta[0][0] == r"\texttt{MuseTrainer:Bella\_Ciao.mxl}\textsuperscript{\dag}"
+    assert not any(r"\dag}" in cells[0] for cells in _rows(out, "porobra_por_obra.tex") if "obra" in cells[0])
+    assert "no se interpreta como número de estados" in tex and "Enmienda 11" in tex and "Aclaraciones 8 a 10" in tex
+    assert r"\pendiente" not in tex
+
+
+def test_porobra_convergence_reports_the_fraction_below_the_threshold(gen, tmp_path):
+    out = _porobra(gen, tmp_path)
+    rows = {cells[0]: cells[1] for cells in _rows(out, "porobra_convergencia.tex")}
+    assert rows["Obras analizadas"] == "12"
+    assert rows[r"Obras con $\hat R <$ umbral"] == "11"
+    assert rows[r"Porcentaje con $\hat R <$ umbral"] == r"91.7\,\%"
+    entry = [e for e in _provenance(out, "porobra_convergencia.tex")["cifras"] if e["texto"] == "91.7"][0]
+    assert entry["operacion"] == "por_cien" and entry["valor_fuente"] == pytest.approx(11 / 12)
+
+
+def test_porobra_convergence_must_agree_with_per_work(gen, tmp_path):
+    rows = porobra_rows()
+    summary = porobra_summary(rows)
+    summary["convergence"]["n_converged"] = 12
+    run = write_porobra_run(tmp_path / "runs", rows=rows, summary=summary)
+    with pytest.raises(gen.ArtefactoInconsistente, match="convergence"):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
+
+
+def test_porobra_hyperparameters_report_finite_alpha_k_ceiling_and_em_cap(gen, tmp_path):
+    out = _porobra(gen, tmp_path)
+    assert _row(out, "porobra_hiperparametros.tex", r"$\eta$ del HDP-HMM", "3.0")[2] == "11"
+    assert _row(out, "porobra_hiperparametros.tex", r"$\alpha$ del finito", "0.1")[2] == "9"
+    assert _row(out, "porobra_hiperparametros.tex", r"$\alpha$ del finito", "1.0")[2] == "3"
+    assert _row(out, "porobra_hiperparametros.tex", r"$K$ del finito", "512")[2] == "3"
+    assert _row(out, "porobra_hiperparametros.tex", r"Obras con $K$ en el tope de la rejilla")[1:] == ["512", "3"]
+    assert _row(out, "porobra_hiperparametros.tex", "Obras con el reajuste del finito en el tope de iteraciones de EM")[2] == "1"
+    assert r"\pendiente" not in (out / "porobra_hiperparametros.tex").read_text(encoding="utf-8")
+
+
+def test_porobra_ceiling_list_must_agree_with_per_work(gen, tmp_path):
+    rows = porobra_rows()
+    summary = porobra_summary(rows)
+    summary["selected_hyperparameters"]["finite_em_hit_max_iterations"] = []
+    run = write_porobra_run(tmp_path / "runs", rows=rows, summary=summary)
+    with pytest.raises(gen.ArtefactoInconsistente, match="finite_em_hit_max_iterations"):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
+
+
+def test_porobra_corpus_counts_failures_and_exposed_works(gen, tmp_path):
+    out = _porobra(gen, tmp_path)
+    assert _row(out, "porobra_corpus.tex", "Fallas de lectura")[1] == "1"
+    assert _row(out, "porobra_corpus.tex", "Fallas en el análisis")[1] == "0"
+    assert _row(out, "porobra_corpus.tex", "Analizadas con exposición a cifras de prueba (Aclaraciones 8 a 10)")[1] == "2"
+
+
+def test_porobra_analysis_failures_with_a_passed_audit_mean_a_stale_audit(gen, tmp_path):
+    # la auditoría marca «failed» toda corrida con obras que fallaron en el análisis
+    rows = porobra_rows()
+    summary = porobra_summary(rows, analysis_failures=[{"work_id": "MuseTrainer:obra_falla.mxl", "error": "ValueError"}])
+    run = write_porobra_run(tmp_path / "runs", rows=rows, summary=summary)
+    with pytest.raises(gen.ArtefactoInconsistente, match="analysis_failures"):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
+
+
+@pytest.mark.parametrize("archivo", ["per_work.csv", "summary.json"])
+def test_porobra_files_must_be_the_ones_the_manifest_hashed(gen, tmp_path, archivo):
+    run = write_porobra_run(tmp_path / "runs")
+    path = run / archivo
+    path.write_bytes(path.read_bytes() + b"\n")
+    with pytest.raises(gen.ArtefactoInconsistente, match=f"manifest.json.*{archivo}"):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
+
+
+def test_porobra_manifest_without_output_hashes_is_refused(gen, tmp_path):
+    run = write_porobra_run(tmp_path / "runs")
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    del manifest["outputs"]
+    (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(gen.ArtefactoInconsistente, match="outputs"):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
+
+
+def test_porobra_audit_of_another_run_is_refused(gen, tmp_path):
+    audit = porobra_audit()
+    audit["run_dir"] = "artifacts/outputs/porobra_heldout_20261030_1234567"
+    with pytest.raises(gen.ArtefactoInconsistente, match="run_dir"):
+        _porobra_run(gen, tmp_path, audit=audit)
+
+
+def test_porobra_summary_run_kind_must_agree_with_the_audit(gen, tmp_path):
+    rows = porobra_rows()
+    summary = porobra_summary(rows, run_kind="sensibilidad_truncamiento_40", truncation=40)
+    with pytest.raises(gen.ArtefactoInconsistente, match="run_kind"):
+        _porobra_run(gen, tmp_path, rows=rows, summary=summary)  # la auditoría dice «principal»
+
+
+def test_porobra_summary_run_truncation_must_agree_with_the_manifest(gen, tmp_path):
+    rows = porobra_rows()
+    summary = porobra_summary(rows, truncation=40)
+    with pytest.raises(gen.ArtefactoInconsistente, match="truncation"):
+        _porobra_run(gen, tmp_path, rows=rows, summary=summary)
+
+
+def test_porobra_summary_run_deviations_must_be_in_the_audit(gen, tmp_path):
+    rows = porobra_rows()
+    summary = porobra_summary(rows)
+    summary["run"]["deviations"] = ["corpus_identity"]
+    with pytest.raises(gen.ArtefactoInconsistente, match="deviations"):
+        _porobra_run(gen, tmp_path, rows=rows, summary=summary)
+
+
+def test_porobra_pooled_chain_states_are_required_and_not_written(gen, tmp_path):
+    out = _porobra(gen, tmp_path)
+    for tabla in gen.TABLAS_POROBRA:
+        campos = {entry["campo"] for entry in _provenance(out, tabla)["cifras"]}
+        assert not any("pooled" in campo for campo in campos), tabla
+    rows = porobra_rows()
+    for row in rows:
+        del row["hdp_states_pooled_chains_sd"]
+    run = write_porobra_run(tmp_path / "runs2", rows=rows, summary=porobra_summary(rows))
+    with pytest.raises(gen.ArtefactoInconsistente, match="hdp_states_pooled_chains_sd"):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out2")])
 
 
 def test_porobra_verdict_disagreeing_with_summary_is_an_error(gen, tmp_path):
@@ -214,40 +435,69 @@ def test_porobra_mean_difference_is_recomputed_from_per_work_csv(gen, tmp_path):
 def test_porobra_n_pairs_is_checked_against_per_work_csv(gen, tmp_path):
     rows = porobra_rows()
     summary = porobra_summary(rows)
-    summary["comparisons"]["comparisons"][0]["n_pairs"] = 13
+    summary["sensitivity_converged_only"]["comparisons"][0]["n_pairs"] = 12
     run = write_porobra_run(tmp_path / "runs", rows=rows, summary=summary)
     with pytest.raises(gen.ArtefactoInconsistente, match="per_work.csv"):
         gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
 
 
-def test_porobra_convergence_reports_the_fraction_below_the_threshold(gen, tmp_path):
-    out = _porobra(gen, tmp_path)
-    rows = {cells[0]: cells[1] for cells in _rows(out, "porobra_convergencia.tex")}
-    assert rows["Obras analizadas"] == "12"
-    assert rows[r"Obras con $\hat R \geq$ umbral"] == "1"
-    assert rows[r"Porcentaje con $\hat R <$ umbral"] == r"91.7\,\%"  # 11 de 12
-    entry = [e for e in _provenance(out, "porobra_convergencia.tex")["cifras"] if e["texto"] == "91.7"][0]
-    assert entry["operacion"] == "complemento_por_cien" and entry["valor_fuente"] == pytest.approx(1 / 12)
+def test_porobra_audit_that_did_not_pass_is_refused(gen, tmp_path):
+    with pytest.raises(gen.ArtefactoInconsistente, match="porobra_audit.json"):
+        _porobra_run(gen, tmp_path, audit=porobra_audit(status="failed", confirmatory=False))
 
 
-def test_porobra_hyperparameters_report_value_and_count_including_finite_alpha(gen, tmp_path):
-    out = _porobra(gen, tmp_path)
-    assert _row(out, "porobra_hiperparametros.tex", r"$\eta$ del HDP-HMM")[1:] == ["3.0", "12"]
-    assert _row(out, "porobra_hiperparametros.tex", r"$\alpha$ del finito", "0.1")[2] == "9"
-    assert _row(out, "porobra_hiperparametros.tex", r"$\alpha$ del finito", "1.0")[2] == "3"
+def test_porobra_run_without_audit_is_refused(gen, tmp_path):
+    run = write_porobra_run(tmp_path / "runs")
+    (run / "porobra_audit.json").unlink()
+    with pytest.raises(FileNotFoundError, match="porobra_audit.json"):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
 
 
-def test_porobra_corpus_counts_analysis_failures(gen, tmp_path):
-    out = _porobra(gen, tmp_path)
-    assert _row(out, "porobra_corpus.tex", "Fallas en el análisis")[1] == "1"
+def test_porobra_non_confirmatory_run_says_its_verdicts_do_not_decide(gen, tmp_path):
+    out = _porobra_run(gen, tmp_path, audit=porobra_audit(confirmatory=False, run_kind="no_preregistrada",
+                                                          deviations={"corpus_identity": {}}))
+    tex = (out / "porobra_comparaciones.tex").read_text(encoding="utf-8")
+    assert "no es la confirmatoria" in tex and "no\\_preregistrada" in tex
+    assert "(decide)" not in tex
     summary = json.loads((out / "generador_resumen.json").read_text(encoding="utf-8"))
-    assert any("obra_falla.mxl" in aviso for aviso in summary["avisos"])
+    assert any("no es la confirmatoria" in aviso for aviso in summary["avisos"])
+    assert summary["corridas"]["porobra"]["confirmatoria"] is False
 
 
-def test_old_format_without_finite_alpha_leaves_it_pending(gen, tmp_path):
-    out = _porobra(gen, tmp_path, formato="ff9f998")
-    hyper = (out / "porobra_hiperparametros.tex").read_text(encoding="utf-8")
-    assert r"\pendiente{" in hyper and "Enmienda 5" in hyper
+def test_porobra_confirmatory_run_is_recorded(gen, tmp_path):
+    out = _porobra(gen, tmp_path)
+    tex = (out / "porobra_comparaciones.tex").read_text(encoding="utf-8")
+    assert "(decide)" in tex and "no es la confirmatoria" not in tex
+    summary = json.loads((out / "generador_resumen.json").read_text(encoding="utf-8"))
+    assert summary["corridas"]["porobra"]["confirmatoria"] is True
+
+
+@pytest.mark.parametrize("falta", ["run", "sensitivity_without_exposed", "sensitivity_without_k_ceiling", "test_exposure"])
+def test_porobra_old_format_is_refused(gen, tmp_path, falta):
+    rows = porobra_rows()
+    summary = porobra_summary(rows)
+    del summary[falta]
+    run = write_porobra_run(tmp_path / "runs", rows=rows, summary=summary)
+    with pytest.raises(gen.ArtefactoInconsistente, match="formato"):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
+
+
+def test_porobra_old_per_work_columns_are_refused(gen, tmp_path):
+    rows = porobra_rows()
+    summary = porobra_summary(rows)
+    for row in rows:
+        del row["hdp_states_mean_by_chain"]
+    run = write_porobra_run(tmp_path / "runs", rows=rows, summary=summary)
+    with pytest.raises(gen.ArtefactoInconsistente, match="hdp_states_mean_by_chain"):
+        gen.main(["--porobra", str(run), "--salida", str(tmp_path / "out")])
+
+
+def test_porobra_final_format_has_no_pending_markers(gen, tmp_path):
+    out = _porobra(gen, tmp_path)
+    for tabla in gen.TABLAS_POROBRA:
+        assert r"\pendiente" not in (out / tabla).read_text(encoding="utf-8"), tabla
+    summary = json.loads((out / "generador_resumen.json").read_text(encoding="utf-8"))
+    assert [p for p in summary["pendientes"] if p["tabla"].startswith("porobra")] == []
 
 
 # --- PDMX --------------------------------------------------------------------------------
