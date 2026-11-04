@@ -1,0 +1,744 @@
+"""Auditoría de una corrida por obra y obras con la prueba expuesta antes de la corrida confirmatoria.
+
+La auditoría separa dos preguntas: si la corrida es íntegra (``status``: passed, incomplete
+o failed) y si su configuración es la de la sección A (``preregistration``: preregistered o
+not_preregistered). Un smoke íntegro sale ``passed`` (tarea 1.5) sin pasar por la corrida
+confirmatoria; ``confirmatory`` sólo es verdadero si las dos se cumplen.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import shutil
+
+import pandas as pd
+import pytest
+
+from src.analysis import porobra, porobra_audit
+from src.cli import porobra_heldout
+from tests.test_porobra_cli import _run, corpus  # noqa: F401 - fixture reutilizada
+
+INTEGRITY_CHECKS = {"artifacts_present", "manifest_hashes", "denominators", "corpus_accounting",
+                    "canonicalization", "per_work_invariants", "headline_recompute", "analysis_failures"}
+
+
+@pytest.fixture(scope="module")
+def run_dir(corpus, tmp_path_factory) -> Path:  # noqa: F811
+    return _run(corpus, tmp_path_factory.mktemp("auditada"), "--n-workers", "1")
+
+
+def _copy(run_dir: Path, tmp_path: Path) -> Path:
+    target = tmp_path / run_dir.name
+    shutil.copytree(run_dir, target)
+    return target
+
+
+def _check(audit: dict, name: str) -> dict:
+    (check,) = [item for item in audit["checks"] if item["name"] == name]
+    return check
+
+
+def pin_outcomes(monkeypatch, outcomes: dict) -> None:
+    """Toma estos destinos como los fijados en el preregistro."""
+
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS_OUTCOMES_SHA256", porobra_audit.corpus_outcomes_sha256(outcomes))
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS_OUTCOMES", {
+        key: tuple(value) for key, value in outcomes.items() if key != "analizada" and value})
+
+
+def _as_preregistered(run_dir: Path, tmp_path: Path, monkeypatch, *, principal_truncation=None, **overrides) -> Path:
+    """Copia la corrida y toma su configuración real como la «preregistrada».
+
+    Así el manifiesto, su ``command`` y el resumen siguen siendo los de una corrida real y
+    coherentes entre sí (la auditoría los compara); ``overrides`` edita sólo
+    ``manifest["config"]``. El truncamiento de la corrida cuenta como el principal salvo
+    que ``principal_truncation`` diga otro; el tamaño del corpus, el del corpus de prueba.
+    """
+
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS", dict(summary["corpus"]["n_by_source_candidates"]))
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS_SHA256", porobra_audit.source_aggregates(manifest))
+    pin_outcomes(monkeypatch, porobra_audit.corpus_outcomes(porobra_audit.read_per_work(copy / "per_work.csv"), summary))
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS_CONTENT_SHA256",
+                        porobra_audit.corpus_content_sha256(porobra_audit.read_per_work(copy / "per_work.csv")))
+    config = manifest["config"]
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CONFIG", {
+        key: value for key, value in config.items() if key not in (*porobra_audit.UNCHECKED_CONFIG_KEYS, "truncation")})
+    truncation = config["truncation"] if principal_truncation is None else principal_truncation
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_TRUNCATION",
+                        {truncation: "principal", 40: "sensibilidad_truncamiento_40"})
+    config.update(overrides)
+    manifest["dirty_worktree"] = False
+    manifest["git_at_end"] = {"commit": manifest["commit"], "dirty_worktree": False}
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return copy
+
+
+def _rewrite_summary(copy: Path, summary: dict) -> None:
+    """Reescribe summary.json y actualiza su hash: sólo el recálculo puede detectarlo."""
+
+    (copy / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["outputs"]["summary.json"] = hashlib.sha256((copy / "summary.json").read_bytes()).hexdigest()
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def _rewrite_per_work(copy: Path, works: pd.DataFrame) -> None:
+    """Reescribe per_work.csv y actualiza su hash en el manifiesto (cambio «legítimo»)."""
+
+    works.to_csv(copy / "per_work.csv", index=False)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["outputs"]["per_work.csv"] = hashlib.sha256((copy / "per_work.csv").read_bytes()).hexdigest()
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_un_smoke_integro_pasa_la_auditoria_y_se_marca_no_preregistrado(run_dir):
+    written = json.loads((run_dir / porobra_audit.AUDIT_FILENAME).read_text(encoding="utf-8"))
+    # Integridad en orden: la tarea 1.5 pide un smoke con la auditoría en «passed».
+    assert written["status"] == "passed", written
+    assert {check["name"] for check in written["checks"]} == INTEGRITY_CHECKS
+    assert all(check["status"] == "passed" for check in written["checks"])
+    # La configuración rápida de la prueba no es la de la sección A: se dice aparte.
+    preregistration = written["preregistration"]
+    assert preregistration["status"] == "not_preregistered"
+    assert written["confirmatory"] is False
+    for key in ("n_chains", "n_iters", "burn_in", "k_grid", "etas", "bootstrap_samples", "truncation",
+                "symbtr_n", "corpus_size"):
+        assert key in preregistration["deviations"], preregistration
+    # Releer la carpeta da lo mismo y no escribe nada.
+    before = sorted(p.name for p in run_dir.iterdir())
+    assert porobra_audit.audit_run_directory(run_dir)["status"] == "passed"
+    assert sorted(p.name for p in run_dir.iterdir()) == before
+    assert porobra_audit.main([str(run_dir)]) == 0
+    assert porobra_audit.main([str(run_dir), "--require-preregistered"]) == 1
+
+
+def test_con_la_configuracion_de_la_seccion_a_la_corrida_es_confirmatoria(run_dir, tmp_path, monkeypatch):
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert audit["status"] == "passed", audit
+    assert audit["preregistration"]["status"] == "preregistered", audit["preregistration"]
+    assert audit["preregistration"]["deviations"] == {} and audit["preregistration"]["run_kind"] == "principal"
+    assert audit["confirmatory"] is True
+    assert porobra_audit.main([str(copy), "--require-preregistered"]) == 0
+
+
+def test_las_constantes_de_truncamiento_son_las_del_preregistro():
+    assert porobra_audit.PREREGISTERED_TRUNCATION == {20: "principal", 40: "sensibilidad_truncamiento_40"}
+
+
+def test_truncamiento_40_es_la_sensibilidad_y_no_la_confirmatoria(corpus, tmp_path, monkeypatch):  # noqa: F811
+    # Una corrida real con --truncation 40: su command, su config y su resumen coinciden.
+    sensitivity = _run(corpus, tmp_path / "t40", "--n-workers", "1", "--truncation", "40")
+    copy = _as_preregistered(sensitivity, tmp_path, monkeypatch, principal_truncation=20)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert audit["status"] == "passed", audit
+    preregistration = audit["preregistration"]
+    assert preregistration["status"] == "preregistered", preregistration
+    assert preregistration["run_kind"] == "sensibilidad_truncamiento_40"
+    # Es la sensibilidad preregistrada, no la corrida confirmatoria.
+    assert audit["confirmatory"] is False
+    assert porobra_audit.main([str(copy), "--require-preregistered"]) == 1
+    assert porobra_audit.main([str(copy)]) == 0
+
+
+def test_config_que_no_coincide_con_el_comando_real_no_pasa(run_dir, tmp_path, monkeypatch):
+    # El manifiesto dice 400 iteraciones, pero el argv real de la corrida pidió 8.
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    monkeypatch.setitem(porobra_audit.PREREGISTERED_CONFIG, "n_iters", 400)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["config"]["n_iters"] = 400
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    audit = porobra_audit.audit_run_directory(copy)
+    deviations = audit["preregistration"]["deviations"]
+    assert set(deviations) == {"command"}, deviations
+    assert deviations["command"]["observed"] == {"n_iters": 8}
+    assert deviations["command"]["expected"] == {"n_iters": 400}
+    assert audit["confirmatory"] is False
+
+
+def test_un_comando_ilegible_no_pasa(run_dir, tmp_path, monkeypatch):
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["command"] = manifest["command"][:3] + ["--opcion-que-no-existe"]
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert "command" in porobra_audit.audit_run_directory(copy)["preregistration"]["deviations"]
+
+
+def test_config_que_no_coincide_con_el_resumen_no_pasa(run_dir, tmp_path, monkeypatch):
+    # Config y comando dicen 10 000 remuestreos; el resumen se calculó con 200.
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    monkeypatch.setitem(porobra_audit.PREREGISTERED_CONFIG, "bootstrap_samples", 10_000)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["config"]["bootstrap_samples"] = 10_000
+    command = manifest["command"]
+    command[command.index("--bootstrap-samples") + 1] = "10000"
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    audit = porobra_audit.audit_run_directory(copy)
+    deviations = audit["preregistration"]["deviations"]
+    assert set(deviations) == {"summary"}, deviations
+    assert "comparisons.bootstrap_samples" in deviations["summary"]["observed"]
+    assert audit["confirmatory"] is False
+
+
+@pytest.mark.parametrize("overrides", [
+    {"n_iters": 40}, {"bootstrap_samples": 500}, {"k_grid": [2, 4, 8]}, {"musetrainer_limit": 3},
+    {"symbtr_n": 0}, {"symbtr_seed": 8}, {"n_chains": 3, "chain_seeds": [1, 2, 3]}, {"etas": [1.0]},
+    {"min_events": 25}, {"finite_alphas": [0.1]}, {"alphas": [1.0]}, {"burn_in": 100}, {"truncation": 30},
+    # Flags del CLI y semillas que también cambian la corrida (ronda 3 de revisión).
+    {"max_states": 32}, {"finite_restarts": 1}, {"n_occupancy_samples": 1}, {"stats_seed": 99},
+    {"finite_seed": 123}, {"hdp_hyperparameters": {"alpha": 1.0, "alpha0": 1.0, "gamma": 1.0, "kappa": 50.0}},
+    {"occupancy_threshold": 0.05}, {"rhat_threshold": 1.2},
+])
+def test_cualquier_desviacion_de_la_seccion_a_se_nombra(run_dir, tmp_path, monkeypatch, overrides):
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch, **overrides)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert audit["status"] == "passed"
+    assert audit["preregistration"]["status"] == "not_preregistered" and audit["confirmatory"] is False
+    deviations = audit["preregistration"]["deviations"]
+    assert set(overrides) <= set(deviations), deviations
+    assert deviations[next(iter(overrides))]["observed"] == next(iter(overrides.values()))
+
+
+def test_una_clave_de_configuracion_desconocida_no_pasa_por_preregistrada(run_dir, tmp_path, monkeypatch):
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch, opcion_nueva=1)
+    deviations = porobra_audit.audit_run_directory(copy)["preregistration"]["deviations"]
+    assert deviations["opcion_nueva"] == {"observed": 1, "expected": "clave no prevista por la sección A"}
+
+
+def test_todas_las_claves_del_manifiesto_estan_previstas(run_dir):
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    expected = set(porobra_audit.PREREGISTERED_CONFIG) | set(porobra_audit.UNCHECKED_CONFIG_KEYS) | {"truncation"}
+    assert set(manifest["config"]) == expected
+
+
+def test_la_configuracion_por_defecto_del_cli_es_la_preregistrada():
+    args = porobra_heldout.build_parser().parse_args([])
+    config = porobra.PorObraConfig().to_dict()
+    for key, value in porobra_audit.PREREGISTERED_CONFIG.items():
+        if key in config:
+            assert porobra_audit._same(list(config[key]) if isinstance(config[key], tuple) else config[key], value), key
+    assert args.max_states == porobra_audit.PREREGISTERED_CONFIG["max_states"]
+    assert args.finite_restarts == porobra_audit.PREREGISTERED_CONFIG["finite_restarts"]
+    assert args.occupancy_samples == porobra_audit.PREREGISTERED_CONFIG["n_occupancy_samples"]
+    assert args.stats_seed == porobra_audit.PREREGISTERED_CONFIG["stats_seed"]
+
+
+def test_el_tope_de_k_de_la_enmienda_11_no_es_desviacion(run_dir, tmp_path, monkeypatch):
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    works = porobra_audit.read_per_work(copy / "per_work.csv")
+    works["finite_k_hit_limit"] = False
+    # Una fila coherente: la marca va con finite_k en el techo de su rejilla.
+    works.loc[0, "finite_k_hit_limit"] = True
+    works.loc[0, "finite_k"] = max(json.loads(works.loc[0, "finite_k_grid"]))
+    _rewrite_per_work(copy, works)
+    # La sensibilidad sin techo depende de la marca: el resumen se recalcula con ella.
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    block = summary["sensitivity_without_k_ceiling"]
+    recomputed = porobra.summary_blocks(
+        porobra_audit.comparison_records(porobra_audit.read_per_work(copy / "per_work.csv")),
+        bootstrap_samples=block["bootstrap_samples"], seed=block["seed"], exposed_work_ids=porobra.TEST_EXPOSED_WORK_IDS,
+    )["sensitivity_without_k_ceiling"]
+    assert recomputed["excluded_work_ids"] == [str(works.loc[0, "work_id"])]
+    summary["sensitivity_without_k_ceiling"] = porobra_audit._jsonable(recomputed)
+    _rewrite_summary(copy, summary)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert audit["status"] == "passed", audit
+    deviations = audit["preregistration"]["deviations"]
+    assert "finite_k_hit_limit" not in deviations
+    assert audit["confirmatory"] is True
+
+
+def test_arbol_sucio_o_corpus_incompleto_no_pasan(run_dir, tmp_path, monkeypatch):
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["dirty_worktree"] = True
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS", {"MuseTrainer": 69, "SymbTr": 100})
+    deviations = porobra_audit.audit_run_directory(copy)["preregistration"]["deviations"]
+    assert set(deviations) == {"dirty_worktree", "corpus_size"}
+
+
+def test_falta_un_archivo_queda_incompleta(run_dir, tmp_path):
+    copy = _copy(run_dir, tmp_path)
+    (copy / "summary.json").unlink()
+    audit = porobra_audit.audit_run_directory(copy)
+    assert audit["status"] == "incomplete"
+    assert _check(audit, "artifacts_present")["missing"] == ["summary.json"]
+    assert audit["preregistration"]["status"] == "unknown" and audit["confirmatory"] is False
+    assert porobra_audit.main([str(copy)]) == 1
+
+
+def test_un_csv_alterado_no_pasa_hashes_ni_recalculo(run_dir, tmp_path):
+    copy = _copy(run_dir, tmp_path)
+    works = porobra_audit.read_per_work(copy / "per_work.csv")
+    works.loc[0, "hdp_test_nll"] += 0.5
+    works.to_csv(copy / "per_work.csv", index=False)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert audit["status"] == "failed"
+    assert _check(audit, "manifest_hashes")["status"] == "failed"
+    assert _check(audit, "headline_recompute")["status"] == "failed"
+
+
+def _flip_interval(interval):
+    return [interval[0] - 1.0, interval[1] + 1.0]
+
+
+#: Ediciones del resumen en lo que decide; cada una deja el hash al día.
+SUMMARY_EDITS = {
+    # El corpus de prueba tiene menos de 10 obras: sin veredicto no hay IC de decisión que invertir.
+    "decision_ci": lambda s: s["comparisons"]["comparisons"][0].update(work_mean_holm_decision_ci=[-9.0, -8.0]),
+    "rejects_zero": lambda s: s["comparisons"]["comparisons"][1].update(
+        work_mean_holm_rejects_zero=not s["comparisons"]["comparisons"][1]["work_mean_holm_rejects_zero"]),
+    "verdict": lambda s: s["comparisons"]["comparisons"][2].update(verdict="mejora"
+        if s["comparisons"]["comparisons"][2]["verdict"] != "mejora" else "no_hay_evidencia"),
+    "bootstrap_95_ci": lambda s: s["comparisons"]["comparisons"][0].update(
+        bootstrap_95_ci=_flip_interval(s["comparisons"]["comparisons"][0]["bootstrap_95_ci"])),
+    "token_weighted": lambda s: s["comparisons"]["comparisons"][0].update(
+        token_weighted_difference=s["comparisons"]["comparisons"][0]["token_weighted_difference"] + 0.1),
+    "wilcoxon_holm": lambda s: s["comparisons"]["comparisons"][0].update(
+        p_value_holm=(s["comparisons"]["comparisons"][0]["p_value_holm"] or 0.5) / 2),
+    "sensitivity_verdict": lambda s: s["sensitivity_without_exposed"]["comparisons"][0].update(verdict="mejora"
+        if s["sensitivity_without_exposed"]["comparisons"][0]["verdict"] != "mejora" else "no_hay_evidencia"),
+    "fraction_converged": lambda s: s["convergence"].update(fraction_converged=0.123),
+    "not_converged_ids": lambda s: s["convergence"].update(not_converged_work_ids=["otra"]),
+    "bootstrap_samples": lambda s: s["comparisons"].update(bootstrap_samples=201),
+    "exposed_removed": lambda s: s["test_exposure"].update(exposed_work_ids=[]),
+}
+
+
+def test_el_recalculo_reproduce_exacto_lo_que_decide(run_dir):
+    # Con la misma semilla, recalcular desde per_work.csv da el resumen bit a bit.
+    check = _check(porobra_audit.audit_run_directory(run_dir), "headline_recompute")
+    assert check["status"] == "passed" and check["mismatches"] == []
+    assert set(check["recomputed_blocks"]) == {"comparisons", "sensitivity_converged_only", "sensitivity_without_exposed",
+                                               "sensitivity_without_k_ceiling", "convergence"}
+
+
+@pytest.mark.parametrize("edit", sorted(SUMMARY_EDITS))
+def test_un_resumen_editado_falla_el_recalculo(run_dir, tmp_path, edit):
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    SUMMARY_EDITS[edit](summary)
+    _rewrite_summary(copy, summary)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert _check(audit, "manifest_hashes")["status"] == "passed"
+    check = _check(audit, "headline_recompute")
+    assert check["status"] == "failed" and check["mismatches"], check
+    assert audit["status"] == "failed"
+
+
+def test_denominador_y_huella_duplicada_se_detectan(run_dir, tmp_path):
+    copy = _copy(run_dir, tmp_path)
+    works = porobra_audit.read_per_work(copy / "per_work.csv")
+    works.loc[0, "n_test"] += 1
+    works.loc[1, "content_fingerprint"] = works.loc[0, "content_fingerprint"]
+    works.to_csv(copy / "per_work.csv", index=False)
+    audit = porobra_audit.audit_run_directory(copy)
+    denominators = _check(audit, "denominators")
+    assert denominators["status"] == "failed" and denominators["bad_work_ids"] == [works.loc[0, "work_id"]]
+    assert _check(audit, "canonicalization")["status"] == "failed"
+
+
+def test_conteo_del_corpus_que_no_cuadra_falla(run_dir, tmp_path):
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    summary["corpus"]["n_candidates"] += 1
+    (copy / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    assert _check(porobra_audit.audit_run_directory(copy), "corpus_accounting")["status"] == "failed"
+
+
+#: Cómo se estropea un conteo: los que lanzaban excepción y los que int() o == dejaban pasar.
+NOT_INTEGER = {
+    "texto": lambda n: "x",
+    "nulo": lambda n: None,
+    "decimal": lambda n: n + 0.5,
+    "float_entero": lambda n: float(n),
+    "texto_numerico": lambda n: str(n),
+    "lista": lambda n: [n],
+}
+
+
+def _audit_with_corpus(run_dir: Path, tmp_path: Path, edit) -> dict:
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    edit(summary["corpus"])
+    _rewrite_summary(copy, summary)
+    return porobra_audit.audit_run_directory(copy)
+
+
+@pytest.mark.parametrize("how", sorted(NOT_INTEGER))
+@pytest.mark.parametrize("key", ["n_candidates", "n_failures", "n_duplicates", "n_excluded_short",
+                                 "n_analysis_failures", "n_analyzed"])
+def test_un_conteo_no_entero_da_failed_sin_lanzar(run_dir, tmp_path, key, how):
+    audit = _audit_with_corpus(run_dir, tmp_path, lambda c: c.update({key: NOT_INTEGER[how](c[key])}))
+    check = _check(audit, "corpus_accounting")
+    assert check["status"] == "failed" and any(key in problem for problem in check["problems"]), check
+    assert audit["status"] == "failed" and audit["confirmatory"] is False
+
+
+@pytest.mark.parametrize("how", sorted(NOT_INTEGER))
+@pytest.mark.parametrize("key", ["n_by_source_candidates", "n_by_source_analyzed"])
+def test_un_conteo_por_fuente_no_entero_da_failed_sin_lanzar(run_dir, tmp_path, key, how):
+    def edit(corpus):
+        source = sorted(corpus[key])[0]
+        corpus[key][source] = NOT_INTEGER[how](corpus[key][source])
+
+    audit = _audit_with_corpus(run_dir, tmp_path, edit)
+    check = _check(audit, "corpus_accounting")
+    assert check["status"] == "failed" and any(key in problem for problem in check["problems"]), check
+    assert audit["status"] == "failed"
+
+
+@pytest.mark.parametrize("key", ["n_by_source_candidates", "n_by_source_analyzed"])
+@pytest.mark.parametrize("value", ["x", 3, ["MuseTrainer"], None], ids=["texto", "entero", "lista", "nulo"])
+def test_conteos_por_fuente_que_no_son_un_diccionario_dan_failed_sin_lanzar(run_dir, tmp_path, key, value):
+    audit = _audit_with_corpus(run_dir, tmp_path, lambda c: c.update({key: value}))
+    check = _check(audit, "corpus_accounting")
+    assert check["status"] == "failed" and any(key in problem for problem in check["problems"]), check
+    assert audit["status"] == "failed"
+
+
+@pytest.mark.parametrize("how", sorted(NOT_INTEGER))
+def test_min_events_no_entero_da_failed_sin_lanzar(run_dir, tmp_path, how):
+    audit = _audit_with_corpus(run_dir, tmp_path, lambda c: c.update(min_events=NOT_INTEGER[how](c["min_events"])))
+    assert _check(audit, "denominators")["status"] == "failed"
+    assert audit["status"] == "failed" and audit["confirmatory"] is False
+
+
+#: Ediciones de los conteos por fuente del resumen (hash al día) que no cuadran con los
+#: archivos de entrada del manifiesto o con la columna «source» de per_work.csv.
+COUNT_EDITS = {
+    # Ronda 1 de revisión: el resumen dice 69/100 candidatos; la corrida tiene 7 archivos.
+    "candidatos_del_preregistro": lambda s: s["corpus"].update(
+        n_by_source_candidates={"MuseTrainer": 69, "SymbTr": 100}),
+    # Misma suma que n_candidates, otro reparto que el de manifest["inputs"]["files"].
+    "candidatos_mal_repartidos": lambda s: s["corpus"].update(
+        n_by_source_candidates={"MuseTrainer": s["corpus"]["n_candidates"] - 1, "SymbTr": 1}),
+    # Misma suma que n_analyzed, otro reparto que la columna «source» de per_work.csv.
+    "analizadas_mal_repartidas": lambda s: s["corpus"].update(
+        n_by_source_analyzed={"MuseTrainer": s["corpus"]["n_analyzed"] - 1, "SymbTr": 1}),
+}
+
+
+@pytest.mark.parametrize("edit", sorted(COUNT_EDITS))
+def test_conteos_por_fuente_que_no_son_los_de_la_corrida_fallan(run_dir, tmp_path, edit):
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    before = json.dumps(summary["corpus"], sort_keys=True)
+    COUNT_EDITS[edit](summary)
+    assert json.dumps(summary["corpus"], sort_keys=True) != before
+    _rewrite_summary(copy, summary)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert _check(audit, "manifest_hashes")["status"] == "passed"
+    check = _check(audit, "corpus_accounting")
+    assert check["status"] == "failed" and check["problems"], check
+    assert audit["status"] == "failed" and audit["confirmatory"] is False
+
+
+def test_archivos_de_entrada_que_no_son_los_candidatos_fallan(run_dir, tmp_path):
+    copy = _copy(run_dir, tmp_path)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["inputs"]["files"] = manifest["inputs"]["files"][:-1]
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    check = _check(porobra_audit.audit_run_directory(copy), "corpus_accounting")
+    assert check["status"] == "failed" and check["problems"], check
+
+
+def test_conteo_del_preregistro_escrito_en_el_resumen_no_hace_confirmatoria_la_corrida(run_dir, tmp_path, monkeypatch):
+    # Ronda 1 de revisión: config, comando y árbol como los de la sección A y el resumen
+    # con 69/100 candidatos; la corrida sólo tiene los archivos del corpus de prueba.
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS", {"MuseTrainer": 69, "SymbTr": 100})
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    summary["corpus"]["n_by_source_candidates"] = {"MuseTrainer": 69, "SymbTr": 100}
+    _rewrite_summary(copy, summary)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert audit["status"] == "failed" and audit["confirmatory"] is False
+    assert porobra_audit.main([str(copy), "--require-preregistered"]) == 1
+
+
+def _rewrite_manifest(copy: Path, manifest: dict) -> None:
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_aggregate_sha256_que_no_es_el_de_los_archivos_falla(run_dir, tmp_path):
+    # Ronda 2 de revisión: un hash de entrada editado con el agregado sin recalcular pasaba.
+    copy = _copy(run_dir, tmp_path)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest["inputs"]["files"][0]["sha256"] = "0" * 64
+    _rewrite_manifest(copy, manifest)
+    check = _check(porobra_audit.audit_run_directory(copy), "manifest_hashes")
+    assert check["status"] == "failed" and check["aggregate_mismatch"] is True, check
+
+
+def test_el_aggregate_sha256_de_la_corrida_cuadra(run_dir):
+    check = _check(porobra_audit.audit_run_directory(run_dir), "manifest_hashes")
+    assert check["status"] == "passed" and check["aggregate_mismatch"] is False
+
+
+def test_las_listas_del_corpus_llevan_fuente_y_ruta_relativa(run_dir):
+    corpus = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))["corpus"]
+    for key in ("failures", "duplicates", "excluded_short_works"):
+        assert corpus[key], key
+        for item in corpus[key]:
+            assert item["source"] == "MuseTrainer" and "/" not in item["relative_path"], item
+    assert [item["relative_path"] for item in corpus["failures"]] == ["rota.musicxml"]
+    assert [item["relative_path"] for item in corpus["duplicates"]] == ["b_copia.musicxml"]
+    assert [item["relative_path"] for item in corpus["excluded_short_works"]] == ["corta.musicxml"]
+
+
+def _padded(run_dir: Path, tmp_path: Path, monkeypatch) -> Path:
+    """Ronda 2 de revisión: entradas de relleno, contadas como «cortas» sin entrar en la lista.
+
+    El agregado y los conteos por fuente se rehacen coherentes con el relleno, el corpus del
+    preregistro pasa a ser el rellenado y la config es la «preregistrada».
+    """
+
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    files = manifest["inputs"]["files"]
+    files += [{"source": "SymbTr", "path": f"relleno{i}.xml", "sha256": f"{i:064x}"} for i in range(5)]
+    files.sort(key=lambda item: (item["source"], item["path"]))
+    manifest["inputs"]["aggregate_sha256"] = porobra_heldout.aggregate_sha256(files)
+    _rewrite_manifest(copy, manifest)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    corpus = summary["corpus"]
+    corpus["n_candidates"] += 5
+    corpus["n_excluded_short"] += 5
+    corpus["n_by_source_candidates"]["SymbTr"] += 5
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS", dict(corpus["n_by_source_candidates"]))
+    _rewrite_summary(copy, summary)
+    return copy
+
+
+def test_entradas_de_relleno_no_hacen_confirmatoria_la_corrida(run_dir, tmp_path, monkeypatch):
+    copy = _padded(run_dir, tmp_path, monkeypatch)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert _check(audit, "manifest_hashes")["status"] == "passed"
+    check = _check(audit, "corpus_accounting")
+    assert check["status"] == "failed", check
+    assert any("n_excluded_short" in problem for problem in check["problems"]), check
+    assert any("relleno0.xml" in problem for problem in check["problems"]), check
+    assert audit["confirmatory"] is False
+    assert porobra_audit.main([str(copy), "--require-preregistered"]) == 1
+
+
+#: Conteos que suman lo mismo que antes pero ya no son la longitud de su lista.
+LIST_COUNT_EDITS = {
+    "duplicadas_de_mas": lambda c: c.update(n_duplicates=c["n_duplicates"] + 1, n_excluded_short=c["n_excluded_short"] - 1),
+    "fallas_de_mas": lambda c: c.update(n_failures=c["n_failures"] + 1, n_duplicates=c["n_duplicates"] - 1),
+    "cortas_de_mas": lambda c: c.update(n_excluded_short=c["n_excluded_short"] + 1, n_failures=c["n_failures"] - 1),
+}
+
+
+@pytest.mark.parametrize("edit", sorted(LIST_COUNT_EDITS))
+def test_un_conteo_que_no_es_la_longitud_de_su_lista_falla(run_dir, tmp_path, edit):
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    LIST_COUNT_EDITS[edit](summary["corpus"])
+    _rewrite_summary(copy, summary)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert _check(audit, "manifest_hashes")["status"] == "passed"
+    check = _check(audit, "corpus_accounting")
+    assert check["status"] == "failed" and any("len(" in problem for problem in check["problems"]), check
+
+
+def test_una_obra_del_csv_que_no_esta_en_las_entradas_falla(run_dir, tmp_path):
+    # Ronda 2 de revisión: la ruta de la fila no era una de las entradas del manifiesto.
+    copy = _copy(run_dir, tmp_path)
+    works = porobra_audit.read_per_work(copy / "per_work.csv")
+    works.loc[0, "relative_path"] = "otra_obra.mxl"
+    _rewrite_per_work(copy, works)
+    check = _check(porobra_audit.audit_run_directory(copy), "corpus_accounting")
+    assert check["status"] == "failed" and any("otra_obra.mxl" in problem for problem in check["problems"]), check
+
+
+def test_una_entrada_que_ninguna_lista_explica_falla(run_dir, tmp_path):
+    # La entrada rota.musicxml desaparece de failures: queda sin destino.
+    copy = _copy(run_dir, tmp_path)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    summary["corpus"]["failures"] = []
+    summary["corpus"]["n_failures"] = 0
+    summary["corpus"]["n_duplicates"] += 1
+    summary["corpus"]["duplicates"].append(dict(summary["corpus"]["duplicates"][0]))
+    _rewrite_summary(copy, summary)
+    check = _check(porobra_audit.audit_run_directory(copy), "corpus_accounting")
+    assert check["status"] == "failed", check
+    assert any("rota.musicxml" in problem for problem in check["problems"]), check
+    assert any("b_copia.musicxml" in problem for problem in check["problems"]), check
+
+
+# --- invariantes de cada fila de per_work.csv ----------------------------------------
+
+
+def _rewrite_rows(copy: Path, works: pd.DataFrame) -> None:
+    """Reescribe per_work.csv y el resumen recalculado desde él (los dos con su hash al día).
+
+    Así el recálculo de las cifras titulares pasa y sólo los invariantes de fila pueden
+    detectar la edición.
+    """
+
+    _rewrite_per_work(copy, works)
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    blocks = porobra_audit._jsonable(porobra.summary_blocks(
+        porobra_audit.comparison_records(porobra_audit.read_per_work(copy / "per_work.csv")),
+        bootstrap_samples=summary["comparisons"]["bootstrap_samples"], seed=summary["comparisons"]["seed"],
+        exposed_work_ids=summary["test_exposure"]["exposed_work_ids"]))
+    summary.update(blocks)
+    _rewrite_summary(copy, summary)
+
+
+def _below_chains(works: pd.DataFrame) -> None:
+    works["hdp_test_nll"] = [min(json.loads(value)) - 0.1 for value in works["hdp_test_nll_by_chain"]]
+
+
+def _above_chains(works: pd.DataFrame) -> None:
+    works.loc[0, "hdp_test_nll"] = max(json.loads(works.loc[0, "hdp_test_nll_by_chain"])) + 0.1
+
+
+def _flip_converged(works: pd.DataFrame) -> None:
+    works["hdp_converged"] = ~works["hdp_converged"].astype(bool)
+
+
+def _k_at_top(works: pd.DataFrame) -> None:
+    works.loc[0, "finite_k"] = max(json.loads(works.loc[0, "finite_k_grid"]))
+    works["finite_k_hit_limit"] = False
+
+
+def _hit_limit_below_top(works: pd.DataFrame) -> None:
+    works.loc[0, "finite_k"] = min(json.loads(works.loc[0, "finite_k_grid"]))
+    works.loc[0, "finite_k_hit_limit"] = True
+
+
+#: Ediciones de per_work.csv con el resumen recalculado: cada una contradice su propia fila.
+ROW_EDITS = {
+    "convergencia_contra_rhat": (_flip_converged, "hdp_converged"),
+    "ensamble_bajo_las_cadenas": (_below_chains, "hdp_test_nll"),
+    "ensamble_sobre_las_cadenas": (_above_chains, "hdp_test_nll"),
+    "k_en_el_techo_sin_marca": (_k_at_top, "finite_k_hit_limit"),
+    "marca_de_techo_sin_k_en_el_techo": (_hit_limit_below_top, "finite_k_hit_limit"),
+}
+
+
+@pytest.mark.parametrize("edit", sorted(ROW_EDITS))
+def test_una_fila_que_se_contradice_falla(run_dir, tmp_path, edit):
+    copy = _copy(run_dir, tmp_path)
+    works = porobra_audit.read_per_work(copy / "per_work.csv")
+    change, field = ROW_EDITS[edit]
+    change(works)
+    _rewrite_rows(copy, works)
+    audit = porobra_audit.audit_run_directory(copy)
+    assert _check(audit, "manifest_hashes")["status"] == "passed"
+    assert _check(audit, "headline_recompute")["status"] == "passed", _check(audit, "headline_recompute")
+    check = _check(audit, "per_work_invariants")
+    assert check["status"] == "failed" and check["problems"], check
+    assert all(field in problem for problem in check["problems"]), check
+    assert audit["status"] == "failed" and audit["confirmatory"] is False
+
+
+def test_las_filas_de_la_corrida_cumplen_sus_invariantes(run_dir):
+    check = _check(porobra_audit.audit_run_directory(run_dir), "per_work_invariants")
+    assert check["status"] == "passed" and check["problems"] == [], check
+
+
+@pytest.mark.parametrize("flag,key,value", [("--symbtr-n", "symbtr_n", 1), ("--musetrainer-limit", "musetrainer_limit", 4)])
+def test_config_del_corpus_que_contradice_los_archivos_no_pasa(run_dir, tmp_path, monkeypatch, flag, key, value):
+    # Config, comando y «preregistro» dicen el mismo tope; los archivos de la corrida lo superan.
+    copy = _as_preregistered(run_dir, tmp_path, monkeypatch, **{key: value})
+    monkeypatch.setitem(porobra_audit.PREREGISTERED_CONFIG, key, value)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    command = manifest["command"]
+    if flag in command:
+        command[command.index(flag) + 1] = str(value)
+    else:
+        command += [flag, str(value)]
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    audit = porobra_audit.audit_run_directory(copy)
+    deviations = audit["preregistration"]["deviations"]
+    assert set(deviations) == {"corpus_config"}, deviations
+    assert key in deviations["corpus_config"]["observed"]
+    assert audit["confirmatory"] is False
+
+
+def test_una_obra_que_falla_deja_la_auditoria_en_failed(corpus, tmp_path, monkeypatch):  # noqa: F811
+    original = porobra_heldout.porobra.analyze_work
+
+    def fragile(work_id, tokens, config):
+        if work_id.endswith("a.musicxml"):
+            raise ValueError("fallo simulado")
+        return original(work_id, tokens, config)
+
+    monkeypatch.setattr(porobra_heldout.porobra, "analyze_work", fragile)
+    run_dir = _run(corpus, tmp_path, "--n-workers", "1")
+    audit = json.loads((run_dir / porobra_audit.AUDIT_FILENAME).read_text(encoding="utf-8"))
+    assert audit["status"] == "failed"
+    assert _check(audit, "analysis_failures")["work_ids"] == ["MuseTrainer:a.musicxml"]
+    assert _check(audit, "corpus_accounting")["status"] == "passed"
+
+
+# --- obras con la prueba expuesta ----------------------------------------------------
+
+
+def test_las_obras_expuestas_son_las_siete_de_las_aclaraciones_8_y_9():
+    timing_runs = (
+        "MuseTrainer:12_Variations_of_Twinkle_Twinkle_Little_Star.mxl",
+        "MuseTrainer:Arabesque_L._66_No._1_in_E_Major.mxl",
+        "MuseTrainer:Ave_Maria_D839_-_Schubert_-_Solo_Piano_Arrg..mxl",
+        "MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl",
+        "MuseTrainer:Bach_Toccata_and_Fugue_in_D_Minor_Piano_solo.mxl",
+    )
+    # La Aclaración 8 (9117caf) registra las seis: las cinco de las corridas de tiempos de
+    # la Aclaración 7 y Passacaglia, cuya NLL de prueba calculó e imprimió la revisión 1.4.
+    assert porobra.TEST_EXPOSED_WORK_IDS == timing_runs + ("MuseTrainer:Bella_Ciao.mxl", "MuseTrainer:Passacaglia.mxl")
+    # Aclaración 9: el Minueto dejó de estar «sin leerse».
+    assert "sin leerse" not in porobra.TEST_EXPOSED_WORKS["MuseTrainer:Bach_Minuet_in_G_Major_BWV_Anh._114.mxl"]
+    assert set(porobra.TEST_EXPOSED_WORKS) == set(porobra.TEST_EXPOSED_WORK_IDS)
+    assert porobra.TEST_EXPOSED_WORKS["MuseTrainer:Bella_Ciao.mxl"].startswith("Aclaración 9")
+    others = [work for work in porobra.TEST_EXPOSED_WORK_IDS if work != "MuseTrainer:Bella_Ciao.mxl"]
+    assert all(porobra.TEST_EXPOSED_WORKS[work].startswith("Aclaración 8") for work in others)
+    assert all("Aclaración 7" in porobra.TEST_EXPOSED_WORKS[work] for work in timing_runs)
+    assert "Aclaración 7" not in porobra.TEST_EXPOSED_WORKS["MuseTrainer:Passacaglia.mxl"]
+    assert "ff9f998" in porobra.TEST_EXPOSED_WORKS["MuseTrainer:Arabesque_L._66_No._1_in_E_Major.mxl"]
+    for text in (porobra.TEST_EXPOSURE_NOTE, *porobra.TEST_EXPOSED_WORKS.values()):
+        assert "propuesta" not in text and "pendiente" not in text, text
+
+
+def _rows(n: int) -> list[dict]:
+    return [{"work_id": f"w{i}", "n_test": 10, "hdp_test_nll": 1.0 + 0.01 * i, "finite_test_nll": 1.2,
+             "bigram_test_nll": 1.3, "unigram_test_nll": 1.4, "hdp_converged": True} for i in range(n)]
+
+
+def test_compare_hdp_excluye_las_obras_indicadas():
+    rows = _rows(12)
+    result = porobra.compare_hdp(rows, bootstrap_samples=100, exclude_work_ids=("w0", "w1"))
+    assert result["n_works"] == 10 and result["excluded_work_ids"] == ["w0", "w1"]
+    assert all("w0" not in c["canonical_work_ids"] for c in result["comparisons"])
+    assert porobra.compare_hdp(rows, bootstrap_samples=100)["excluded_work_ids"] == []
+
+
+def test_el_resumen_divulga_la_exposicion_y_repite_sin_esas_obras(corpus, tmp_path, monkeypatch):  # noqa: F811
+    exposed = {"MuseTrainer:a.musicxml": "motivo a", "MuseTrainer:no_esta.mxl": "motivo b"}
+    monkeypatch.setattr(porobra, "TEST_EXPOSED_WORKS", exposed)
+    monkeypatch.setattr(porobra, "TEST_EXPOSED_WORK_IDS", tuple(exposed))
+    run_dir = _run(corpus, tmp_path, "--n-workers", "1")
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    exposure = summary["test_exposure"]
+    assert exposure["exposed_work_ids"] == ["MuseTrainer:a.musicxml", "MuseTrainer:no_esta.mxl"]
+    assert exposure["exposed_works"] == exposed
+    assert exposure["exposed_in_run"] == ["MuseTrainer:a.musicxml"]
+    # La Aclaración 8 registra la exposición y el análisis adicional sin esas obras, que no decide.
+    assert "Aclaración 8" in exposure["note"] and "no decide" in exposure["note"]
+    assert "propuesta" not in exposure["note"] and "pendiente" not in exposure["note"]
+    without = summary["sensitivity_without_exposed"]
+    assert without["n_works"] == summary["comparisons"]["n_works"] - 1
+    assert without["excluded_work_ids"] == ["MuseTrainer:a.musicxml"]
+    assert summary["preregistro"].endswith("Enmiendas 3, 5, 6 y 11, Aclaraciones 7, 8, 9 y 10")
+    assert "Aclaración 8" in without["rule"] and "no decide" in without["rule"]
+    # El recálculo de la auditoría usa la misma lista de obras expuestas.
+    audit = json.loads((run_dir / porobra_audit.AUDIT_FILENAME).read_text(encoding="utf-8"))
+    assert _check(audit, "headline_recompute")["status"] == "passed", audit

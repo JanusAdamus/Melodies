@@ -1,0 +1,731 @@
+"""Auditoría de sólo lectura de una corrida de ``src.cli.porobra_heldout`` (tareas 1.5 y 2.5).
+
+Las auditorías de ``Comparacion/`` entienden los archivos del runner PDMX; esta revisa los
+de la corrida por obra: archivos presentes, hashes del manifiesto (y su ``aggregate_sha256``
+recalculado desde ``inputs.files``), denominadores de la partición 80/20, conteo del corpus
+(por fuente, contra los archivos de entrada del manifiesto y la columna ``source`` del CSV;
+cada conteo, la longitud de su lista; cada entrada, un solo destino: fila del CSV, falla,
+duplicado o corta), unicidad de obras y huellas de contenido, invariantes de cada fila
+(convergencia según R-hat, NLL del ensamble dentro del rango por cadena, marca de techo de la
+rejilla del finito), recálculo de las cifras titulares desde ``per_work.csv`` y obras que
+fallaron en el análisis. Eso es la integridad: ``status`` es ``passed``, ``incomplete`` o ``failed``.
+
+El recálculo repite desde ``per_work.csv``, con la semilla y los remuestreos del resumen,
+todo lo que decide (IC de Holm por pasos, rechazo, veredicto, IC del 95 %, ponderada por
+tokens, Wilcoxon con Holm, sensibilidades y convergencia) y exige igualdad, con tolerancia
+de redondeo sólo entre floats (otro sistema operativo cambia el último bit de un p).
+
+Aparte, ``preregistration`` dice si la corrida es la de la sección A del preregistro
+(``preregistered``) o no (``not_preregistered``, con ``deviations``: qué cambió): la
+configuración del manifiesto, la regla de ampliar la rejilla del finito, la identidad del
+corpus (no sólo su conteo), el destino de cada candidato (analizada, duplicado, corta o falla;
+un error de entorno que tumba la extracción no cambia las obras en silencio), el árbol limpio
+y el mismo commit de principio a fin;
+``manifest["config"]`` se compara además con la que sale del argv real
+(``manifest["command"]``) y con lo que dice el resumen. Un smoke íntegro sale ``passed`` y
+``not_preregistered``. ``confirmatory`` sólo es verdadero si la corrida es íntegra,
+preregistrada y la principal (truncamiento 20): la de truncamiento 40 es la sensibilidad
+(``run_kind``, que con alguna desviación es ``no_preregistrada``).
+
+    python -m src.analysis.porobra_audit <directorio de la corrida> [--require-preregistered]
+
+imprime el JSON y sale con 0 si la corrida es íntegra (con ``--require-preregistered``, si
+además es la corrida confirmatoria). El CLI escribe el mismo resultado en
+``porobra_audit.json`` al terminar; esta función nunca escribe.
+"""
+
+from __future__ import annotations
+
+import argparse
+from collections import Counter
+import hashlib
+import json
+import math
+from pathlib import Path
+import sys
+import unicodedata
+
+import numpy as np
+import pandas as pd
+
+from src.analysis import porobra
+
+AUDIT_FILENAME = "porobra_audit.json"
+REQUIRED_ARTIFACTS = ("per_work.csv", "summary.json", "manifest.json")
+TOLERANCE = 1e-9
+_STATUS_ORDER = {"passed": 0, "incomplete": 1, "failed": 2}
+
+#: Sección A del preregistro (más Enmiendas 3 y 5), tal como la escribe ``manifest["config"]``.
+#: Las claves de implementación que el preregistro no fija (techo de la rejilla, inicios de
+#: Baum-Welch, trayectorias FFBS, semillas, hiperparámetros del HDP fuera de η) quedan con
+#: los valores registrados en la bitácora: cambiarlas cambia la corrida.
+PREREGISTERED_CONFIG = {
+    "max_states": 512,
+    "finite_seed": 0,
+    "finite_restarts": 5,
+    "n_occupancy_samples": 200,
+    "hdp_hyperparameters": {"alpha": 8.0, "alpha0": 4.0, "gamma": 2.0, "kappa": 0.0},
+    "stats_seed": 0,
+    "alphas": [0.1, 0.5, 1.0],
+    "k_grid": [2, 4, 8, 16, 32],
+    "finite_alphas": [0.1, 0.5, 1.0],
+    "etas": [1.0, 3.0, 6.0],
+    "n_chains": 4,
+    "chain_seeds": [1, 2, 3, 4],
+    "n_iters": 400,
+    "burn_in": 200,
+    "occupancy_threshold": 0.02,
+    "rhat_threshold": 1.1,
+    "min_events": 20,
+    "extraction": "melody",
+    "musetrainer_limit": None,
+    "symbtr_n": 100,
+    "symbtr_seed": 7,
+    "bootstrap_samples": 10_000,
+}
+#: Claves del manifiesto que no cambian los resultados. Cualquier otra clave que no esté en
+#: PREREGISTERED_CONFIG (ni sea «truncation») es una desviación: un flag nuevo no pasa solo.
+UNCHECKED_CONFIG_KEYS = ("n_workers",)
+#: Truncamiento del HDP: 20 es la corrida principal; 40, la sensibilidad preregistrada.
+PREREGISTERED_TRUNCATION = {20: "principal", 40: "sensibilidad_truncamiento_40"}
+NOT_PREREGISTERED_KIND = "no_preregistrada"
+RUN_KIND_NOTES = {
+    # Se escribe antes de auditar: sólo la auditoría dice si es la confirmatoria (``confirmatory``).
+    "principal": "candidata a confirmatoria de la sección A, truncamiento 20",
+    "sensibilidad_truncamiento_40": (
+        "sensibilidad preregistrada del truncamiento (40); no es la corrida confirmatoria y no decide"
+    ),
+    NOT_PREREGISTERED_KIND: "se aparta de la sección A (ver deviations); no es la corrida confirmatoria y no decide",
+}
+#: Candidatos por fuente: MuseTrainer completo (69 partituras) y la muestra de 100 de SymbTr.
+PREREGISTERED_CORPUS = {"MuseTrainer": 69, "SymbTr": 100}
+#: Identidad de esos candidatos por fuente (``source_aggregates``, con ``input_sha256``, que no
+#: depende del fin de línea): external/library 9128876, scores/; external/SymbTr 246bbe3,
+#: MusicXML/, muestra de 100 con semilla 7. Los clones son los de los hashes de la bitácora.
+PREREGISTERED_CORPUS_SHA256 = {
+    "MuseTrainer": "8792921b1cd5e7ea7933eaa4ebf5805063c8015694c266ad8f052bfc00d48b9b",
+    "SymbTr": "1c94ee649d9444d8fd15a34d5e894a33a3089c37230cd9bcaf7cf9ae3c9357a4",
+}
+#: Destino de esos candidatos cuando la extracción funciona (``corpus_outcomes``). Lo que no
+#: está aquí se analiza: la huella cubre los 169. Fijado en Windows y en WSL con esos clones.
+PREREGISTERED_CORPUS_OUTCOMES = {
+    "falla_extraccion": ("MuseTrainer:Mozart_-_Piano_Sonata_No._16_-_Allegro.mxl",),
+    "duplicado": (
+        "MuseTrainer:Minuet_in_G_Major_Bach.mxl",
+        "MuseTrainer:Passacaglia2.mxl",
+        "MuseTrainer:Prlude_Opus_28_No._4_in_E_Minor__Chopin.mxl",
+    ),
+    "corta": ("MuseTrainer:G_Minor_Bach.mxl",),
+}
+PREREGISTERED_CORPUS_OUTCOMES_SHA256 = "37c49b2f69f5ad90ad16a0db152c331f71b7b5d077ae12275dc5bd0c35655d34"
+#: Huella de (obra, content_fingerprint) de las obras analizadas (``corpus_content_sha256``): fija
+#: los eventos extraídos, no sólo el destino. Un entorno que cambia la extracción sin tumbarla
+#: queda como desviación ``corpus_content``. Calculada con esos clones en Windows (164 obras).
+PREREGISTERED_CORPUS_CONTENT_SHA256 = "78d8b106019971b3b2d8e8b58a71f93311d7370dceb59eab2ead5ed6807991fa"
+#: Tolerancia del recálculo: otra libm cambia el último bit de un float sin cambiar nada más.
+RECOMPUTE_REL_TOLERANCE = 1e-12
+#: Junto a cero: una resta que da 0 en un sistema y 1e-17 en otro.
+RECOMPUTE_ABS_TOLERANCE = 1e-12
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _status(ok: bool) -> str:
+    return "passed" if ok else "failed"
+
+
+def _manifest_hashes(root: Path, manifest: dict) -> dict:
+    outputs = manifest.get("outputs") or {}
+    mismatched = sorted(name for name, digest in outputs.items() if not (root / name).exists() or _sha256(root / name) != digest)
+    missing_fields = [key for key in ("commit", "config", "inputs", "versions") if not manifest.get(key)]
+    inputs = manifest.get("inputs") or {}
+    unhashed_inputs = [item.get("path") for item in inputs.get("files", []) if len(str(item.get("sha256", ""))) != 64]
+    from src.cli import porobra_heldout  # el CLI importa este módulo: import diferido
+
+    # El agregado se recalcula desde los registros: un hash de entrada editado no pasa.
+    try:
+        aggregate_mismatch = porobra_heldout.aggregate_sha256(inputs.get("files") or []) != inputs.get("aggregate_sha256")
+    except (KeyError, TypeError):
+        aggregate_mismatch = True
+    ok = bool(outputs) and not mismatched and not missing_fields and not unhashed_inputs and not aggregate_mismatch
+    return {"name": "manifest_hashes", "status": _status(ok), "mismatched": mismatched,
+            "missing_fields": missing_fields, "unhashed_inputs": unhashed_inputs, "aggregate_mismatch": aggregate_mismatch}
+
+
+def _is_count(value) -> bool:
+    """Un entero de verdad: ``int()`` truncaría 2.5, y 3.0, "3" o True pasarían por 3 o 1."""
+
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _denominators(works: pd.DataFrame, summary: dict) -> dict:
+    declared = summary.get("corpus", {}).get("min_events", porobra.MIN_EVENTS)
+    min_events = declared if _is_count(declared) else porobra.MIN_EVENTS
+    bad = []
+    for row in works.itertuples():
+        expected = porobra.contiguous_split(int(row.n_events), min_events=1)
+        observed = (row.n_fit, row.n_test, row.n_inner_train, row.n_validation)
+        nll = [float(getattr(row, f"{model}_test_nll")) for model in porobra.MODELS]
+        if (row.n_events < min_events or observed != (expected.n_fit, expected.n_test, expected.n_inner_train, expected.n_validation)
+                or not all(math.isfinite(value) and value > 0 for value in nll)):
+            bad.append(str(row.work_id))
+    return {"name": "denominators", "status": _status(not bad and _is_count(declared)), "bad_work_ids": bad,
+            "min_events": declared}
+
+
+def _input_counts(manifest: dict) -> dict:
+    """Archivos de entrada del manifiesto por fuente: los candidatos que leyó la corrida."""
+
+    counts: dict[str, int] = {}
+    for item in (manifest.get("inputs") or {}).get("files", []):
+        counts[str(item.get("source"))] = counts.get(str(item.get("source")), 0) + 1
+    return counts
+
+
+def _source_counts(corpus: dict, key: str, problems: list[str]) -> dict[str, int]:
+    """Los conteos por fuente que son enteros; lo que no lo es queda en ``problems``."""
+
+    counts = corpus.get(key, {})
+    if not isinstance(counts, dict):
+        problems.append(f"{key} no es un diccionario de conteos: {counts!r}")
+        return {}
+    for source, value in counts.items():
+        if not _is_count(value):
+            problems.append(f"{key}[{source!r}] no es un conteo entero: {value!r}")
+    return {str(source): value for source, value in counts.items() if _is_count(value)}
+
+
+def _corpus_accounting(works: pd.DataFrame, summary: dict, manifest: dict) -> dict:
+    """El conteo del corpus cuadra consigo mismo, con los archivos de entrada y con el CSV.
+
+    ``n_by_source_candidates`` decide el tamaño del corpus del preregistro: debe sumar
+    ``n_candidates`` y ser, fuente por fuente, el de ``manifest["inputs"]["files"]``;
+    ``n_by_source_analyzed``, el de la columna ``source`` de ``per_work.csv``. Un conteo que
+    no es entero es un problema, no una excepción.
+    """
+
+    corpus = summary.get("corpus", {})
+    parts = ("n_failures", "n_duplicates", "n_excluded_short", "n_analysis_failures", "n_analyzed")
+    problems = [f"{key} no es un conteo entero: {corpus[key]!r}"
+                for key in ("n_candidates", *parts) if key in corpus and not _is_count(corpus[key])]
+    accounted = sum(value for value in (corpus.get(key, 0) for key in parts) if _is_count(value))
+    candidates = _source_counts(corpus, "n_by_source_candidates", problems)
+    analyzed = _source_counts(corpus, "n_by_source_analyzed", problems)
+    inputs = _input_counts(manifest)
+    in_csv = {str(key): int(value) for key, value in works["source"].astype(str).value_counts().items()}
+    if corpus.get("n_candidates") != accounted:
+        problems.append(f"n_candidates {corpus.get('n_candidates')!r} y las partes suman {accounted}")
+    if sum(candidates.values()) != corpus.get("n_candidates"):
+        problems.append(f"n_by_source_candidates suma {sum(candidates.values())}, n_candidates es {corpus.get('n_candidates')!r}")
+    if candidates != inputs:
+        problems.append(f"n_by_source_candidates {candidates!r} y manifest inputs.files por fuente {inputs!r}")
+    if not corpus.get("n_analyzed") == len(works) == sum(analyzed.values()):
+        problems.append(f"n_analyzed {corpus.get('n_analyzed')!r}, {len(works)} filas, n_by_source_analyzed suma {sum(analyzed.values())}")
+    if analyzed != in_csv:
+        problems.append(f"n_by_source_analyzed {analyzed!r} y per_work.csv por fuente {in_csv!r}")
+    for count, items in (("n_failures", "failures"), ("n_duplicates", "duplicates"), ("n_excluded_short", "excluded_short_works")):
+        if corpus.get(count) != len(corpus.get(items) or []):
+            problems.append(f"{count} {corpus.get(count)!r} y len({items}) {len(corpus.get(items) or [])}")
+    if corpus.get("n_analysis_failures") != len(summary.get("analysis_failures") or []):
+        problems.append(f"n_analysis_failures {corpus.get('n_analysis_failures')!r} y "
+                        f"len(analysis_failures) {len(summary.get('analysis_failures') or [])}")
+    problems += _input_destinations(works, summary, manifest)
+    return {"name": "corpus_accounting", "status": _status(not problems), "n_candidates": corpus.get("n_candidates"),
+            "accounted": accounted, "n_rows": len(works), "n_by_source_inputs": inputs, "problems": problems}
+
+
+def _input_destinations(works: pd.DataFrame, summary: dict, manifest: dict) -> list[str]:
+    """Cada entrada del manifiesto tiene un solo destino y cada destino, su entrada.
+
+    Destinos, con la clave ``fuente:ruta relativa`` (la de ``work_id``): las filas de
+    ``per_work.csv``, ``analysis_failures`` y las listas ``failures``, ``duplicates`` y
+    ``excluded_short_works`` del corpus. Rellenar ``inputs.files`` con entradas que ninguna
+    lista explica, o una fila cuya ruta no es una entrada, no pasa.
+    """
+
+    entries = Counter(f"{item.get('source')}:{item.get('path')}" for item in (manifest.get("inputs") or {}).get("files", []))
+    corpus = summary.get("corpus", {})
+    destinations = Counter(f"{source}:{path}" for source, path in zip(works["source"].astype(str), works["relative_path"].astype(str)))
+    destinations.update(str(item.get("work_id")) for item in summary.get("analysis_failures") or [])
+    for key in ("failures", "duplicates", "excluded_short_works"):
+        destinations.update(f"{item.get('source')}:{item.get('relative_path')}" for item in corpus.get(key) or [])
+    problems = [f"entrada repetida en inputs.files: {key}" for key, n in sorted(entries.items()) if n > 1]
+    problems += [f"entrada sin destino (per_work.csv, analysis_failures, failures, duplicates o excluded_short_works): {key}"
+                 for key in sorted(set(entries) - set(destinations))]
+    problems += [f"destino sin entrada en inputs.files o repetido: {key}"
+                 for key, n in sorted(destinations.items()) if n > entries.get(key, 0)]
+    keys = works["source"].astype(str) + ":" + works["relative_path"].astype(str)
+    problems += [f"work_id {work!r} no es fuente:relative_path ({key!r})"
+                 for work, key in zip(works["work_id"].astype(str), keys) if work != key]
+    return problems
+
+
+def _per_work_invariants(works: pd.DataFrame, summary: dict) -> dict:
+    """Lo que cada fila de ``per_work.csv`` dice de sí misma debe cuadrar.
+
+    - ``hdp_converged`` es ``hdp_rhat < rhat_threshold`` (decide la convergencia y la
+      sensibilidad de la Enmienda 6).
+    - ``hdp_test_nll``, la predictiva del ensamble de cadenas con las mismas muestras por
+      cadena, es −log de la media de las predictivas por cadena: queda dentro del rango de
+      ``hdp_test_nll_by_chain``.
+    - ``finite_k_hit_limit`` sólo si ``finite_k`` es el máximo de ``finite_k_grid``: la
+      rejilla crece mientras se elija el máximo y sólo se detiene en el techo.
+    """
+
+    threshold = float((summary.get("convergence") or {}).get("rhat_threshold", porobra.RHAT_THRESHOLD))
+    problems = []
+    for row in works.to_dict("records"):
+        work = str(row.get("work_id"))
+        try:
+            rhat = float(row["hdp_rhat"])
+            converged = math.isfinite(rhat) and rhat < threshold
+            if _as_bool(row["hdp_converged"]) != converged:
+                problems.append(f"{work}: hdp_converged {row['hdp_converged']!r} con hdp_rhat {rhat!r} (umbral {threshold})")
+            by_chain = [float(value) for value in json.loads(row["hdp_test_nll_by_chain"])]
+            nll = float(row["hdp_test_nll"])
+            if not by_chain or not min(by_chain) - TOLERANCE <= nll <= max(by_chain) + TOLERANCE:
+                problems.append(f"{work}: hdp_test_nll fuera del rango de hdp_test_nll_by_chain")
+            grid = [int(value) for value in json.loads(row["finite_k_grid"])]
+            hit_limit, at_top = _as_bool(row["finite_k_hit_limit"]), int(row["finite_k"]) == max(grid)
+            if hit_limit != at_top:
+                problems.append(f"{work}: finite_k_hit_limit {hit_limit} con finite_k {int(row['finite_k'])} "
+                                f"y máximo de finite_k_grid {max(grid)}")
+        except (KeyError, TypeError, ValueError) as error:
+            problems.append(f"{work}: fila ilegible para hdp_converged, hdp_test_nll y finite_k_hit_limit "
+                            f"({type(error).__name__}: {error})")
+    return {"name": "per_work_invariants", "status": _status(not problems), "rhat_threshold": threshold, "problems": problems}
+
+
+def _corpus_config_deviation(manifest: dict, config: dict) -> dict | None:
+    """Los topes del corpus en ``manifest["config"]`` frente a los archivos de entrada.
+
+    Sin ``symbtr_n`` no hay SymbTr; con él, entre 1 y ``symbtr_n`` (menos sólo si la carpeta
+    tiene menos). Con ``musetrainer_limit``, a lo sumo ese número de MuseTrainer.
+    """
+
+    inputs = _input_counts(manifest)
+    observed, expected = {}, {}
+    symbtr, symbtr_n = inputs.get("SymbTr", 0), config.get("symbtr_n")
+    if (symbtr != 0) if symbtr_n is None else not (isinstance(symbtr_n, int) and 1 <= symbtr <= symbtr_n):
+        observed["symbtr_n"], expected["symbtr_n"] = symbtr_n, f"compatible con {symbtr} archivos SymbTr"
+    musetrainer, limit = inputs.get("MuseTrainer", 0), config.get("musetrainer_limit")
+    if limit is not None and not (isinstance(limit, int) and musetrainer <= limit):
+        observed["musetrainer_limit"], expected["musetrainer_limit"] = limit, f"compatible con {musetrainer} archivos MuseTrainer"
+    return {"observed": observed, "expected": expected} if observed else None
+
+
+def _canonicalization(works: pd.DataFrame) -> dict:
+    duplicated_ids = sorted(works.loc[works["work_id"].duplicated(keep=False), "work_id"].astype(str).unique())
+    fingerprints = works["content_fingerprint"].fillna("").astype(str)
+    duplicated = sorted(works.loc[fingerprints.duplicated(keep=False) & (fingerprints != ""), "work_id"].astype(str))
+    empty = sorted(works.loc[fingerprints == "", "work_id"].astype(str))
+    ok = not duplicated_ids and not duplicated and not empty
+    return {"name": "canonicalization", "status": _status(ok), "duplicated_work_ids": duplicated_ids,
+            "duplicated_fingerprint_work_ids": duplicated, "missing_fingerprint_work_ids": empty}
+
+
+def read_per_work(path: str | Path) -> pd.DataFrame:
+    """Lee ``per_work.csv`` con los floats exactos que escribió el CLI."""
+
+    return pd.read_csv(path, float_precision="round_trip")
+
+
+def _as_bool(value) -> bool:
+    return str(value).strip().lower() in ("true", "1", "1.0")
+
+
+def comparison_records(works: pd.DataFrame) -> list[dict]:
+    """Filas por obra con lo que usan las comparaciones y la convergencia."""
+
+    records = []
+    for row in works.to_dict("records"):
+        record = {"work_id": str(row["work_id"]), "n_test": int(row["n_test"]), "hdp_converged": _as_bool(row["hdp_converged"]),
+                  "finite_k_hit_limit": _as_bool(row.get("finite_k_hit_limit", False))}
+        for model in porobra.MODELS:
+            value = row.get(f"{model}_test_nll")
+            record[f"{model}_test_nll"] = float(value) if value is not None else math.nan
+        records.append(record)
+    return records
+
+
+def _jsonable(value):
+    """Lo mismo que el CLI hace antes de escribir el resumen (NaN e infinitos a None)."""
+
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        return float(value) if math.isfinite(value) else None
+    return value
+
+
+def _differences(observed, expected, path: str = "") -> list[str]:
+    """Rutas donde dos estructuras JSON difieren.
+
+    Igualdad exacta (y del mismo tipo) en todo salvo entre dos floats, que admiten
+    ``RECOMPUTE_*_TOLERANCE``: re-auditar en otro sistema operativo no es una alteración.
+    """
+
+    if isinstance(expected, dict) and isinstance(observed, dict):
+        found = []
+        for key in sorted(set(expected) | set(observed)):
+            where = f"{path}.{key}" if path else str(key)
+            if key not in observed:
+                found.append(f"{where}: falta en el resumen")
+            elif key not in expected:
+                found.append(f"{where}: sobra en el resumen")
+            else:
+                found += _differences(observed[key], expected[key], where)
+        return found
+    if isinstance(expected, list) and isinstance(observed, list) and len(expected) == len(observed):
+        return [item for index, (a, b) in enumerate(zip(observed, expected)) for item in _differences(a, b, f"{path}[{index}]")]
+    if type(observed) is float and type(expected) is float:
+        same = math.isclose(observed, expected, rel_tol=RECOMPUTE_REL_TOLERANCE, abs_tol=RECOMPUTE_ABS_TOLERANCE)
+    else:
+        same = type(observed) is type(expected) and observed == expected
+    return [] if same else [f"{path}: {observed!r} en el resumen, {expected!r} al recalcular"]
+
+
+def _recompute(works: pd.DataFrame, summary: dict) -> dict:
+    """Recalcula desde ``per_work.csv`` todo lo que decide o se reporta con la regla.
+
+    Comparación principal, las dos sensibilidades y la convergencia, con los remuestreos y la
+    semilla del resumen: IC bootstrap por obra con Holm por pasos, rechazo, veredicto,
+    bootstrap_95_ci, ponderada por tokens, Wilcoxon con Holm, fraction_converged y
+    not_converged_work_ids. Deben coincidir (``_differences``): un resumen editado no pasa. La lista de
+    obras expuestas del resumen debe ser la de ``porobra.TEST_EXPOSED_WORK_IDS`` y
+    ``exposed_in_run``, su intersección con las obras de la corrida.
+    """
+
+    blocks = ("convergence", "comparisons", "sensitivity_converged_only", "sensitivity_without_exposed",
+              "sensitivity_without_k_ceiling")
+    mismatches = [f"{key}: falta en el resumen" for key in blocks if not isinstance(summary.get(key), dict)]
+    exposure = summary.get("test_exposure") or {}
+    exposed = list(exposure.get("exposed_work_ids") or [])
+    if exposed != list(porobra.TEST_EXPOSED_WORK_IDS):
+        mismatches.append(f"test_exposure.exposed_work_ids: {exposed!r} contra {list(porobra.TEST_EXPOSED_WORK_IDS)!r}")
+    in_run = sorted(set(exposed) & set(works["work_id"].astype(str)))
+    if exposure.get("exposed_in_run") != in_run:
+        mismatches.append(f"test_exposure.exposed_in_run: {exposure.get('exposed_in_run')!r} contra {in_run!r}")
+    if not mismatches:
+        main = summary["comparisons"]
+        try:
+            expected = _jsonable(porobra.summary_blocks(
+                comparison_records(works), bootstrap_samples=int(main["bootstrap_samples"]), seed=int(main["seed"]),
+                exposed_work_ids=exposed))
+        except (KeyError, TypeError, ValueError) as error:
+            mismatches.append(f"no se pudo recalcular: {type(error).__name__}: {error}")
+        else:
+            for key in blocks:
+                mismatches += _differences(summary[key], expected[key], key)
+    return {"name": "headline_recompute", "status": _status(not mismatches), "recomputed_blocks": list(blocks),
+            "mismatches": mismatches}
+
+
+def _same(observed, expected) -> bool:
+    if isinstance(expected, list):
+        return isinstance(observed, (list, tuple)) and len(observed) == len(expected) and all(
+            _same(a, b) for a, b in zip(observed, expected))
+    if isinstance(expected, float):
+        return isinstance(observed, (int, float)) and not isinstance(observed, bool) and abs(observed - expected) <= TOLERANCE
+    return observed == expected
+
+
+def _same_dict(observed, expected: dict) -> bool:
+    return isinstance(observed, dict) and set(observed) == set(expected) and all(
+        _same(observed[key], value) for key, value in expected.items())
+
+
+def _command_config(manifest: dict) -> dict:
+    """Vuelve a derivar la configuración del argv real guardado en ``manifest["command"]``."""
+
+    from src.cli import porobra_heldout  # el CLI importa este módulo: import diferido
+
+    command = manifest.get("command")
+    if not isinstance(command, list) or command[1:3] != ["-m", "src.cli.porobra_heldout"]:
+        raise ValueError(f"no es un comando de src.cli.porobra_heldout: {command!r}")
+    parser = porobra_heldout.build_parser()
+    parser.exit_on_error = False
+    try:
+        args = parser.parse_args([str(item) for item in command[3:]])
+    except (argparse.ArgumentError, SystemExit) as error:
+        raise ValueError(f"argv ilegible: {error}") from None
+    return porobra_heldout.manifest_config(args)
+
+
+def _command_deviation(manifest: dict, config: dict) -> dict | None:
+    try:
+        derived = _jsonable(_command_config(manifest))
+    except ValueError as error:
+        return {"observed": str(error), "expected": "argv de src.cli.porobra_heldout que reproduzca manifest['config']"}
+    keys = sorted(key for key in set(derived) | set(config) if not _same(_listify(config.get(key)), _listify(derived.get(key))))
+    if not keys:
+        return None
+    return {"observed": {key: derived.get(key) for key in keys}, "expected": {key: config.get(key) for key in keys}}
+
+
+def _listify(value):
+    if isinstance(value, tuple):
+        return [_listify(item) for item in value]
+    if isinstance(value, list):
+        return [_listify(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _listify(item) for key, item in value.items()}
+    return value
+
+
+def _summary_deviation(summary: dict, config: dict) -> dict | None:
+    """Lo que el resumen dice de la configuración debe ser lo del manifiesto."""
+
+    observed, expected = {}, {}
+    for key in ("comparisons", "sensitivity_converged_only", "sensitivity_without_exposed", "sensitivity_without_k_ceiling"):
+        block = summary.get(key) or {}
+        for field, config_key in (("bootstrap_samples", "bootstrap_samples"), ("seed", "stats_seed")):
+            if block.get(field) != config.get(config_key):
+                observed[f"{key}.{field}"] = block.get(field)
+                expected[f"{key}.{field}"] = config.get(config_key)
+    corpus = summary.get("corpus") or {}
+    if corpus.get("min_events") != config.get("min_events"):
+        observed["corpus.min_events"], expected["corpus.min_events"] = corpus.get("min_events"), config.get("min_events")
+    if corpus.get("extraction") != config.get("extraction"):
+        observed["corpus.extraction"], expected["corpus.extraction"] = corpus.get("extraction"), config.get("extraction")
+    rhat = (summary.get("convergence") or {}).get("rhat_threshold")
+    if not _same(rhat, config.get("rhat_threshold")):
+        observed["convergence.rhat_threshold"], expected["convergence.rhat_threshold"] = rhat, config.get("rhat_threshold")
+    truncation = (summary.get("run") or {}).get("truncation")
+    if truncation != config.get("truncation"):
+        observed["run.truncation"], expected["run.truncation"] = truncation, config.get("truncation")
+    return {"observed": observed, "expected": expected} if observed else None
+
+
+def source_aggregates(manifest: dict) -> dict[str, str | None]:
+    """``aggregate_sha256`` de ``inputs.files`` por fuente; ``None`` si un registro es ilegible."""
+
+    from src.cli import porobra_heldout  # el CLI importa este módulo: import diferido
+
+    files = (manifest.get("inputs") or {}).get("files") or []
+    aggregates: dict[str, str | None] = {}
+    for source in sorted({str(item.get("source")) for item in files}):
+        try:
+            aggregates[source] = porobra_heldout.aggregate_sha256([item for item in files if str(item.get("source")) == source])
+        except (KeyError, TypeError):
+            aggregates[source] = None
+    return aggregates
+
+
+def _corpus_identity_deviation(manifest: dict) -> dict | None:
+    """Los candidatos son los fijados en el preregistro, no sólo cuántos son."""
+
+    observed = source_aggregates(manifest)
+    keys = sorted(key for key in set(observed) | set(PREREGISTERED_CORPUS_SHA256)
+                  if observed.get(key) != PREREGISTERED_CORPUS_SHA256.get(key))
+    if not keys:
+        return None
+    return {"observed": {key: observed.get(key) for key in keys},
+            "expected": {key: PREREGISTERED_CORPUS_SHA256.get(key) for key in keys}}
+
+
+def _outcome_key(key) -> str:
+    """``fuente:ruta``, con la ruta en POSIX y NFC: la misma clave en Windows y en Linux."""
+
+    return unicodedata.normalize("NFC", str(key).replace("\\", "/"))
+
+
+def corpus_outcomes(works: pd.DataFrame, summary: dict) -> dict[str, list[str]]:
+    """Qué fue de cada candidato: destino → claves ordenadas. Sólo nombres, ninguna cifra."""
+
+    corpus = summary.get("corpus") or {}
+    lists = {"falla_extraccion": "failures", "duplicado": "duplicates", "corta": "excluded_short_works"}
+    outcomes = {
+        "analizada": [_outcome_key(f"{source}:{path}") for source, path in zip(works["source"], works["relative_path"])],
+        "falla_analisis": [_outcome_key(item.get("work_id")) for item in summary.get("analysis_failures") or []],
+        **{outcome: [_outcome_key(f"{item.get('source')}:{item.get('relative_path')}") for item in corpus.get(key) or []]
+           for outcome, key in lists.items()},
+    }
+    return {outcome: sorted(keys) for outcome, keys in outcomes.items()}
+
+
+def corpus_outcomes_sha256(outcomes: dict) -> str:
+    """Huella de los destinos: no depende del orden de las claves ni de los destinos vacíos."""
+
+    lines = sorted(f"{outcome}\t{key}\n" for outcome, keys in outcomes.items() for key in keys)
+    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+
+
+def corpus_content_sha256(works: pd.DataFrame) -> str:
+    """Huella de los eventos de las obras analizadas: ``fuente:ruta`` normalizada y su huella de contenido."""
+
+    lines = sorted(
+        f"{_outcome_key(f'{source}:{path}')}\t{fingerprint}\n"
+        for source, path, fingerprint in zip(works["source"], works["relative_path"], works["content_fingerprint"].astype(str))
+    )
+    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+
+
+def _corpus_content_deviation(works: pd.DataFrame) -> dict | None:
+    digest = corpus_content_sha256(works)
+    if digest == PREREGISTERED_CORPUS_CONTENT_SHA256:
+        return None
+    return {"observed": digest, "expected": PREREGISTERED_CORPUS_CONTENT_SHA256}
+
+
+def _corpus_outcomes_deviation(works: pd.DataFrame, summary: dict) -> dict | None:
+    """Cada candidato tuvo el destino fijado: un error de entorno no cambia en silencio las obras."""
+
+    outcomes = corpus_outcomes(works, summary)
+    digest = corpus_outcomes_sha256(outcomes)
+    if digest == PREREGISTERED_CORPUS_OUTCOMES_SHA256:
+        return None
+    expected = {key: list(PREREGISTERED_CORPUS_OUTCOMES.get(key, ())) for key in outcomes if key != "analizada"}
+    keys = [key for key in expected if outcomes[key] != expected[key]]
+    return {"observed": {"sha256": digest, **{key: outcomes[key] for key in keys}},
+            "expected": {"sha256": PREREGISTERED_CORPUS_OUTCOMES_SHA256, **{key: expected[key] for key in keys}}}
+
+
+def _provenance_deviations(manifest: dict, directory_name: str) -> dict:
+    """El árbol limpio y el mismo commit de principio a fin (decisión 3 del preregistro)."""
+
+    deviations = {}
+    commit, at_end = manifest.get("commit"), manifest.get("git_at_end") or {}
+    if at_end.get("commit") != commit:
+        deviations["commit_changed_during_run"] = {"observed": at_end.get("commit"), "expected": commit}
+    suffix = directory_name.rsplit("_", 1)[-1]
+    if not isinstance(commit, str) or suffix != commit[:7]:
+        deviations["commit_directory"] = {"observed": suffix, "expected": str(commit)[:7]}
+    if manifest.get("dirty_worktree") is not False or at_end.get("dirty_worktree") is not False:
+        deviations["dirty_worktree"] = {
+            "observed": {"al_empezar": manifest.get("dirty_worktree"), "al_terminar": at_end.get("dirty_worktree")},
+            "expected": False,
+        }
+    return deviations
+
+
+def _design_deviations(manifest: dict, summary: dict, works: pd.DataFrame, directory_name: str) -> dict:
+    """En qué se aparta la corrida de la sección A: configuración, corpus, rejilla, commit y árbol."""
+
+    config = manifest.get("config") or {}
+    candidates = summary.get("corpus", {}).get("n_by_source_candidates", {})
+    deviations = {}
+    for key, expected in PREREGISTERED_CONFIG.items():
+        observed = config.get(key)
+        if not (_same_dict(observed, expected) if isinstance(expected, dict) else _same(observed, expected)):
+            deviations[key] = {"observed": observed, "expected": expected}
+    known = set(PREREGISTERED_CONFIG) | set(UNCHECKED_CONFIG_KEYS) | {"truncation"}
+    for key in sorted(set(config) - known):
+        deviations[key] = {"observed": config[key], "expected": "clave no prevista por la sección A"}
+    # Enmienda 11: la rejilla termina en K = 512 y llegar a ese tope no es desviación; las obras se
+    # marcan y hay una sensibilidad sin ellas. El techo mismo lo fija max_states en PREREGISTERED_CONFIG.
+    truncation = config.get("truncation")
+    if truncation not in PREREGISTERED_TRUNCATION:
+        deviations["truncation"] = {"observed": truncation, "expected": sorted(PREREGISTERED_TRUNCATION)}
+    if candidates != PREREGISTERED_CORPUS:
+        deviations["corpus_size"] = {"observed": candidates, "expected": dict(PREREGISTERED_CORPUS)}
+    identity = _corpus_identity_deviation(manifest)
+    if identity:
+        deviations["corpus_identity"] = identity
+    outcomes = _corpus_outcomes_deviation(works, summary)
+    if outcomes:
+        deviations["corpus_outcomes"] = outcomes
+    content = _corpus_content_deviation(works)
+    if content:
+        deviations["corpus_content"] = content
+    return {**deviations, **_provenance_deviations(manifest, directory_name)}
+
+
+def _run_kind(truncation, deviations: dict) -> str:
+    return NOT_PREREGISTERED_KIND if deviations else PREREGISTERED_TRUNCATION[truncation]
+
+
+def describe_run(manifest: dict, summary: dict, works: pd.DataFrame, directory_name: str) -> dict:
+    """El bloque ``run`` de ``summary.json``: qué es esta corrida, para quien sólo lea ese archivo.
+
+    ``summary`` necesita ``corpus`` y ``analysis_failures``.
+    """
+
+    deviations = _design_deviations(manifest, summary, works, directory_name)
+    run_kind = _run_kind((manifest.get("config") or {}).get("truncation"), deviations)
+    return {
+        "truncation": (manifest.get("config") or {}).get("truncation"),
+        "run_kind": run_kind,
+        "note": RUN_KIND_NOTES[run_kind],
+        "deviations": sorted(deviations),
+        "decides": "Sus veredictos deciden sólo si porobra_audit.json dice confirmatory: true.",
+        "extraction_failures": [
+            _outcome_key(f"{item.get('source')}:{item.get('relative_path')}")
+            for item in (summary.get("corpus") or {}).get("failures") or []
+        ],
+    }
+
+
+def _preregistration(manifest: dict, summary: dict, works: pd.DataFrame, directory_name: str) -> dict:
+    config = manifest.get("config") or {}
+    deviations = {}
+    command = _command_deviation(manifest, config)
+    if command:
+        deviations["command"] = command
+    in_summary = _summary_deviation(summary, config)
+    if in_summary:
+        deviations["summary"] = in_summary
+    corpus_config = _corpus_config_deviation(manifest, config)
+    if corpus_config:
+        deviations["corpus_config"] = corpus_config
+    deviations.update(_design_deviations(manifest, summary, works, directory_name))
+    run_kind =_run_kind(config.get("truncation"), deviations)
+    return {"status": "not_preregistered" if deviations else "preregistered",
+            "run_kind": run_kind, "run_kind_note": RUN_KIND_NOTES[run_kind], "deviations": deviations}
+
+
+def audit_run_directory(run_dir: str | Path) -> dict:
+    root = Path(run_dir)
+    missing = [name for name in REQUIRED_ARTIFACTS if not (root / name).exists()]
+    checks = [{"name": "artifacts_present", "status": "incomplete" if missing else "passed", "missing": missing}]
+    preregistration = {"status": "unknown", "run_kind": None, "run_kind_note": None, "deviations": {}}
+    if not missing:
+        works = read_per_work(root / "per_work.csv")
+        summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
+        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        failures = [str(item.get("work_id")) for item in summary.get("analysis_failures", [])]
+        checks += [
+            _manifest_hashes(root, manifest),
+            _denominators(works, summary),
+            _corpus_accounting(works, summary, manifest),
+            _canonicalization(works),
+            _per_work_invariants(works, summary),
+            _recompute(works, summary),
+            {"name": "analysis_failures", "status": _status(not failures), "work_ids": failures},
+        ]
+        preregistration = _preregistration(manifest, summary, works, root.resolve().name)
+    status = max((check["status"] for check in checks), key=_STATUS_ORDER.__getitem__)
+    return {
+        "status": status,
+        "preregistration": preregistration,
+        # Sólo la corrida principal (truncamiento 20) es la confirmatoria; la de 40 es la
+        # sensibilidad preregistrada y --require-preregistered no la acepta.
+        "confirmatory": (status == "passed" and preregistration["status"] == "preregistered"
+                         and preregistration["run_kind"] == "principal"),
+        "run_dir": root.as_posix(),
+        "checks": checks,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Audita una corrida de src.cli.porobra_heldout (sólo lectura).")
+    parser.add_argument("run_dir")
+    parser.add_argument("--require-preregistered", action="store_true",
+                        help="Sale con 0 sólo si además es la corrida confirmatoria de la sección A "
+                             "(truncamiento 20; la de 40 es la sensibilidad).")
+    args = parser.parse_args(argv)
+    audit = audit_run_directory(args.run_dir)
+    print(json.dumps(audit, indent=2, ensure_ascii=False))
+    return 0 if (audit["confirmatory"] if args.require_preregistered else audit["status"] == "passed") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

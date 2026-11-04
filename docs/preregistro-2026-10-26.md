@@ -139,3 +139,163 @@ seleccionado entre sus corridas en frac = 1.0 (tolerancia relativa de 10 %).
 Dos modelos cuyos intervalos se traslapan empatan en costo. El tiempo de
 evaluación se reporta y no decide. Implementado como
 `PARETO_TIME_RELATIVE_TOLERANCE = 0.10` en `Comparacion/runner.py`.
+
+## Enmienda 5, 2026-10-28 (antes de ver resultados de las corridas corregidas)
+
+Decisión de Adrián. Agrega a la sección A un hiperparámetro del HMM finito que el
+texto original no fijaba.
+
+**Suavizado de Dirichlet del HMM finito (análisis por obra).** Las emisiones y las
+transiciones de Baum-Welch se estiman con un seudoconteo α elegido por obra en la
+validación interna de {0.1, 0.5, 1}, junto con K (selección conjunta de (K, α) por
+menor NLL de validación), con el mismo procedimiento que el α de los n-gramas y el η
+del HDP-HMM; se reporta el α elegido por obra. La regla de ampliar la rejilla de K
+cuando se elige el máximo se mantiene.
+Motivo, medido en una corrida de tiempos de 5 obras de MuseTrainer (sólo cifras de
+validación): con el seudoconteo fijo de 0.001, una altura de la validación ausente
+en el ajuste (Minueto BWV Anh. 114: do#, 4 de 21 eventos) recibe probabilidad casi
+nula, la NLL de validación de K ∈ {2, 4, 8, 16} queda en 3.96–4.70 nats (peor que el
+uniforme, 2.485) y la rejilla se amplía hasta K = 512 con 80 eventos de ajuste,
+porque los estados sin uso funcionan como suavizado. Con α ∈ {0.1, 0.5, 1} se elige
+K entre 8 y 16 con NLL de 2.35–2.40. La comparación PDMX (sección B) no cambia.
+
+## Enmienda 6, 2026-10-28 (antes de ver resultados de prueba de las corridas corregidas)
+
+Decisión de Adrián, tras consultar un consejo de revisión con tres posturas
+independientes. Sustituye la regla de convergencia de la sección A.
+
+**Motivo (sólo datos de ajuste y validación).** En una corrida de tiempos con las
+primeras 5 obras de MuseTrainer por orden de archivo, el R-hat de log L entre las
+4 cadenas fue 2.33, 1.44, 1.27, 1.48 y 1.71 con 400/200 (0 de 5 convergen) y 3.60,
+1.19, 1.06, 1.23 y 3.50 con 800/400 (1 de 5): la contingencia preregistrada
+(duplicar iteraciones) se probó y no resuelve el problema. Un diagnóstico por cadena
+sobre la validación interna (800/400, η = 3) mostró que en las obras largas las
+cadenas quedan en modos distintos que cambian la predictiva (rango entre cadenas de
+la NLL de validación: 0.056 nats/nota en la obra de 1387 notas y 0.188 en la de
+1725; R-hat de la NLL predictiva por muestra 1.33 y 1.73), mientras que en la de
+657 notas predicen casi igual (rango 0.013, R-hat 1.06). Excluir obras por la
+convergencia del HDP filtraría la comparación con una propiedad de uno solo de los
+modelos.
+
+**Regla nueva.**
+1. La métrica principal de A incluye todas las obras analizadas; ninguna se
+   excluye por la convergencia del HDP-HMM. El HDP-HMM se evalúa como
+   procedimiento: 4 cadenas (semillas 1–4), 400 iteraciones, burn-in 200, y la
+   predictiva promediada en probabilidad sobre las muestras tras burn-in de las 4
+   cadenas («ensamble de cadenas»), como el HMM finito se evalúa con el mejor de sus
+   inicios de Baum-Welch.
+2. Por obra se reportan: el R-hat de log L, el R-hat de la NLL predictiva por
+   muestra, la NLL de prueba de cada cadena por separado y su rango. En el resumen
+   se reporta la fracción de obras con R-hat de log L < 1.1.
+3. Análisis de sensibilidad (no decide): la regla original, es decir, la misma
+   comparación restringida a las obras con R-hat de log L < 1.1.
+4. El número de estados del HDP-HMM y su variación se reportan por cadena, con la
+   advertencia de que, sin convergencia entre cadenas, no son una media posterior.
+   La tesis no interpreta esos números como inferencia bayesiana sobre K.
+5. La regla de decisión de A y el estimando de la Aclaración 2 no cambian.
+
+## Aclaración 7, 2026-10-28 (exposición a datos de prueba antes de las Enmiendas 5 y 6)
+
+Para que el lector juzgue las Enmiendas 5 y 6: las corridas de tiempos que las
+motivaron (5 primeras obras de MuseTrainer por orden de archivo, 400/200 y 800/400)
+calcularon y guardaron la NLL de prueba de esas 5 obras en sus archivos de salida,
+fuera del repo. Para decidir las enmiendas se miraron sólo las columnas de
+validación, R-hat, η elegido, estados y tiempos, y el diagnóstico por cadena usó
+sólo el ajuste interno y la validación; la NLL de prueba de esas obras no se
+inspeccionó. Esas 5 obras forman parte del corpus de la corrida definitiva. Antes,
+el smoke de PDMX (50 partituras, 7 obras de prueba, 3 épocas, carpeta
+`artifacts/Comparacion/smoke_pdmx50_20261028_984dfde`) sí mostró NLL de prueba de la
+sección B; no motivó ningún cambio a la sección B.
+
+## Aclaración 8, 2026-10-29 (corrige la Aclaración 7)
+
+La frase de la Aclaración 7 «la NLL de prueba de esas obras no se inspeccionó» no
+es exacta. Exposición a cifras de prueba de la sección A antes de la corrida
+confirmatoria, según la bitácora y los reportes de la tarea 1.4:
+- Arabesque L. 66 n.º 1: cifras de prueba escritas en la bitácora de la rama
+  `feat/porobra-heldout` (ff9f998, antes de la Enmienda 5; 700acba, después de la 6).
+- Passacaglia: NLL de prueba calculada e impresa por la revisión de la tarea 1.4.
+- 12 Variaciones de Twinkle Twinkle, Arabesque y Ave Maria D 839: NLL de prueba de
+  un smoke de 40 iteraciones leídas en un reporte el 2026-10-28, después de
+  registrar las Enmiendas 5 y 6.
+- Minueto BWV Anh. 114 y Tocata BWV 565: NLL de prueba calculada en las corridas de
+  tiempos (Aclaración 7), sin leerse.
+Las Enmiendas 5 y 6 se motivaron con cifras de validación, R-hat y tiempos. Las seis
+obras siguen en la métrica principal. Como análisis adicional, que no decide, el
+resumen repite la comparación sin ellas e indica si algún veredicto cambia.
+
+## Aclaración 9, 2026-11-01 (completa la Aclaración 8)
+
+La lista de la Aclaración 8 quedó incompleta. El 2026-10-29, una revisión de la
+tarea 1.4 corrió un smoke de 30 iteraciones (burn-in 15) con el Minueto BWV Anh. 114,
+Bella Ciao y Passacaglia y leyó cifras derivadas de sus partes de prueba: los
+veredictos de la comparación principal y de las sensibilidades, el extremo inferior
+del IC de decisión (≈ 0.128), la diferencia ponderada por tokens (≈ 0.413) y la p de
+Wilcoxon (0.25). Esas cifras también aparecen en el registro de esa revisión.
+
+Por tanto, Bella Ciao se agrega a la lista y la indicación «sin leerse» del Minueto
+ya no vale. Son 7 obras expuestas. Las siete siguen en la métrica principal, y el
+análisis adicional sin ellas, que no decide, las excluye a todas. Ninguna regla de
+decisión cambia. Desde esta fecha, las pruebas y revisiones previas a la corrida
+confirmatoria no leen cifras de prueba de obras reales.
+
+## Aclaración 10, 2026-11-01 (exposición accidental después de la Aclaración 9)
+
+El 2026-11-01, una revisión de la tarea 1.4 hizo una búsqueda de texto en sus
+archivos temporales que, por accidente, mostró 3 líneas con un mismo valor numérico
+del `summary.json` de una corrida real corta (20 iteraciones, burn-in 10, 2 cadenas;
+commit 5f52884). El revisor lo reportó sin repetir el valor, no sabe a qué campo
+corresponde y dice no haberlo interpretado ni usado. Pudo ser una cifra derivada de
+las partes de prueba, así que se trata como tal. No se volvió a abrir para averiguarlo.
+
+Esa corrida usó sólo 3 obras: 12 Variaciones de Twinkle Twinkle, Arabesque L. 66 n.º 1
+y Ave Maria D 839, ya expuestas según la Aclaración 8. Siguen siendo 7 obras expuestas;
+ninguna regla de decisión cambia. Desde entonces, las revisiones tampoco hacen
+búsquedas de texto sobre las salidas de las corridas.
+
+## Enmienda 11, 2026-11-03 (antes de la corrida confirmatoria)
+
+Decisión de Adrián. Completa la sección A. Sus motivos usan sólo datos de ajuste y
+validación y simulaciones.
+
+**Tope de la rejilla del HMM finito.** La ampliación de la rejilla de K termina en
+K = 512. Elegir ese K ya no obliga a ampliar y no es una desviación. Motivo: en 3 de
+las 63 obras de hasta 300 eventos (Happy Birthday, Preludio Op. 28 n.º 4 y evcara
+sofyan, de 25 a 81 eventos), la NLL de validación baja casi siempre al crecer K y se
+acerca a la del modelo uniforme (ln 12 ≈ 2.4849), así que la regla de ampliar no
+terminaría con ningún techo. Esas obras siguen en la métrica principal y se marcan; su
+K no se interpreta como número de estados. Un análisis de sensibilidad, que no decide,
+repite la comparación sin ellas (`sensitivity_without_k_ceiling`).
+
+**Mínimo de obras para un veredicto (sección A).** Un bloque con menos de 10 obras
+reporta sus cifras, sin veredicto (`no_evaluable`), y eso no cuenta como cambio de
+veredicto. Por debajo de 30 obras el bloque lleva un aviso. Motivo: en una simulación
+de la revisión, con diferencias sin efecto real, sale algún veredicto en 88 % de los
+casos con 2 obras, 35 % con 5, 15 % con 10 y 8 % con 30. Es el mismo mínimo de 10 que la
+Enmienda 1 usa en la sección B. La regla de decisión no cambia.
+
+**Valores de implementación que el texto no fijaba.** Se fijan los que usa el código:
+5 inicios de Baum-Welch por K (semillas 0 a 4), 200 muestras para contar estados en el
+finito, semilla 0 de la estadística e hiperparámetros del HDP-HMM α = 8, α₀ = 4, γ = 2,
+κ = 0. El criterio de parada de Baum-Welch es la mejora del objetivo con previa que EM
+hace crecer, menor que 10⁻⁴.
+
+**Obras que no se pueden importar.** Una partitura que no se puede importar se excluye
+y se cuenta. Hoy es sólo Mozart, Sonata n.º 16, Allegro, por un error de importación
+(`MusicXMLImportException`). El destino esperado de los 169 candidatos queda fijado en
+el código, y cualquier diferencia es una desviación.
+
+**Dónde corre.** Por el plazo, lo que corre en CPU también se ejecuta en la computadora
+con GPU (Windows), no en la laptop Debian; esto sustituye la decisión 3. Todas las
+corridas salen de un mismo commit, que queda en cada manifiesto.
+
+## Aclaración 12, 2026-11-03 (precisa la Enmienda 11, antes de cualquier resultado)
+
+Por el plazo, la corrida principal de la sección B arrancó el 2026-11-03 desde el
+commit 9fbf714, sin esperar a que se mezclara el código final del análisis por obra.
+La frase «un mismo commit» de la Enmienda 11 se precisa así: cada corrida registra su
+commit en el manifiesto, y el código de cada sección no cambia entre sus corridas. Las
+sensibilidades y la medición de costo de la sección B salen de un commit cuyo
+`Comparacion/` y `next_token_experiment/` sean idénticos a los de 9fbf714, y eso se
+comprueba con `git diff` antes de lanzarlas. Las corridas de la sección A salen todas
+del mismo commit.

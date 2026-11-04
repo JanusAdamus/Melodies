@@ -373,6 +373,7 @@ def _apply_bootstrap_holm(
     *,
     prefix: str,
     family_alpha: float = HOLM_FAMILY_ALPHA,
+    min_paired_works: int = MIN_PAIRED_WORKS,
 ) -> None:
     """IC de Holm por pasos sobre réplicas bootstrap por obra (preregistro A y B).
 
@@ -391,14 +392,15 @@ def _apply_bootstrap_holm(
     no se rechaza) y queda «not_evaluable».  Así, faltar el n_tokens de una obra
     no encoge la familia ni afloja el α de las demás.  Lo mismo un par con menos
     de MIN_PAIRED_WORKS obras en común (Enmienda 1), que queda
-    «too_few_paired_works».
+    «too_few_paired_works».  ``min_paired_works`` cambia ese mínimo para análisis a
+    los que la Enmienda 1 no rige (sección A del preregistro).
     """
 
     eligible = {}
     for index, comparison in enumerate(comparisons):
         if index not in draws_by_index:
             comparison.update(_empty_holm(prefix))
-        elif comparison.get("n_pairs") is not None and int(comparison["n_pairs"]) < MIN_PAIRED_WORKS:
+        elif comparison.get("n_pairs") is not None and int(comparison["n_pairs"]) < min_paired_works:
             comparison.update(_empty_holm(prefix, "too_few_paired_works"))
         else:
             eligible[index] = draws_by_index[index]
@@ -478,7 +480,9 @@ _CI_USAGE = (
 )
 
 
-def _holm_family_record(comparisons: list[dict[str, object]]) -> dict[str, object]:
+def _holm_family_record(
+    comparisons: list[dict[str, object]], *, min_paired_works: int = MIN_PAIRED_WORKS
+) -> dict[str, object]:
     """Tamaño y composición de la familia de Holm, y qué pruebas no se evaluaron."""
 
     tests = [[str(item["model_a"]), str(item["model_b"])] for item in comparisons]
@@ -498,18 +502,20 @@ def _holm_family_record(comparisons: list[dict[str, object]]) -> dict[str, objec
         "tests": tests,
         "ci_usage": _CI_USAGE,
         "wilcoxon": _block(
-            lambda item: item["wilcoxon_holm_status"] == "ok", min_paired_works=MIN_PAIRED_WORKS
+            lambda item: item["wilcoxon_holm_status"] == "ok", min_paired_works=min_paired_works
         ),
         "work_mean_ci": _block(
-            lambda item: item["work_mean_holm_status"] == "ok", min_paired_works=MIN_PAIRED_WORKS
+            lambda item: item["work_mean_holm_status"] == "ok", min_paired_works=min_paired_works
         ),
         "token_weighted_ci": _block(
-            lambda item: item["token_weighted_holm_status"] == "ok", min_paired_works=MIN_PAIRED_WORKS
+            lambda item: item["token_weighted_holm_status"] == "ok", min_paired_works=min_paired_works
         ),
     }
 
 
-def _apply_holm_adjustment(comparisons: list[dict[str, object]]) -> int:
+def _apply_holm_adjustment(
+    comparisons: list[dict[str, object]], *, min_paired_works: int = MIN_PAIRED_WORKS
+) -> int:
     """Holm sobre los p de Wilcoxon; devuelve cuántas pruebas fueron evaluables.
 
     El factor usa la familia completa (todas las comparaciones): una prueba no
@@ -518,6 +524,7 @@ def _apply_holm_adjustment(comparisons: list[dict[str, object]]) -> int:
     no entra a los pasos: con 9 obras el p exacto bilateral (2/512) ya es menor que
     α/6 y aflojaría el factor de las demás.  Conserva su ``p_value`` crudo, su
     ``p_value_holm`` queda en None y su estado en «too_few_paired_works».
+    ``min_paired_works`` cambia ese mínimo (sección A, a la que la Enmienda 1 no rige).
     """
 
     valid_indices = []
@@ -528,7 +535,7 @@ def _apply_holm_adjustment(comparisons: list[dict[str, object]]) -> int:
             and math.isfinite(float(comparison["p_value"]))
         ):
             comparison["wilcoxon_holm_status"] = "not_evaluable"
-        elif comparison.get("n_pairs") is not None and int(comparison["n_pairs"]) < MIN_PAIRED_WORKS:
+        elif comparison.get("n_pairs") is not None and int(comparison["n_pairs"]) < min_paired_works:
             comparison["wilcoxon_holm_status"] = "too_few_paired_works"
         else:
             comparison["wilcoxon_holm_status"] = "ok"
