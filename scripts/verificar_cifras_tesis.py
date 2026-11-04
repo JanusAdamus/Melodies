@@ -126,7 +126,8 @@ TOLERANCIA_RECALCULO = 1e-9
 
 NUMERO = re.compile(
     r"(?<![\w.])(?<!\{,\})(?<!\\,)"
-    r"(?P<n>\d{1,3}(?:(?:\\,|\{\\,\}|~)\d{3})+(?:(?:\.|\{,\})\d+)?|\d+(?:(?:\.|\{,\})\d+)?)"
+    r"(?P<n>\d{1,3}(?:(?:\\,|\{\\,\}|~)\d{3})+(?:(?:\.|\{,\})\d+)?(?:[eE][-+]?\d+)?"
+    r"|\d+(?:(?:\.|\{,\})\d+)?(?:[eE][-+]?\d+)?|\.\d+(?:[eE][-+]?\d+)?)"
     r"(?![\w])(?!\.\d)(?!\{,\}\d)"
 )
 DIGITOS = re.compile(r"\d+(?:\.\d+)?")
@@ -167,9 +168,11 @@ RELACION = re.compile(
 )
 DIGITO_SUELTO = re.compile(r"(?<![\w.])(?<!\\,)(?<!\{,\})\d(?![\w.])(?!\{,\}\d)(?!(?:\\,|\{\\,\}|~)\d{3})")
 ENTERO = re.compile(r"(?<![\d.])\d+(?![\d.])")
+# «37x», «120ms», «2.35nats»: unidad pegada; «1.5e3» es notación científica, no una unidad
 UNIDAD_PEGADA = re.compile(
-    r"(?<![\w.])\d+(?:\.\d+)?(?P<u>x|ms|s|min|h|k|M|GB|MB|KB|TB|GiB|MiB|KiB|pt|cm|mm|em|ex|bp)(?![\w])"
+    r"(?<![\w.])(?:\d+(?:\.\d+)?|\.\d+)(?![eE][-+]?\d)(?P<u>x|ms|µs|us|ns|s|min|h|k|M|GB|MB|KB|TB|GiB|MiB|KiB|pt|cm|mm|em|ex|bp|nats?|bits?|dB|[kMG]?Hz)(?![\w])"
 )
+MENOS_TIPOGRAFICO = re.compile(r"\\(?:textminus|minus)(?![A-Za-z])\s*(?:\{\})?|\u2212|(?<!\w)\u2013(?=[\d.$\\{])")
 ENTORNOS_ECUACION = r"(?:equation|align|alignat|flalign|gather|multline|eqnarray|displaymath)\*?"
 BLOQUE_TABLA = re.compile(r"\\begin\{(tabular\*?|tabularx|tabulary|longtable\*?)\}.*?\\end\{\1\}", re.S)
 MESES = r"(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)"
@@ -235,6 +238,7 @@ class Ignorado:
 @dataclass
 class Extraccion:
     numeros: list[Numero] = field(default_factory=list)
+    citas_sin_numero: list[tuple[str, int, str]] = field(default_factory=list)  # (id, línea, valor escrito)
     ignorados: list[Ignorado] = field(default_factory=list)
     pendientes: list[str] = field(default_factory=list)
     pendientes_lineas: list[int] = field(default_factory=list)
@@ -242,6 +246,11 @@ class Extraccion:
 
 def _normalizar(raw: str) -> tuple[str, float, int]:
     text = SEPARADORES_MILES.sub("", raw).replace("{,}", ".")
+    if text.startswith("."):
+        text = "0" + text
+    if "e" in text.lower():
+        plano = format(Decimal(text), "f")
+        return plano, float(text), len(plano.split(".", 1)[1]) if "." in plano else 0
     decimals = len(text.split(".", 1)[1]) if "." in text else 0
     return text, float(text), decimals
 
@@ -274,9 +283,11 @@ class _Lienzo:
 
     def __init__(self, text: str):
         self.original = text
-        self.chars = list(text.replace("−", "-"))  # el signo menos tipográfico mide un carácter
+        text = MENOS_TIPOGRAFICO.sub(lambda m: "-" + " " * (len(m.group(0)) - 1), text)  # todas las formas del signo menos, sin mover posiciones
+        self.chars = list(text)
         self.saltos = [i for i, c in enumerate(text) if c == "\n"]
         self.resultado = Extraccion()
+        self.citas_escritas: list[tuple[str, int, int, str]] = []
 
     @property
     def texto(self) -> str:
@@ -311,6 +322,7 @@ def _citas(lienzo: _Lienzo) -> list[tuple[int, int, str]]:
         if value_end is None:
             continue
         cita = text[match.end() + 1 : id_end - 1].strip()
+        lienzo.citas_escritas.append((cita, value_start, value_end, text[value_start + 1 : value_end - 1].strip()))
         lienzo.borrar(match.start(), value_start + 1, "argumento_estructural")
         lienzo.borrar(value_end - 1, value_end, None)
         spans.append((value_start, value_end, cita))
@@ -504,10 +516,17 @@ def _autor_en_bib(segmento: str, anio: str, bib: dict[int, set[str]]) -> bool:
 
 def _negativo(text: str, start: int) -> bool:
     index = start - 1
-    while index >= 0 and text[index] in " $~{}":
-        index -= 1
+    while index >= 0:
+        if text[index] in " $~{}":
+            index -= 1
+        elif text[index] in ",;!" and index > 0 and text[index - 1] == "\\":  # espacio fino \, \; \!
+            index -= 2
+        else:
+            break
     if index < 0 or text[index] != "-":
         return False
+    if index > 0 and text[index - 1] == "-":  # «--0.050»: el doble guion es un menos
+        index -= 1
     before = index - 1
     while before >= 0 and text[before] in "${":
         before -= 1
@@ -599,6 +618,9 @@ def extraer_numeros(tex: str, bib: dict[int, set[str]] | None = None) -> Extracc
         resultado.numeros.append(Numero(texto, valor, decimales, lienzo.linea(match.start()), porcentaje,
                                         _negativo(text, match.start()), cita, match.start()))
     resultado.numeros.sort(key=lambda n: n.pos)
+    for cita, inicio, fin, escrito in lienzo.citas_escritas:
+        if not any(inicio <= n.pos < fin for n in resultado.numeros):
+            resultado.citas_sin_numero.append((cita, lienzo.linea(inicio), escrito))
     return resultado
 
 
@@ -636,6 +658,7 @@ class Fuentes:
     tablas: dict[ClaveTabla, list[str]] = field(default_factory=dict)  # (corrida, tabla) → textos con signo, en orden
     textos_tabla: dict[ClaveTabla, str | None] = field(default_factory=dict)  # (corrida, tabla) → .tex del generador
     procedencias: list[tuple[Path, dict]] = field(default_factory=list)
+    corrida_de: dict[int, str | None] = field(default_factory=dict)  # id(cifra) → corrida de su procedencia
     duplicados: list[str] = field(default_factory=list)
 
     def agregar_texto(self, texto: str, etiqueta: str) -> None:
@@ -651,6 +674,18 @@ class Fuentes:
             return self.textos[numero.con_signo]
         if numero.porcentaje:
             return self.por_cien.get(Decimal(numero.con_signo))
+        return None
+
+    def conoce(self, cita: str) -> bool:
+        return cita in self.calificados or cita in self.ids or cita in self.lineas_reporte
+
+    def corrida_de_cita(self, cita: str) -> str | None:
+        """Corrida a la que apunta una cita (calificada, o un id de una sola corrida); ``None`` si no se sabe."""
+
+        if cita in self.calificados:
+            return cita.split("/", 1)[0]
+        if len(self.ids.get(cita, [])) == 1:
+            return self.corrida_de.get(id(self.ids[cita][0]))
         return None
 
     def citar(self, numero: Numero) -> tuple[str | None, str | None]:
@@ -695,6 +730,7 @@ def cargar_fuentes(procedencias: Iterable[Path], reportes: Iterable[Path]) -> Fu
                     fuentes.duplicados.append(entry["id"])
                 vistos.add((corrida, entry["id"]))
                 fuentes.ids.setdefault(entry["id"], []).append(entry)
+                fuentes.corrida_de[id(entry)] = corrida
                 if corrida:
                     fuentes.calificados[f"{corrida}/{entry['id']}"] = entry
         fuentes.tablas[(corrida, table)] = [str(e["texto"]) for e in data.get("cifras", [])]
@@ -913,10 +949,34 @@ def _expandir(paths: Sequence[Path] | None) -> list[Path]:
     return out
 
 
+def corridas_que_no_deciden(resumenes: Iterable[Path], procedencias: Iterable[Path]) -> set[str]:
+    """Nombres de las corridas con ``decide`` falso en algún ``generador_resumen.json`` (los dados, o el que está junto
+    a una procedencia)."""
+
+    rutas: list[Path] = []
+    for path in resumenes:
+        path = Path(path)
+        rutas.append(path / "generador_resumen.json" if path.is_dir() else path)
+    for path in procedencias:
+        path = Path(path)
+        rutas.append((path if path.is_dir() else path.parent) / "generador_resumen.json")
+    nombres: set[str] = set()
+    for ruta in dict.fromkeys(rutas):
+        if not ruta.is_file():
+            continue
+        for corrida in (json.loads(ruta.read_text(encoding="utf-8")).get("corridas") or {}).values():
+            if isinstance(corrida, dict) and corrida.get("decide") is False and corrida.get("directorio"):
+                nombres.add(Path(str(corrida["directorio"])).name)
+    return nombres
+
+
 def verificar(tesis: Path, *, procedencias: Sequence[Path] | None = None, reportes: Sequence[Path] | None = None,
               corridas: Sequence[Path] | None = None, exigir_cita: bool = False,
-              bibliografias: Sequence[Path] | None = None) -> dict:
+              bibliografias: Sequence[Path] | None = None, resumenes: Sequence[Path] | None = None) -> dict:
     tesis = Path(tesis)
+    if not tesis.is_dir():
+        raise FileNotFoundError(f"--tesis {tesis} no existe o no es un directorio")
+    no_deciden = corridas_que_no_deciden(resumenes or [], procedencias or [])
     fuentes = cargar_fuentes(_expandir(procedencias), reportes or [])
     bib = cargar_bib([*sorted(tesis.rglob("*.bib")), *(bibliografias or [])])
     n_cifras, n_recalculadas, errores = recalcular(fuentes, corridas or [])
@@ -926,6 +986,9 @@ def verificar(tesis: Path, *, procedencias: Sequence[Path] | None = None, report
     ignorados: Counter = Counter()
     avisos: list[str] = []
     archivos = sorted(tesis.rglob("*.tex"))
+    if not archivos:
+        errores.append({"tipo": "sin_archivos", "archivo": None, "linea": None,
+                        "texto": f"{tesis} no tiene ningún archivo .tex: no hay nada que verificar"})
     vistos: set[str] = set()
     n_numeros = 0
     for path in archivos:
@@ -934,6 +997,16 @@ def verificar(tesis: Path, *, procedencias: Sequence[Path] | None = None, report
         lines = original.splitlines()
         result = extraer_numeros(original, bib)
         ignorados.update(item.regla for item in result.ignorados)
+        for cita, linea, escrito in result.citas_sin_numero:
+            detalle = f"\\cifra{{{cita}}}{{{escrito}}} no lleva un número"
+            if exigir_cita:
+                errores.append({"tipo": "cita_sin_numero", "archivo": relative, "linea": linea, "texto": escrito, "cita": cita,
+                                "detalle": detalle})
+                if not fuentes.conoce(cita):
+                    errores.append({"tipo": "cita_desconocida", "archivo": relative, "linea": linea, "texto": escrito,
+                                    "cita": cita, "detalle": f"el id {cita} no existe en la procedencia ni en los reportes"})
+            else:
+                avisos.append(f"{relative}:{linea}: {detalle}.")
         for text, line in zip(result.pendientes, result.pendientes_lineas):
             pendientes.append({"archivo": relative, "linea": line, "texto": text})
 
@@ -987,6 +1060,15 @@ def verificar(tesis: Path, *, procedencias: Sequence[Path] | None = None, report
                                 "cita": numero.cita, "contexto": lines[numero.linea - 1].strip()[:200]})
             else:
                 emparejados.append({"archivo": relative, "linea": numero.linea, "texto": numero.con_signo, "fuente": source})
+                corrida_citada = fuentes.corrida_de_cita(numero.cita) if numero.cita is not None else None
+                if corrida_citada in no_deciden:
+                    mensaje = (f"la cita \\cifra{{{numero.cita}}} apunta a la corrida {corrida_citada}, que no decide "
+                               "(generador_resumen.json); sus cifras no sustentan una conclusión.")
+                    if exigir_cita:
+                        errores.append({"tipo": "cita_a_corrida_que_no_decide", "archivo": relative, "linea": numero.linea,
+                                        "texto": numero.con_signo, "cita": numero.cita, "detalle": mensaje})
+                    else:
+                        avisos.append(f"{relative}:{numero.linea}: {mensaje}")
     for corrida, table in sorted(set(fuentes.tablas) - vistos, key=_orden_tablas):
         if fuentes.tablas[(corrida, table)]:
             avisos.append(f"La tabla generada {table} (corrida {corrida}) no aparece en {tesis}.")
@@ -1014,6 +1096,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Dónde buscar una corrida por su nombre si ya no está en la ruta de la procedencia.")
     parser.add_argument("--bib", type=Path, nargs="*", default=[],
                         help="Bibliografías .bib además de las del directorio de la tesis (años de cita a mano).")
+    parser.add_argument("--resumen", type=Path, nargs="*", default=[],
+                        help="generador_resumen.json (o su directorio): las citas a corridas que no deciden dan aviso, o "
+                             "error con --exigir-cita. Se busca también junto a cada --procedencia.")
     parser.add_argument("--salida", type=Path, help="Escribe aquí el reporte JSON completo.")
     parser.add_argument("--exigir-cita", action="store_true",
                         help="Todo número fuera de una tabla generada debe ir en \\cifra{id}{...} (error «sin_cita»).")
@@ -1023,8 +1108,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    report = verificar(args.tesis, procedencias=args.procedencia, reportes=args.reporte, corridas=args.corridas,
-                       exigir_cita=args.exigir_cita, bibliografias=args.bib)
+    try:
+        report = verificar(args.tesis, procedencias=args.procedencia, reportes=args.reporte, corridas=args.corridas,
+                           exigir_cita=args.exigir_cita, bibliografias=args.bib, resumenes=args.resumen)
+    except FileNotFoundError as error:
+        print(f"ERROR {error}", file=sys.stderr)
+        return 2
     if args.salida:
         args.salida.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"{report['n_archivos']} archivos, {report['n_numeros']} números, {report['n_numeros_con_fuente']} con fuente, "

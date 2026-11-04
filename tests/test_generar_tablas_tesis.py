@@ -882,7 +882,200 @@ def test_a_citation_shared_by_two_runs_must_name_its_run(gen, ver, tmp_path):
     errores = ver.verificar(thesis, procedencias=[o20, o40], exigir_cita=True)["errores"]
     assert [e["tipo"] for e in errores] == ["cita_ambigua"]
     cap.write_text(f"Con el truncamiento mayor: \\cifra{{{T40}/{entry['id']}}}{{{entry['texto']}}}.\n", encoding="utf-8")
-    assert ver.verificar(thesis, procedencias=[o20, o40], exigir_cita=True)["errores"] == []
+    # la corrida de 40 no es la confirmatoria: citarla en modo estricto es el único error (generador_resumen.json)
+    errores = ver.verificar(thesis, procedencias=[o20, o40], exigir_cita=True)["errores"]
+    assert [e["tipo"] for e in errores] == ["cita_a_corrida_que_no_decide"]
     # con una sola corrida, el id sin corrida basta
     cap.write_text(f"Con el truncamiento mayor: \\cifra{{{entry['id']}}}{{{entry['texto']}}}.\n", encoding="utf-8")
-    assert ver.verificar(thesis, procedencias=[o40], exigir_cita=True)["errores"] == []
+    errores = ver.verificar(thesis, procedencias=[o40], exigir_cita=True)["errores"]
+    assert [e["tipo"] for e in errores] == ["cita_a_corrida_que_no_decide"]
+
+
+# --- Enmienda 14: tope final de K, diseño completo, procedencia, costos y Pareto ---------------
+
+
+def _resumen(out: Path) -> dict:
+    return json.loads((out / "generador_resumen.json").read_text(encoding="utf-8"))
+
+
+def _tex(out: Path, nombre: str) -> str:
+    return (out / nombre).read_text(encoding="utf-8")
+
+
+def test_no_row_at_the_final_ceiling_leaves_the_learning_curve_open(gen, tmp_path):
+    out = _pdmx(gen, tmp_path)
+    pdmx = _resumen(out)["corridas"]["pdmx"]
+    assert pdmx["filas_en_tope_k"] == 0 and pdmx["filas_finito"] == 4 and pdmx["tope_k"] == 768
+    assert pdmx["curva_aprendizaje_bloqueada"] is False and pdmx["decide"] is True
+    assert "subestimado" not in _tex(out, "pdmx_resultados.tex")
+    assert not any("tope" in aviso for aviso in _avisos(out))
+
+
+def test_rows_at_the_final_ceiling_are_counted_warned_and_block_the_learning_curve(gen, tmp_path):
+    out = _pdmx(gen, tmp_path, ceiling_hits=3)
+    pdmx = _resumen(out)["corridas"]["pdmx"]
+    assert pdmx["filas_en_tope_k"] == 3 and pdmx["filas_finito"] == 4 and pdmx["curva_aprendizaje_bloqueada"] is True
+    assert pdmx["decide"] is True  # tocar el tope no detiene ni descalifica la corrida (Enmienda 14)
+    for nombre in ("pdmx_resultados.tex", "pdmx_comparaciones.tex"):
+        tex = _tex(out, nombre)
+        assert "subestimado" in tex and "Enmienda 14" in tex and "curva de aprendizaje" in tex
+    avisos = [aviso for aviso in _avisos(out) if "tope" in aviso]
+    assert len(avisos) == 1 and "3 de 4" in avisos[0] and "subestimado" in avisos[0]
+    etiquetas = {e.split("/", 1)[1] for e in _provenance(out, "pdmx_resultados.tex")["fuentes_sha256"]}
+    assert {"results_raw.csv", "finite_hmm_grid_audit.json"} <= etiquetas
+
+
+def test_the_grid_audit_alone_also_blocks_the_curve(gen, tmp_path):
+    run = write_pdmx_run(tmp_path / "runs", ceiling_hits=2)
+    (run / "results_raw.csv").unlink()
+    out = tmp_path / "out"
+    gen.main(["--pdmx", str(run), "--salida", str(out)])
+    pdmx = _resumen(out)["corridas"]["pdmx"]
+    assert pdmx["filas_en_tope_k"] == 2 and pdmx["curva_aprendizaje_bloqueada"] is True
+
+
+def test_missing_ceiling_evidence_is_a_visible_warning_and_blocks_the_curve(gen, tmp_path):
+    out = _pdmx(gen, tmp_path, ceiling_hits=None)
+    pdmx = _resumen(out)["corridas"]["pdmx"]
+    assert pdmx["filas_en_tope_k"] is None and pdmx["curva_aprendizaje_bloqueada"] is True
+    assert any("no se pudo comprobar" in aviso and "tope" in aviso for aviso in _avisos(out))
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"finite_hmm_max_states": 384}, {"finite_hmm_final_ceiling": False}, {"finite_hmm_device": None},
+        {"finite_hmm_device": "cpu"}, {"experiment": {"preprocessing": {"extraction_mode": "legacy_all_parts"}}},
+        {"data_seeds": [1, 2]}, {"model_seeds": [1]}, {"train_fractions": [0.5, 1.0]},
+    ],
+)
+def test_main_design_pins_the_finite_hmm_options_and_extraction(gen, tmp_path, config):
+    out = _pdmx(gen, tmp_path, config=config)
+    assert _resumen(out)["corridas"]["pdmx"]["decide"] is False
+    assert "(decide)" not in _pdmx_tex(out)
+
+
+def test_main_design_without_the_new_fields_does_not_decide(gen, tmp_path):
+    run = write_pdmx_run(tmp_path / "runs")
+    _rewrite_json(run / "config.json", lambda c: [c.pop(k) for k in ("finite_hmm_max_states", "finite_hmm_final_ceiling")])
+    out = tmp_path / "out"
+    gen.main(["--pdmx", str(run), "--salida", str(out)])
+    assert _resumen(out)["corridas"]["pdmx"]["decide"] is False
+
+
+def test_design_comment_no_longer_cites_the_stopped_commit(gen):
+    texto = Path(gen.__file__).read_text(encoding="utf-8")
+    assert "9fbf714" not in texto and "9ee8dda" in texto
+
+
+@pytest.mark.parametrize(
+    "config",
+    [{"split_seed": 17, "train_fractions": [1.0]}, {"split_seed": 29, "train_fractions": [1.0]},
+     {"train_fractions": [1.0], "experiment": {"windows": {"train_stride": 128}}}],
+)
+def test_the_expected_sensitivities_do_not_decide_and_say_so(gen, tmp_path, config):
+    out = _pdmx(gen, tmp_path, config=config)
+    pdmx = _resumen(out)["corridas"]["pdmx"]
+    assert pdmx["decide"] is False and pdmx["tipo"] == "sensibilidad"
+
+
+def test_a_sensitivity_next_to_the_main_run_does_not_make_the_main_run_undecided(gen, tmp_path):
+    principal = tmp_path / "principal"
+    sens = tmp_path / "sens"
+    gen.main(["--pdmx", str(write_pdmx_run(tmp_path / "runs")), "--salida", str(principal)])
+    gen.main(["--pdmx", str(write_pdmx_run(tmp_path / "runs", name="tesis_corregida_20261104_9ee8dda_s17",
+                                           config={"split_seed": 17, "train_fractions": [1.0]})), "--salida", str(sens)])
+    assert _resumen(principal)["corridas"]["pdmx"]["decide"] is True
+    assert _resumen(principal)["corridas"]["pdmx"]["tipo"] == "principal"
+    assert _resumen(sens)["corridas"]["pdmx"]["decide"] is False
+
+
+def test_commit_comes_from_the_manifest_when_there_is_one(gen, tmp_path):
+    out = _pdmx(gen, tmp_path, manifest={"commit": "9ee8dda1"})
+    pdmx = _resumen(out)["corridas"]["pdmx"]
+    assert pdmx["commit"] == "9ee8dda1" and pdmx["commit_fuente"] == "manifest.json"
+    assert not any("commit" in aviso for aviso in _avisos(out))
+
+
+def test_commit_falls_back_to_config_or_the_execution_plan(gen, tmp_path):
+    out = _pdmx(gen, tmp_path, commit_in={"git_commit": "9ee8dda2"})
+    assert _resumen(out)["corridas"]["pdmx"]["commit"] == "9ee8dda2"
+    assert _resumen(out)["corridas"]["pdmx"]["commit_fuente"] == "config.json"
+    run = write_pdmx_run(tmp_path / "r2")
+    (run / "execution_plan.json").write_text(json.dumps({"git": {"commit": "9ee8dda3"}}), encoding="utf-8")
+    out2 = tmp_path / "out2"
+    gen.main(["--pdmx", str(run), "--salida", str(out2)])
+    assert _resumen(out2)["corridas"]["pdmx"]["commit"] == "9ee8dda3"
+    assert _resumen(out2)["corridas"]["pdmx"]["commit_fuente"] == "execution_plan.json"
+
+
+def test_a_run_without_any_commit_gets_a_visible_warning_not_a_silent_none(gen, tmp_path, capsys):
+    out = _pdmx(gen, tmp_path)
+    pdmx = _resumen(out)["corridas"]["pdmx"]
+    assert pdmx["commit"] is None and pdmx["commit_fuente"] is None
+    avisos = [aviso for aviso in _avisos(out) if "commit" in aviso]
+    assert len(avisos) == 1 and "sin commit registrado" in avisos[0]
+    assert "AVISO: pdmx: sin commit registrado" in capsys.readouterr().out
+
+
+def test_costs_not_isolated_carry_a_visible_note_and_warning(gen, tmp_path):
+    out = _pdmx(gen, tmp_path, condition="contended")
+    for nombre in ("pdmx_costos.tex", "pdmx_pareto.tex"):
+        tex = _tex(out, nombre)
+        assert "no aislad" in tex and "contended" in tex and "no son costos de ingeniería" in tex
+    assert any("costos" in aviso and "no aislad" in aviso for aviso in _avisos(out))
+    assert _resumen(out)["corridas"]["pdmx"]["costos_aislados"] is False
+
+
+def test_isolated_costs_have_no_isolation_note(gen, tmp_path):
+    out = _pdmx(gen, tmp_path)
+    assert "no aislad" not in _tex(out, "pdmx_costos.tex") and "no aislad" not in _tex(out, "pdmx_pareto.tex")
+    assert _resumen(out)["corridas"]["pdmx"]["costos_aislados"] is True
+
+
+def test_costs_without_the_isolation_columns_are_not_isolated(gen, tmp_path):
+    run = write_pdmx_run(tmp_path / "runs")
+    texto = (run / "engineering_costs.csv").read_text(encoding="utf-8").splitlines()
+    keep = [i for i, c in enumerate(texto[0].split(",")) if not c.startswith("resource_")]
+    (run / "engineering_costs.csv").write_text(
+        "\n".join(",".join(line.split(",")[i] for i in keep) for line in texto) + "\n", encoding="utf-8")
+    out = tmp_path / "out"
+    gen.main(["--pdmx", str(run), "--salida", str(out)])
+    assert "no aislad" in _tex(out, "pdmx_costos.tex") and "unknown" in _tex(out, "pdmx_costos.tex")
+
+
+def test_a_separate_isolated_cost_run_replaces_the_costs_on_request(gen, tmp_path):
+    run = write_pdmx_run(tmp_path / "runs", condition="contended")
+    costos = write_pdmx_run(tmp_path / "runs", name="costos_20261105_9ee8dda", condition="isolated")
+    out = tmp_path / "out"
+    gen.main(["--pdmx", str(run), "--costos", str(costos), "--salida", str(out)])
+    assert "no aislad" not in _tex(out, "pdmx_costos.tex")
+    assert r"costos\_20261105\_9ee8dda" in _tex(out, "pdmx_costos.tex")
+    assert r"costos\_20261105\_9ee8dda" in _tex(out, "pdmx_pareto.tex")
+    assert _resumen(out)["corridas"]["pdmx"]["corrida_de_costos"].endswith("costos_20261105_9ee8dda")
+    assert _resumen(out)["corridas"]["pdmx"]["costos_aislados"] is True
+    out2 = tmp_path / "out2"
+    gen.main(["--pdmx", str(run), "--salida", str(out2)])
+    assert "no aislad" in _tex(out2, "pdmx_costos.tex")
+
+
+def test_pareto_warns_about_excluded_models(gen, tmp_path):
+    out = _pdmx(gen, tmp_path, pareto={"excluded_models": ["hdp_hmm"]})
+    assert "HDP-HMM" in _tex(out, "pdmx_pareto.tex") and "excluid" in _tex(out, "pdmx_pareto.tex")
+    assert any("excluid" in aviso and "hdp_hmm" in aviso for aviso in _avisos(out))
+
+
+def test_pareto_not_evaluated_is_said_not_left_as_an_empty_table(gen, tmp_path):
+    out = _pdmx(gen, tmp_path, pareto={"status": "not_evaluated", "candidates": [], "frontier": []})
+    assert "no evaluada" in _tex(out, "pdmx_pareto.tex")
+    assert any("frontera de Pareto no evaluada" in aviso for aviso in _avisos(out))
+    assert _resumen(out)["corridas"]["pdmx"]["pareto_evaluado"] is False
+
+
+def test_new_notes_pass_the_verifier(gen, ver, tmp_path):
+    out = _pdmx(gen, tmp_path, ceiling_hits=2, condition="contended", pareto={"excluded_models": ["hdp_hmm"]})
+    thesis = tmp_path / "tesis" / "tablas"
+    thesis.mkdir(parents=True)
+    for nombre in ("pdmx_resultados.tex", "pdmx_costos.tex", "pdmx_pareto.tex", "pdmx_comparaciones.tex"):
+        (thesis / nombre).write_text(_tex(out, nombre), encoding="utf-8")
+    assert ver.verificar(tmp_path / "tesis", procedencias=[out], exigir_cita=True)["errores"] == []

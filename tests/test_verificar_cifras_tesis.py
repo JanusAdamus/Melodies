@@ -466,3 +466,106 @@ def test_list_cells_and_list_lengths_are_recomputed(ver, tmp_path):
     summary = tmp_path / "summary.json"
     summary.write_text(json.dumps({"test_exposure": {"exposed_in_run": ["a", "b"]}}), encoding="utf-8")
     assert ver._recalcular_cifra({"ruta": ["test_exposure", "exposed_in_run"], "operacion": "longitud"}, summary, {}) == 2
+
+
+# --- ruta de la tesis, signos, citas y números que antes escapaban ------------------------
+
+
+def test_a_missing_thesis_path_is_an_error(ver, tmp_path):
+    with pytest.raises(FileNotFoundError):
+        ver.verificar(tmp_path / "no_existe")
+    result = subprocess.run([sys.executable, str(SCRIPT), "--tesis", str(tmp_path / "no_existe")], capture_output=True, text=True)
+    assert result.returncode != 0 and "no_existe" in (result.stdout + result.stderr)
+
+
+def test_a_thesis_without_tex_files_is_an_error(ver, tmp_path):
+    thesis = tmp_path / "tesis"
+    thesis.mkdir()
+    (thesis / "notas.md").write_text("3.5\n", encoding="utf-8")
+    assert [e["tipo"] for e in ver.verificar(thesis)["errores"]] == ["sin_archivos"]
+    result = subprocess.run([sys.executable, str(SCRIPT), "--tesis", str(thesis)], capture_output=True, text=True)
+    assert result.returncode == 1
+
+
+@pytest.mark.parametrize(
+    "prefijo",
+    ["-", "\u2212", "\u2013", "--", "\\textminus ", "\\textminus{}", "$-$", "$\\minus$", "$-\\,", "\\textminus\\,"],
+)
+def test_every_minus_form_counts_as_negative(ver, prefijo):
+    if not prefijo.endswith(chr(92) + ","):  # tras «\,» un número suelto es el resto de un millar
+        assert _texts(ver, f"vale {prefijo}0.050 nats") == ["-0.050"]
+    assert _texts(ver, f"vale {prefijo}\\cifra{{t:a.b}}{{0.050}} nats") == ["-0.050"]
+
+
+def test_ranges_and_dashes_between_words_are_not_signs(ver):
+    assert _texts(ver, "entre 0.1\u20130.3 y 2--3 y 7\u20139") == ["0.1", "0.3", "2", "3", "7", "9"]
+    assert _texts(ver, "los modelos \u2013 con 5 obras \u2013 ganan") == ["5"]
+
+
+def test_a_cited_negative_in_any_form_is_checked_against_the_sign(ver, tmp_path):
+    for i, prefijo in enumerate(("--", "\u2013", "\\textminus ", "$-\\,")):
+        errores = _check(ver, tmp_path / str(i), f"Mejora {prefijo}\\cifra{{t:a.c}}{{0.061}}.\n")["errores"]
+        assert [e["tipo"] for e in errores] == ["cita_no_coincide"], prefijo
+
+
+def test_numbers_without_leading_zero_scientific_notation_and_glued_units_are_read(ver):
+    assert _texts(ver, "La NLL fue .128 y 2.35nats; luego \\num{1.5e3} y 2.5e-3") == ["0.128", "2.35", "1500", "0.0025"]
+    assert _texts(ver, "Fue -.5 y 120ms y 37x y 5M") == ["-0.5", "120", "37", "5"]
+
+
+def test_glued_units_and_leading_dot_do_not_escape_in_strict_mode(ver, tmp_path):
+    report = _check(ver, tmp_path, "La NLL fue .128 y 2.35nats; ver \\num{1.5e3}.\n", exigir_cita=True)
+    assert _errors(report) == [("sin_cita", "0.128"), ("sin_cita", "2.35"), ("sin_cita", "1500")]
+
+
+def test_a_citation_with_glued_unit_is_validated(ver, tmp_path):
+    ok = _check(ver, tmp_path / "a", "La NLL es \\cifra{t:a.b}{2.21nats}.\n", exigir_cita=True)
+    assert ok["errores"] == []
+    mal = _check(ver, tmp_path / "b", "La NLL es \\cifra{t:a.b}{2.30nats}.\n", exigir_cita=True)
+    assert [e["tipo"] for e in mal["errores"]] == ["cita_no_coincide"]
+
+
+@pytest.mark.parametrize(
+    ("texto", "tipo"),
+    [
+        ("Valor \\cifra{t:a.b}{}.", "cita_sin_numero"),
+        ("Valor \\cifra{t:a.b}{mucho}.", "cita_sin_numero"),
+        ("Valor \\cifra{no_existe}{}.", "cita_sin_numero"),
+        ("Valor \\cifra{no_existe}{mucho}.", "cita_sin_numero"),
+    ],
+)
+def test_a_cifra_without_a_number_is_an_error_in_strict_mode(ver, tmp_path, texto, tipo):
+    estricto = _check(ver, tmp_path / "e", texto + "\n", exigir_cita=True)
+    assert tipo in [e["tipo"] for e in estricto["errores"]]
+    suelto = _check(ver, tmp_path / "s", texto + "\n")
+    assert suelto["errores"] == [] and any("\\cifra" in aviso for aviso in suelto["avisos"])
+
+
+def test_a_cifra_with_an_unknown_id_is_an_error_in_strict_mode(ver, tmp_path):
+    informe = _check(ver, tmp_path, "Valor \\cifra{no_existe}{mucho}.\n", exigir_cita=True)
+    assert {"cita_desconocida", "cita_sin_numero"} == {e["tipo"] for e in informe["errores"]}
+
+
+def _resumen_de(tmp_path: Path, **corridas) -> Path:
+    return _write(tmp_path / "prov" / "generador_resumen.json", json.dumps({"corridas": {
+        clave: {"directorio": str(tmp_path / "runs" / nombre), "decide": decide} for clave, (nombre, decide) in corridas.items()}}))
+
+
+def test_a_citation_to_a_run_that_does_not_decide_is_a_warning_or_a_strict_error(ver, tmp_path):
+    resumen = _resumen_de(tmp_path, pdmx=("corrida_x", False))
+    suelto = _check(ver, tmp_path, "La NLL es \\cifra{t:a.b}{2.21}.\n", resumenes=[resumen])
+    assert suelto["errores"] == [] and any("no decide" in aviso and "corrida_x" in aviso for aviso in suelto["avisos"])
+    estricto = _check(ver, tmp_path, "La NLL es \\cifra{t:a.b}{2.21}.\n", resumenes=[resumen], exigir_cita=True)
+    assert [e["tipo"] for e in estricto["errores"]] == ["cita_a_corrida_que_no_decide"]
+
+
+def test_the_summary_next_to_the_provenance_is_found_without_being_named(ver, tmp_path):
+    _resumen_de(tmp_path, pdmx=("corrida_x", False))
+    estricto = _check(ver, tmp_path, "La NLL es \\cifra{t:a.b}{2.21}.\n", exigir_cita=True)
+    assert [e["tipo"] for e in estricto["errores"]] == ["cita_a_corrida_que_no_decide"]
+
+
+def test_a_citation_to_the_deciding_run_is_clean_even_if_a_sensitivity_exists(ver, tmp_path):
+    resumen = _resumen_de(tmp_path, pdmx=("corrida_x", True), sens=("sensibilidad_s17", False))
+    informe = _check(ver, tmp_path, "La NLL es \\cifra{t:a.b}{2.21}.\n", resumenes=[resumen], exigir_cita=True)
+    assert informe["errores"] == [] and not any("no decide" in aviso for aviso in informe["avisos"])

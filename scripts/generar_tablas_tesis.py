@@ -839,11 +839,13 @@ NOTA_REGLA_A = ("Veredicto: regla del preregistro (sección A, Aclaración 2) so
 
 
 #: Diseño de la corrida principal de la sección B en ``config.json`` (``asdict(LearningCurveConfig)``):
-#: partición con semilla 7, 3 semillas de datos × 2 de modelo, VOMM en la familia (Aclaración 2)
-#: y lo demás como la corrida original (comando de la tarea 2.2 del handoff, valores por
-#: omisión de ``Comparacion/config.py`` y de ``next_token_experiment/config.py`` en 9fbf714).
-#: Las sensibilidades de B (sólo frac = 1.0; ``--train-stride 128``; ``--split-seed`` 17 y 29)
-#: y el smoke difieren en alguno.
+#: partición con semilla 7, 3 semillas de datos × 2 de modelo, VOMM en la familia (Aclaración 2),
+#: HMM finito en la GPU con tope final de K = 768 (Enmienda 14), extracción de melodía y lo demás
+#: como la corrida vigente ``tesis_corregida_20261104_9ee8dda`` (valores por omisión de
+#: ``Comparacion/config.py`` y de ``next_token_experiment/config.py``).  Un campo distinto, o
+#: ausente, hace que la corrida no decida.  Las sensibilidades de B (sólo frac = 1.0;
+#: ``--train-stride 128``; ``--split-seed`` 17 y 29, ``SENSIBILIDADES_B``) y el smoke difieren
+#: en alguno; sus diferencias esperadas no tocan a la corrida principal.
 DISENO_B_PRINCIPAL = (
     (("split_seed",), 7),
     (("data_seeds",), [1, 2, 3]),
@@ -852,16 +854,30 @@ DISENO_B_PRINCIPAL = (
     (("test_fraction",), 0.15),
     (("validation_fraction",), 0.1),
     (("include_vomm_control",), True),
+    (("finite_hmm_max_states",), 768),
+    (("finite_hmm_final_ceiling",), True),
+    (("finite_hmm_device",), "cuda"),
+    (("experiment", "preprocessing", "extraction_mode"), "melody"),
     (("experiment", "windows", "max_context_length"), 128),
     (("experiment", "windows", "train_stride"), 64),
     (("experiment", "windows", "eval_stride"), 128),
     (("experiment", "transformer", "max_epochs"), 25),
 )
+#: sensibilidades de B (preregistro): campos que pueden diferir, con sus valores; no deciden
+SENSIBILIDADES_B = {
+    "split_seed": (17, 29),
+    "train_fractions": ([1.0],),
+    "experiment.windows.train_stride": (128,),
+}
+COMMIT_PRINCIPAL_B = "9ee8dda"
+TOPE_K_B = 768
 #: partituras consideradas (``--max-files 3000``): preparadas + excluidas en preprocessing_report.json
 PARTITURAS_B = 3000
 
 
 def _igual(actual: Any, esperado: Any) -> bool:
+    if isinstance(esperado, str):
+        return actual == esperado
     if isinstance(esperado, bool):
         return actual is esperado
     if isinstance(esperado, list):
@@ -872,20 +888,138 @@ def _igual(actual: Any, esperado: Any) -> bool:
 
 
 def _diferencias_con_la_principal_b(config: Mapping, preprocessing: Mapping) -> list[str]:
+    return [texto for _, texto in _diferencias_b(config, preprocessing)]
+
+
+def _tipo_de_corrida_b(diferencias: list[tuple[str, str]], config: Mapping) -> str:
+    """principal, sensibilidad (sólo difiere en lo que el preregistro permite) u otra."""
+
+    if not diferencias:
+        return "principal"
+    for campo, _ in diferencias:
+        permitidos = SENSIBILIDADES_B.get(campo)
+        actual: Any = config
+        for key in campo.split("."):
+            actual = actual.get(key) if isinstance(actual, Mapping) else None
+        if permitidos is None or not any(_igual(actual, valor) for valor in permitidos):
+            return "otra"
+    return "sensibilidad"
+
+
+def _diferencias_b(config: Mapping, preprocessing: Mapping) -> list[tuple[str, str]]:
     diferencias = []
     for ruta, esperado in DISENO_B_PRINCIPAL:
         actual: Any = config
         for key in ruta:
             actual = actual.get(key) if isinstance(actual, Mapping) else None
         if not _igual(actual, esperado):
-            diferencias.append(f"{'.'.join(ruta)}={actual!r} (preregistro: {esperado!r})")
+            diferencias.append((".".join(ruta), f"{'.'.join(ruta)}={actual!r} (preregistro: {esperado!r})"))
     try:
         partituras = int(preprocessing["n_prepared_pieces"]) + int(preprocessing["n_exclusions"])
     except (KeyError, TypeError, ValueError):
         partituras = None
     if partituras != PARTITURAS_B:
-        diferencias.append(f"partituras={partituras!r} (preregistro: {PARTITURAS_B})")
+        diferencias.append(("partituras", f"partituras={partituras!r} (preregistro: {PARTITURAS_B})"))
     return diferencias
+
+
+def _verdadero_csv(valor: Any) -> bool:
+    return str(valor).strip().lower() in {"true", "1", "yes", "si", "sí"}
+
+
+def _tope_final(corrida: Corrida, config: Mapping) -> dict[str, Any]:
+    """Filas del HMM finito que tocaron el tope final de K (Enmienda 14), de ``results_raw.csv`` y de
+    ``finite_hmm_grid_audit.json``.  Tocar el tope no detiene la corrida; bloquea la afirmación de la curva de aprendizaje."""
+
+    tope = config.get("finite_hmm_max_states", TOPE_K_B)
+    info: dict[str, Any] = {"tope_k": tope, "filas_en_tope_k": None, "filas_finito": None, "auditoria_rejilla": None,
+                            "avisos": []}
+    raw_path, raw_label = corrida.archivo("results_raw.csv")
+    audit_path, audit_label = corrida.archivo("finite_hmm_grid_audit.json")
+    tocadas: list[int] = []
+    if raw_path.is_file():
+        filas = [r for r in _leer_csv(raw_path) if r.get("model") == "finite_hmm"]
+        tocadas.append(sum(_verdadero_csv(r.get("hit_final_ceiling")) for r in filas))
+        info["filas_finito"] = len(filas)
+    if audit_path.is_file():
+        audit = _leer_json(audit_path)
+        info["auditoria_rejilla"] = audit.get("verdict")
+        en_maximo = audit.get("n_at_grid_maximum")
+        if isinstance(en_maximo, int) and not isinstance(en_maximo, bool) and audit.get("grid_maximum") in (None, tope):
+            tocadas.append(en_maximo)
+        if info["filas_finito"] is None and isinstance(audit.get("n_selections"), int):
+            info["filas_finito"] = audit["n_selections"]
+    if not tocadas:
+        if config.get("finite_hmm_final_ceiling") is True:
+            info["avisos"].append(f"pdmx: no se pudo comprobar el tope final de K = {tope} del HMM finito ({raw_label} y "
+                                  f"{audit_label} no existen); la afirmación de la curva de aprendizaje queda bloqueada.")
+            info["bloqueada"] = True
+        else:
+            info["bloqueada"] = False
+        return info
+    info["filas_en_tope_k"] = max(tocadas)
+    info["bloqueada"] = info["filas_en_tope_k"] > 0
+    if info["bloqueada"]:
+        total = info["filas_finito"] if info["filas_finito"] is not None else "?"
+        info["avisos"].append(
+            f"pdmx: {info['filas_en_tope_k']} de {total} filas del HMM finito tocaron el tope final K = {tope} "
+            "(Enmienda 14); ahí el HMM finito puede estar subestimado, y la afirmación de la curva de aprendizaje "
+            "queda bloqueada.")
+    return info
+
+
+def _nota_tope(info: Mapping[str, Any]) -> str | None:
+    if not info.get("bloqueada"):
+        return None
+    if info.get("filas_en_tope_k") is None:
+        return ("No se pudo comprobar el tope final de $K$ del HMM finito: no se afirma que aproveche más datos (curva de "
+                "aprendizaje bloqueada, Enmienda 14).")
+    total = info["filas_finito"] if info["filas_finito"] is not None else "?"
+    return (rf"\estructural{{{info['filas_en_tope_k']}}} de \estructural{{{total}}} filas del HMM finito tocaron el tope final "
+            rf"$K = \estructural{{{info['tope_k']}}}$ (Enmienda 14): ahí el HMM finito puede estar subestimado, y no se "
+            "afirma que aproveche más datos (curva de aprendizaje bloqueada).")
+
+
+def _commit_de_la_corrida(directorio: Path) -> tuple[str | None, str | None]:
+    """(commit, archivo) del primer archivo de la corrida que lo registra: manifest.json, config.json, execution_plan.json."""
+
+    claves = ("commit", "git_commit", "commit_hash", "git_sha")
+
+    def buscar(dato: Any, profundidad: int = 0) -> str | None:
+        if not isinstance(dato, Mapping) or profundidad > 2:
+            return None
+        for clave in claves:
+            valor = dato.get(clave)
+            if isinstance(valor, str) and valor.strip():
+                return valor.strip()
+        for valor in dato.values():
+            encontrado = buscar(valor, profundidad + 1)
+            if encontrado:
+                return encontrado
+        return None
+
+    for nombre in ("manifest.json", "config.json", "execution_plan.json"):
+        path = directorio / nombre
+        if path.is_file():
+            commit = buscar(_leer_json(path))
+            if commit:
+                return commit, nombre
+    return None, None
+
+
+def _condiciones_de_costo(costs: list[dict[str, str]]) -> tuple[bool, str]:
+    """(aislados, descripción): sólo cuenta como aislada una fila con condición ``isolated`` y ``resource_cost_usable``."""
+
+    if not costs:
+        return False, "unknown"
+    condiciones = sorted({row.get("resource_measurement_condition") or "unknown" for row in costs})
+    usable = all(_verdadero_csv(row.get("resource_cost_usable")) for row in costs)
+    return condiciones == ["isolated"] and usable, ", ".join(condiciones)
+
+
+def _nota_costos_no_aislados(condiciones: str) -> str:
+    return (rf"Costos no aislados (resource\_measurement\_condition: {escapar(condiciones)}): son tiempos medidos con "
+            "otra carga en la máquina y no son costos de ingeniería comparables; no se leen como costo de cada modelo.")
 
 
 def _auditorias_pdmx(corrida: Corrida) -> list[str]:
@@ -924,7 +1058,9 @@ def _estado_analisis(status: Mapping | None, nombre: str) -> list[str]:
     return avisos
 
 
-def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
+def tablas_pdmx(corrida: Corrida, costos: Corrida | None = None) -> tuple[list[Tabla], list[str], dict]:
+    """``costos``: corrida de costo aparte (opción explícita); sin ella, los costos son los de la corrida."""
+
     tablas: list[Tabla] = []
     summary_path, summary_label = corrida.archivo("results_summary.csv")
     summary_rows = _leer_csv(summary_path)
@@ -932,9 +1068,10 @@ def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
     headline = _leer_json(headline_path)
     pairwise_path, pairwise_label = corrida.archivo("pairwise_comparisons.json")
     pairwise = _leer_json(pairwise_path)
-    pareto_path, pareto_label = corrida.archivo("pareto_summary.json")
+    de_costos = costos or corrida
+    pareto_path, pareto_label = de_costos.archivo("pareto_summary.json")
     pareto = _leer_json(pareto_path)
-    costs_path, costs_label = corrida.archivo("engineering_costs.csv")
+    costs_path, costs_label = de_costos.archivo("engineering_costs.csv")
     costs = _leer_csv(costs_path)
     diag_path, diag_label = corrida.archivo("hdp_chain_diagnostics.json")
     diagnostics = _leer_json(diag_path)
@@ -944,7 +1081,25 @@ def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
     avisos += _auditorias_pdmx(corrida)
     config_path, _ = corrida.archivo("config.json")
     prep_path, _ = corrida.archivo("preprocessing_report.json")
-    diferencias = _diferencias_con_la_principal_b(_leer_json(config_path), _leer_json(prep_path))
+    config = _leer_json(config_path)
+    diferencias_pares = _diferencias_b(config, _leer_json(prep_path))
+    diferencias = [texto for _, texto in diferencias_pares]
+    tipo = _tipo_de_corrida_b(diferencias_pares, config)
+    tope = _tope_final(corrida, config)
+    avisos += tope["avisos"]
+    nota_tope = _nota_tope(tope)
+    commit, commit_fuente = _commit_de_la_corrida(corrida.directorio)
+    if commit is None:
+        avisos.append(f"pdmx: sin commit registrado en {corrida.directorio.name} (ni manifest.json, ni config.json, ni "
+                      "execution_plan.json): no se puede comprobar contra el commit de la corrida principal "
+                      f"({COMMIT_PRINCIPAL_B}).")
+    costos_aislados, condiciones = _condiciones_de_costo(costs)
+    nota_costos = None if costos_aislados else _nota_costos_no_aislados(condiciones)
+    if nota_costos:
+        avisos.append(f"pdmx: costos no aislados ({de_costos.directorio.name}: {condiciones}); tiempos y frontera de Pareto "
+                      "no se leen como costo de ingeniería.")
+    nota_origen_costos = (f"Costos medidos en la corrida aparte {escapar(de_costos.directorio.name)} (opción explícita)."
+                          if costos else None)
     if diferencias:
         avisos.append(f"pdmx: {corrida.directorio.name} no es la corrida principal de la sección B (difiere en "
                       f"{'; '.join(diferencias)}); sus veredictos no deciden.")
@@ -982,6 +1137,8 @@ def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
             t.intervalo(te["bootstrap_95_ci"], 3, archivo=headline_label, ruta=["estimates", ti, "bootstrap_95_ci"], fila=tfila),
         ])
     t.notas.append("NLL en nats por evento de prueba. Decide la media por obra; la ponderada por notas es secundaria.")
+    if nota_tope:
+        t.notas.append(nota_tope)
     tablas.append(t)
 
     # comparaciones pareadas
@@ -993,6 +1150,8 @@ def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
                          "sus veredictos no deciden.")
     if diferencias:
         t.notas.append(nota_no_principal)
+    if nota_tope:
+        t.notas.append(nota_tope)
     t.notas.append("Veredicto: regla del preregistro (sección B, Aclaración 2) sobre el IC por obra ajustado por Holm por pasos "
                    "(familia de seis); con el transformador, A es el transformador.")
     tablas.append(t)
@@ -1031,10 +1190,14 @@ def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
                 media("selected_fit_wall_clock_s"), media("full_search_wall_clock_s"), media("evaluation_wall_clock_s"),
                 maximo_mib("selection_peak_process_tree_rss_bytes"), maximo_mib("selection_peak_cuda_allocated_bytes")])
     t.notas.append("Fracción completa del entrenamiento. Cada fila declara su dispositivo: un tiempo en CPU y uno en GPU no se comparan sin decirlo.")
+    if nota_origen_costos:
+        t.notas.append(nota_origen_costos)
+    if nota_costos:
+        t.notas.append(nota_costos)
     tablas.append(t)
 
     # frontera de Pareto (NLL contra costo)
-    frontier = pareto.get("predictive_cost_partial_frontier", {})
+    frontier = pareto.get("predictive_cost_partial_frontier") or {}
     on_frontier = {c["model"] for c in frontier.get("frontier", [])}
     t = Tabla("pdmx_pareto.tex", "llrlrll",
               ("Modelo", "Dispositivo", "NLL media por obra", "IC", "Ajuste seleccionado (s)", "Intervalo de tiempo", "En la frontera"))
@@ -1057,6 +1220,19 @@ def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
         t.notas.append("Pares con menos obras en común que el mínimo de la Enmienda 1: comparados con los marginales.")
     if frontier.get("devices_differ"):
         t.notas.append("Los modelos corren en dispositivos distintos (columna Dispositivo).")
+    pareto_evaluado = frontier.get("status") == "ok" and bool(frontier.get("candidates"))
+    if not pareto_evaluado:
+        avisos.append(f"pdmx: frontera de Pareto no evaluada en {pareto_label} (status={frontier.get('status')!r}).")
+        t.notas.append("Frontera de Pareto no evaluada: la tabla no dice qué modelo domina a cuál.")
+    excluidos = [str(m) for m in frontier.get("excluded_models") or []]
+    if excluidos:
+        avisos.append(f"pdmx: modelos excluidos de la frontera de Pareto: {', '.join(excluidos)}.")
+        t.notas.append("Modelos excluidos de la frontera (sin tiempo de ajuste seleccionado): "
+                       + ", ".join(NOMBRES.get(m, escapar(m)) for m in excluidos) + ".")
+    if nota_origen_costos:
+        t.notas.append(nota_origen_costos)
+    if nota_costos:
+        t.notas.append(nota_costos)
     if diferencias:
         t.notas.append(nota_no_principal)
     tablas.append(t)
@@ -1085,7 +1261,14 @@ def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
             "declarada" if diag.get("convergence_claimed") else "no declarada",
         ])
     tablas.append(t)
-    return tablas, avisos, {"decide": decide, "diferencias_con_la_principal": diferencias}
+    return tablas, avisos, {
+        "decide": decide, "tipo": tipo, "diferencias_con_la_principal": diferencias, "tope_k": tope["tope_k"],
+        "filas_en_tope_k": tope["filas_en_tope_k"], "filas_finito": tope["filas_finito"],
+        "auditoria_rejilla": tope["auditoria_rejilla"], "curva_aprendizaje_bloqueada": tope["bloqueada"],
+        "costos_aislados": costos_aislados, "corrida_de_costos": de_costos.directorio.resolve().as_posix() if costos else None,
+        "pareto_evaluado": pareto_evaluado, "modelos_excluidos_pareto": excluidos,
+        "commit": commit, "commit_fuente": commit_fuente,
+    }
 
 
 # --- figuras y escritura --------------------------------------------------------------
@@ -1124,6 +1307,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Tablas .tex de la tesis desde los artefactos, con procedencia de cada número.")
     parser.add_argument("--porobra", type=Path, help="Directorio de una corrida de src.cli.porobra_heldout.")
     parser.add_argument("--pdmx", type=Path, help="Directorio de una corrida de Comparacion (PDMX).")
+    parser.add_argument("--costos", type=Path,
+                        help="Corrida de costo aparte (misma estructura que una corrida PDMX): sus engineering_costs.csv y "
+                             "pareto_summary.json sustituyen a los de --pdmx en pdmx_costos.tex y pdmx_pareto.tex.")
     parser.add_argument("--salida", type=Path, required=True, help="Directorio nuevo o vacío.")
     return parser
 
@@ -1142,7 +1328,10 @@ def main(argv: list[str] | None = None) -> Path:
             resultados.append((clave, None, [tabla_pendiente(n, PENDIENTE[clave]) for n in nombres], [], {}))
             continue
         corrida = Corrida(Path(directorio))
-        tablas, avisos, meta = construir(corrida)
+        if clave == "pdmx" and args.costos is not None:
+            tablas, avisos, meta = construir(corrida, Corrida(Path(args.costos)))
+        else:
+            tablas, avisos, meta = construir(corrida)
         assert [t.nombre for t in tablas] == list(nombres)
         resultados.append((clave, corrida, tablas, avisos, meta))
 
@@ -1158,12 +1347,17 @@ def main(argv: list[str] | None = None) -> Path:
         if corrida is None:
             continue
         lista_figuras.extend(figuras(corrida, salida))
-        manifest = corrida.directorio / "manifest.json"
+        commit, commit_fuente = meta.get("commit"), meta.get("commit_fuente")
+        if "commit" not in meta:
+            commit, commit_fuente = _commit_de_la_corrida(corrida.directorio)
+            if commit is None:
+                avisos.append(f"{clave}: sin commit registrado en {corrida.directorio.name}.")
         resumen["corridas"][clave] = {
             "directorio": corrida.directorio.resolve().as_posix(),
-            "commit": _leer_json(manifest).get("commit") if manifest.is_file() else None,
             "fuentes_sha256": corrida.fuentes,
             **meta,
+            "commit": commit,
+            "commit_fuente": commit_fuente,
         }
         resumen["avisos"].extend(avisos)
     (salida / "figuras.json").write_text(json.dumps({"figuras": lista_figuras}, indent=2, ensure_ascii=False), encoding="utf-8")

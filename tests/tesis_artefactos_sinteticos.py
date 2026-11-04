@@ -257,7 +257,9 @@ def pdmx_comparisons() -> list[dict]:
 PDMX_MAIN_CONFIG = {
     "split_seed": 7, "data_seeds": [1, 2, 3], "model_seeds": [1, 2], "train_fractions": [0.1, 0.25, 0.5, 0.75, 1.0],
     "test_fraction": 0.15, "validation_fraction": 0.1, "include_vomm_control": True,
-    "experiment": {"windows": {"max_context_length": 128, "min_window_length": 32, "train_stride": 64, "eval_stride": 128},
+    "finite_hmm_max_states": 768, "finite_hmm_final_ceiling": True, "finite_hmm_device": "cuda",
+    "experiment": {"preprocessing": {"extraction_mode": "melody"},
+                   "windows": {"max_context_length": 128, "min_window_length": 32, "train_stride": 64, "eval_stride": 128},
                    "transformer": {"max_epochs": 25, "n_layers": 3}},
 }
 
@@ -270,13 +272,35 @@ def _merge(base: dict, update: dict) -> dict:
 
 
 def write_pdmx_run(root: Path, *, name: str = "tesis_corregida_20261101_abcdef1", comparisons=None, status="preregistered",
-                   gaps=(), config: dict | None = None, n_files: int = 3000) -> Path:
-    """``config`` cambia campos de ``config.json``; ``n_files``, las partituras consideradas (preparadas + excluidas)."""
+                   gaps=(), config: dict | None = None, n_files: int = 3000, ceiling_hits: int | None = 0,
+                   condition: str = "isolated", pareto: dict | None = None, manifest: dict | None = None,
+                   commit_in: dict | None = None) -> Path:
+    """``config`` cambia campos de ``config.json``; ``n_files``, las partituras consideradas (preparadas + excluidas);
+    ``ceiling_hits``, las filas del finito que tocan el tope final de K (None: sin results_raw ni auditoría de rejilla);
+    ``condition``, la condición de medición de los costos; ``pareto`` cambia campos de la frontera; ``manifest``,
+    un manifest.json; ``commit_in``, campos que se suman a config.json (p. ej. el commit)."""
 
     run = root / name
     run.mkdir(parents=True)
     run_config = _merge({**PDMX_MAIN_CONFIG, "include_vomm_control": status == "preregistered"}, config or {})
-    (run / "config.json").write_text(json.dumps(run_config), encoding="utf-8")
+    (run / "config.json").write_text(json.dumps({**run_config, **(commit_in or {})}), encoding="utf-8")
+    if manifest is not None:
+        (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    if ceiling_hits is not None:
+        with (run / "results_raw.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["model", "data_seed", "model_seed", "frac", "selected_states",
+                                                        "hit_final_ceiling"])
+            writer.writeheader()
+            for index, (frac, seed) in enumerate((f, m) for f in ("0.5", "1.0") for m in (1, 2)):
+                writer.writerow({"model": "finite_hmm", "data_seed": 1, "model_seed": seed, "frac": frac,
+                                 "selected_states": 768 if index < ceiling_hits else 48,
+                                 "hit_final_ceiling": str(index < ceiling_hits)})
+            writer.writerow({"model": "hdp_hmm", "data_seed": 1, "model_seed": 1, "frac": "1.0", "selected_states": "",
+                             "hit_final_ceiling": ""})
+        (run / "finite_hmm_grid_audit.json").write_text(json.dumps({
+            "model": "finite_hmm", "grid_maximum": 768, "n_selections": 4, "n_at_grid_maximum": ceiling_hits,
+            "verdict": "grid_limited_by_resources" if ceiling_hits else "grid_informative",
+            "status": "failed" if ceiling_hits else "passed", "informative": not ceiling_hits}), encoding="utf-8")
     (run / "preprocessing_report.json").write_text(json.dumps({"n_prepared_pieces": n_files - 3, "n_exclusions": 3,
                                                                "n_total_tokens": 99, "n_total_events": 99}), encoding="utf-8")
     (run / "protocol_audit.json").write_text(json.dumps({
@@ -325,10 +349,12 @@ def write_pdmx_run(root: Path, *, name: str = "tesis_corregida_20261101_abcdef1"
         "analysis_status": analysis_status,
         "predictive_cost_partial_frontier": {"status": "ok", "candidates": candidates,
                                              "frontier": [c for c in candidates if c["model"] in ("transformer", "vomm")],
-                                             "devices_differ": True, "nll_paired_pairs_skipped": []},
+                                             "devices_differ": True, "nll_paired_pairs_skipped": [],
+                                             "excluded_models": [], **(pareto or {})},
     }), encoding="utf-8")
     cost_fields = ["model", "data_seed", "model_seed", "frac", "selected_fit_wall_clock_s", "full_search_wall_clock_s",
-                   "evaluation_wall_clock_s", "device", "selection_peak_process_tree_rss_bytes", "selection_peak_cuda_allocated_bytes"]
+                   "evaluation_wall_clock_s", "device", "selection_peak_process_tree_rss_bytes", "selection_peak_cuda_allocated_bytes",
+                   "resource_measurement_condition", "resource_cost_usable"]
     with (run / "engineering_costs.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=cost_fields)
         writer.writeheader()
@@ -338,6 +364,8 @@ def write_pdmx_run(root: Path, *, name: str = "tesis_corregida_20261101_abcdef1"
                     writer.writerow({"model": model, "data_seed": 1, "model_seed": seed, "frac": frac,
                                      "selected_fit_wall_clock_s": 2.0 * seed, "full_search_wall_clock_s": 10.0 * seed,
                                      "evaluation_wall_clock_s": 0.5, "device": device,
+                                     "resource_measurement_condition": condition,
+                                     "resource_cost_usable": str(condition == "isolated"),
                                      "selection_peak_process_tree_rss_bytes": 1048576 * 100 * seed,
                                      "selection_peak_cuda_allocated_bytes": 1048576 * 50 if device == "cuda" else ""})
     (run / "hdp_chain_diagnostics.json").write_text(json.dumps({
