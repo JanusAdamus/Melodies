@@ -63,6 +63,8 @@ def _as_preregistered(run_dir: Path, tmp_path: Path, monkeypatch, *, principal_t
     manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
     monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS_SHA256", porobra_audit.source_aggregates(manifest))
     pin_outcomes(monkeypatch, porobra_audit.corpus_outcomes(porobra_audit.read_per_work(copy / "per_work.csv"), summary))
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS_CONTENT_SHA256",
+                        porobra_audit.corpus_content_sha256(porobra_audit.read_per_work(copy / "per_work.csv")))
     config = manifest["config"]
     monkeypatch.setattr(porobra_audit, "PREREGISTERED_CONFIG", {
         key: value for key, value in config.items() if key not in (*porobra_audit.UNCHECKED_CONFIG_KEYS, "truncation")})

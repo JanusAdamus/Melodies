@@ -148,3 +148,11 @@ Una entrada por tarea cerrada (ver PROMPT_CLAUDE.md, «Bitácora»).
 - `SMALL_N_NOTE` queda cualitativa: las tasas escritas a mano no se reproducían exactamente (reemplaza la mención de la entrada anterior). No cambia ningún veredicto.
 - Smoke (3 obras de MuseTrainer, ya expuestas, 40/20, `--n-workers 3`, con la suite y otras extracciones en paralelo, árbol con estos cambios sin commit): 378.4 s según el CLI; integridad `passed` (8 de 8); `no_preregistrada`, desviaciones burn_in, corpus_identity, corpus_outcomes, corpus_size, dirty_worktree, musetrainer_limit, n_iters, symbtr_n, symbtr_seed. No se leyeron cifras de prueba. Los tiempos no se comparan con los de rondas anteriores: la carga era otra.
 - Suite completa con estos cambios: `734 passed, 3 skipped, 4 warnings, 174 subtests passed in 1045.49s`.
+
+## 2026-11-03, Enmienda 11 y revisión r3 del análisis por obra (`feat/porobra-heldout`)
+
+- Enmienda 11 (preregistro 9fbf714, decisión de Adrián): tope K = 512 sin desviación y sensibilidad `sensitivity_without_k_ceiling`; sin veredicto con menos de 10 obras (`MIN_PAIRED_WORKS = 10`); valores de implementación fijados; Mozart Sonata 16 excluida y contada; todo corre en la computadora con GPU. Aclaración 12 (1e4b34a): commit por corrida.
+- Barrido de techo de K con el código de 69df24b, sólo ajuste interno y validación (scratchpad `techo_k.py`): 164 obras, 0 errores, 3 en K = 512 (Happy Birthday n = 25, evcara sofyan n = 60, Preludio Op. 28 n.º 4 n = 81); el siguiente K más alto es 64. 9309 s de CPU en total.
+- Revisión r3: `corpus_content` fija (obra, content_fingerprint) de las 164 analizadas (78d8b106…, Windows); `finite_em_hit_max_iterations` por obra y su lista en `summary.selected_hyperparameters`; README y `summary.run.extraction_failures` nombran las fallas de extracción.
+- Suite: 743 passed, 3 skipped.
+- PDMX principal lanzada el 2026-11-03 19:05 desde 9fbf714: `artifacts/Comparacion/tesis_corregida_20261103_9fbf714`, plan `preregistered` sin huecos, partición de referencia `reported`; log en `artifacts/logs/`.

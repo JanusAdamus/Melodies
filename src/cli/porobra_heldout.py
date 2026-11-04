@@ -207,11 +207,19 @@ def _readme(run: dict) -> str:
     return (
         "Corrida de src.cli.porobra_heldout (preregistro 2026-10-26, sección A).\n\n"
         f"Esta corrida: truncamiento {run['truncation']}, tipo {run['run_kind']}: {run['note']}. {run['decides']}\n\n"
+        f"{_failures_line(run.get('extraction_failures') or [])}"
         "Archivos: per_work.csv (una fila por obra), summary.json (comparaciones, convergencia, "
         "sensibilidades), manifest.json (commit, comando, configuración, hashes) y porobra_audit.json.\n\n"
         "Advertencia sobre los estados del HDP-HMM en per_work.csv:\n"
         f"{porobra.HDP_STATES_NOTE}\n"
     )
+
+
+def _failures_line(failures: list) -> str:
+    if not failures:
+        return ""
+    return (f"Fuera de la corrida por falla de extracción ({len(failures)}; se excluyen y se cuentan, "
+            f"Enmienda 11): {', '.join(failures)}.\n\n")
 
 
 def _sha256(path: str | Path) -> str:
@@ -380,6 +388,8 @@ def main(argv: list[str] | None = None) -> Path:
             "finite_k": _distribution(per_work["finite_k"]) if len(per_work) else {},
             "finite_alpha": _distribution(per_work["finite_alpha"]) if len(per_work) else {},
             "finite_k_hit_limit": per_work.loc[per_work["finite_k_hit_limit"], "work_id"].tolist() if len(per_work) else [],
+            "finite_em_hit_max_iterations": (
+                per_work.loc[per_work["finite_em_hit_max_iterations"].astype(bool), "work_id"].tolist() if len(per_work) else []),
             "unigram_alpha": _distribution(per_work["unigram_alpha"]) if len(per_work) else {},
             "bigram_alpha": _distribution(per_work["bigram_alpha"]) if len(per_work) else {},
         },

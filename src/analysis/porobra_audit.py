@@ -118,6 +118,10 @@ PREREGISTERED_CORPUS_OUTCOMES = {
     "corta": ("MuseTrainer:G_Minor_Bach.mxl",),
 }
 PREREGISTERED_CORPUS_OUTCOMES_SHA256 = "37c49b2f69f5ad90ad16a0db152c331f71b7b5d077ae12275dc5bd0c35655d34"
+#: Huella de (obra, content_fingerprint) de las obras analizadas (``corpus_content_sha256``): fija
+#: los eventos extraídos, no sólo el destino. Un entorno que cambia la extracción sin tumbarla
+#: queda como desviación ``corpus_content``. Calculada con esos clones en Windows (164 obras).
+PREREGISTERED_CORPUS_CONTENT_SHA256 = "78d8b106019971b3b2d8e8b58a71f93311d7370dceb59eab2ead5ed6807991fa"
 #: Tolerancia del recálculo: otra libm cambia el último bit de un float sin cambiar nada más.
 RECOMPUTE_REL_TOLERANCE = 1e-12
 #: Junto a cero: una resta que da 0 en un sistema y 1e-17 en otro.
@@ -555,6 +559,23 @@ def corpus_outcomes_sha256(outcomes: dict) -> str:
     return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
 
 
+def corpus_content_sha256(works: pd.DataFrame) -> str:
+    """Huella de los eventos de las obras analizadas: ``fuente:ruta`` normalizada y su huella de contenido."""
+
+    lines = sorted(
+        f"{_outcome_key(f'{source}:{path}')}\t{fingerprint}\n"
+        for source, path, fingerprint in zip(works["source"], works["relative_path"], works["content_fingerprint"].astype(str))
+    )
+    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+
+
+def _corpus_content_deviation(works: pd.DataFrame) -> dict | None:
+    digest = corpus_content_sha256(works)
+    if digest == PREREGISTERED_CORPUS_CONTENT_SHA256:
+        return None
+    return {"observed": digest, "expected": PREREGISTERED_CORPUS_CONTENT_SHA256}
+
+
 def _corpus_outcomes_deviation(works: pd.DataFrame, summary: dict) -> dict | None:
     """Cada candidato tuvo el destino fijado: un error de entorno no cambia en silencio las obras."""
 
@@ -612,6 +633,9 @@ def _design_deviations(manifest: dict, summary: dict, works: pd.DataFrame, direc
     outcomes = _corpus_outcomes_deviation(works, summary)
     if outcomes:
         deviations["corpus_outcomes"] = outcomes
+    content = _corpus_content_deviation(works)
+    if content:
+        deviations["corpus_content"] = content
     return {**deviations, **_provenance_deviations(manifest, directory_name)}
 
 
@@ -633,6 +657,10 @@ def describe_run(manifest: dict, summary: dict, works: pd.DataFrame, directory_n
         "note": RUN_KIND_NOTES[run_kind],
         "deviations": sorted(deviations),
         "decides": "Sus veredictos deciden sólo si porobra_audit.json dice confirmatory: true.",
+        "extraction_failures": [
+            _outcome_key(f"{item.get('source')}:{item.get('relative_path')}")
+            for item in (summary.get("corpus") or {}).get("failures") or []
+        ],
     }
 
 

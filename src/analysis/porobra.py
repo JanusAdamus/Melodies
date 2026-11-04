@@ -319,6 +319,8 @@ class HMMFit:
     log_likelihood_trace: tuple = ()
     #: log p(x|θ) + log p(θ) en los mismos θ que ``log_likelihood_trace``: lo que EM hace crecer.
     objective_trace: tuple = ()
+    #: EM terminó por ``max_iterations`` y no por la tolerancia: el ajuste puede no haber convergido.
+    hit_max_iterations: bool = False
 
 
 @dataclass(frozen=True)
@@ -375,6 +377,7 @@ def baum_welch(
     padded, lengths = tokens[None, :], np.array([tokens.size])
     trace: list[float] = []
     objective: list[float] = []
+    converged = False
     for _ in range(max_iterations):
         counts_initial, counts_transition, counts_emission, log_likelihood = _expectation_batch(
             initial, transition, emission, padded, lengths
@@ -387,10 +390,12 @@ def baum_welch(
         emission = counts_emission + pseudocount
         emission /= emission.sum(axis=1, keepdims=True)
         if len(objective) > 1 and objective[-1] - objective[-2] < tolerance:
+            converged = True
             break
     final = float(_log_scales(initial, transition, emission, tokens).sum())
     final_objective = final + _log_prior(initial, transition, emission, pseudocount)
-    return HMMFit(initial, transition, emission, final, tuple(trace) + (final,), tuple(objective) + (final_objective,))
+    return HMMFit(initial, transition, emission, final, tuple(trace) + (final,), tuple(objective) + (final_objective,),
+                  not converged)
 
 
 def best_baum_welch(tokens: Sequence[int], *, n_states: int, seeds: Sequence[int], **kwargs) -> HMMFit:
@@ -455,6 +460,8 @@ def fit_finite(
         "finite_k_grid": list(selection.k_grid),
         "finite_grid_extensions": selection.grid_extensions,
         "finite_k_hit_limit": selection.hit_limit,
+        # El reajuste seleccionado terminó por el tope de iteraciones de EM (300), no por la tolerancia.
+        "finite_em_hit_max_iterations": bool(fit.hit_max_iterations),
         "finite_test_nll": hmm_conditional_nll(*_params(fit), split.fit, split.test),
         "finite_states_mean": occupancy.mean,
         "finite_states_sd": occupancy.sd,

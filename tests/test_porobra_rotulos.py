@@ -45,7 +45,7 @@ def _fake_row(work_id, tokens, rng) -> dict:
                 n_inner_train=split.inner_train.size, n_validation=split.validation.size,
                 unigram_alpha=0.5, bigram_alpha=0.5, unigram_test_nll=float(rng.uniform(2, 3)),
                 bigram_test_nll=float(rng.uniform(2, 3)), finite_k=8, finite_alpha=0.1,
-                finite_k_grid=[2, 4, 8, 16, 32], finite_k_hit_limit=False, finite_test_nll=float(rng.uniform(2, 3)),
+                finite_k_grid=[2, 4, 8, 16, 32], finite_k_hit_limit=False, finite_em_hit_max_iterations=False, finite_test_nll=float(rng.uniform(2, 3)),
                 hdp_eta=3.0, hdp_rhat=rhat, hdp_converged=rhat < 1.1, hdp_test_nll=float(np.mean(chains)),
                 hdp_test_nll_by_chain=chains, hdp_states_pooled_chains_mean=3.0)
 
@@ -81,6 +81,9 @@ def as_section_a(corpus, monkeypatch):  # noqa: F811
     monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS", {s: sum(f["source"] == s for f in files) for s in {f["source"] for f in files}})
     monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS_SHA256", porobra_audit.source_aggregates({"inputs": {"files": files}}))
     pin_outcomes(monkeypatch, EXPECTED_OUTCOMES)
+    pieces = library_batch.prepare_corpus(catalog, extraction=porobra_heldout.EXTRACTION).pieces
+    monkeypatch.setattr(porobra_audit, "PREREGISTERED_CORPUS_CONTENT_SHA256",
+                        porobra_audit.corpus_content_sha256(pieces[pieces["n_events"] >= 20]))
     _stub_git(monkeypatch, {"commit": COMMIT_A, "status": ""})
     monkeypatch.setattr(porobra_heldout, "_run_jobs", _stub_jobs())
 
@@ -303,12 +306,13 @@ def test_si_el_entorno_tumba_la_extraccion_de_un_corpus_no_es_confirmatoria(corp
     # Los archivos y los conteos son los fijados; lo que cambió es qué fue de cada uno.
     assert audit["status"] == "passed"
     deviations = audit["preregistration"]["deviations"]
-    assert set(deviations) == {"corpus_outcomes"}, deviations
+    # Las obras que faltan cambian también la huella de contenido.
+    assert set(deviations) == {"corpus_outcomes", "corpus_content"}, deviations
     assert deviations["corpus_outcomes"]["observed"]["falla_extraccion"] == [
         "MuseTrainer:rota.musicxml", *(item for item in EXPECTED_OUTCOMES["analizada"] if item.startswith("SymbTr:"))]
     assert deviations["corpus_outcomes"]["expected"]["falla_extraccion"] == ["MuseTrainer:rota.musicxml"]
     assert audit["confirmatory"] is False
-    assert summary["run"]["run_kind"] == "no_preregistrada" and summary["run"]["deviations"] == ["corpus_outcomes"]
+    assert summary["run"]["run_kind"] == "no_preregistrada" and summary["run"]["deviations"] == ["corpus_content", "corpus_outcomes"]
     out = capsys.readouterr().out
     assert "AVISO: 4 falla(s) de extracción" in out and "corpus_outcomes" in out
     for item in deviations["corpus_outcomes"]["observed"]["falla_extraccion"]:
