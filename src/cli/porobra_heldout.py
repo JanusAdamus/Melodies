@@ -210,6 +210,9 @@ def _readme(run: dict) -> str:
         f"{_failures_line(run.get('extraction_failures') or [])}"
         "Archivos: per_work.csv (una fila por obra), summary.json (comparaciones, convergencia, "
         "sensibilidades), manifest.json (commit, comando, configuración, hashes) y porobra_audit.json.\n\n"
+        "Advertencia sobre el K del HMM finito: en las obras con finite_k_hit_limit la rejilla llegó "
+        "al tope K = 512 (Enmienda 11); siguen en la métrica principal, pero ese K no se interpreta "
+        "como número de estados (sensibilidad sensitivity_without_k_ceiling, que no decide).\n\n"
         "Advertencia sobre los estados del HDP-HMM en per_work.csv:\n"
         f"{porobra.HDP_STATES_NOTE}\n"
     )
