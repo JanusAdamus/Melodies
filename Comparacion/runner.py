@@ -1940,6 +1940,7 @@ def run_learning_curve_experiment(
                     seed=model_seed,
                     vocab_size=comparison_vocabulary_size,
                     max_states=config.finite_hmm_max_states,
+                    device=config.finite_hmm_device,
                 )
                 with ResourceMonitor() as finite_selection_resources:
                     finite_hmm.fit(

@@ -136,6 +136,82 @@ def _expectation_batch(
     return initial_counts, transition_counts, emission_counts.T, log_likelihood
 
 
+def _expectation_batch_torch(
+    initial_probs: np.ndarray,
+    transition_matrix: np.ndarray,
+    emission_matrix: np.ndarray,
+    padded: np.ndarray,
+    lengths: np.ndarray,
+    *,
+    device: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """``_expectation_batch`` paso a paso en torch (float64) sobre ``device``.
+
+    Mismas operaciones y mismo orden que la versión de numpy; sólo cambia dónde se
+    calculan. Devuelve arreglos de numpy para que el paso M no cambie.
+    """
+
+    import torch
+
+    dtype = torch.float64
+    dev = torch.device(device)
+    transition = torch.as_tensor(transition_matrix, dtype=dtype, device=dev)
+    emission_table = torch.as_tensor(emission_matrix, dtype=dtype, device=dev)
+    initial = torch.as_tensor(initial_probs, dtype=dtype, device=dev)
+    tokens = torch.as_tensor(padded, dtype=torch.long, device=dev)
+    seq_lengths = torch.as_tensor(lengths, dtype=torch.long, device=dev)
+    n_sequences, max_steps = tokens.shape
+    n_states = transition.shape[0]
+    live = torch.arange(max_steps, device=dev)[None, :] < seq_lengths[:, None]
+    one = torch.ones((), dtype=dtype, device=dev)
+
+    emission = emission_table[:, tokens].permute(1, 0, 2)  # (B, K, T)
+
+    alpha = torch.zeros((n_sequences, max_steps, n_states), dtype=dtype, device=dev)
+    scale = torch.ones((n_sequences, max_steps), dtype=dtype, device=dev)
+
+    current = initial[None, :] * emission[:, :, 0]
+    scale[:, 0] = current.sum(dim=1).clamp_min(EPSILON)
+    current = current / scale[:, 0][:, None]
+    alpha[:, 0] = current
+    for step in range(1, max_steps):
+        moved = (current @ transition) * emission[:, :, step]
+        step_scale = moved.sum(dim=1).clamp_min(EPSILON)
+        moved = moved / step_scale[:, None]
+        mask = live[:, step]
+        current = torch.where(mask[:, None], moved, current)
+        scale[:, step] = torch.where(mask, step_scale, one)
+        alpha[:, step] = current
+
+    log_likelihood = float(torch.log(scale).sum().item())
+
+    beta = torch.ones((n_sequences, max_steps, n_states), dtype=dtype, device=dev)
+    for step in range(max_steps - 2, -1, -1):
+        nxt = live[:, step + 1]
+        weighted = emission[:, :, step + 1] * beta[:, step + 1] / scale[:, step + 1][:, None]
+        beta[:, step] = torch.where(nxt[:, None], weighted @ transition.T, one)
+
+    gamma = alpha * beta * live[:, :, None]
+
+    initial_counts = gamma[:, 0].sum(dim=0)
+
+    emission_counts = torch.zeros((emission_table.shape[1], n_states), dtype=dtype, device=dev)
+    emission_counts.index_add_(0, tokens[live], gamma[live])
+
+    tail = live[:, 1:]
+    left = alpha[:, :-1] * tail[:, :, None]
+    right = (emission[:, :, 1:].permute(0, 2, 1) * beta[:, 1:]
+             / scale[:, 1:][:, :, None]) * tail[:, :, None]
+    transition_counts = transition * torch.einsum("bti,btj->ij", left, right)
+
+    return (
+        initial_counts.cpu().numpy(),
+        transition_counts.cpu().numpy(),
+        emission_counts.T.cpu().numpy(),
+        log_likelihood,
+    )
+
+
 def _piece_metrics_from_log_likelihood(
     piece: PreparedPiece,
     log_likelihood: float,
@@ -192,8 +268,11 @@ class FiniteGlobalHMM:
         seed: int,
         vocab_size: int = 13,
         max_states: int | None = None,
+        device: str | None = None,
     ) -> None:
         self.candidate_num_states = tuple(int(value) for value in candidate_num_states)
+        #: Dispositivo del paso E (torch, float64); ``None`` usa numpy, como antes.
+        self.device = device
         #: Con límite, la rejilla se amplía mientras la selección toque su máximo (C2).
         self.max_states = None if max_states is None else int(max_states)
         self.max_iterations = int(max_iterations)
@@ -280,6 +359,11 @@ class FiniteGlobalHMM:
                 batch_initial, batch_transition, batch_emission, batch_log_likelihood = (
                     _expectation_batch(
                         initial_probs, transition_matrix, emission_matrix, padded, lengths
+                    )
+                    if self.device is None
+                    else _expectation_batch_torch(
+                        initial_probs, transition_matrix, emission_matrix, padded, lengths,
+                        device=self.device,
                     )
                 )
                 initial_counts += batch_initial

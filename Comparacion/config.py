@@ -33,6 +33,8 @@ class LearningCurveConfig:
     finite_hmm_max_states: int = 384
     finite_hmm_max_iterations: int = 100
     finite_hmm_tolerance: float = 1e-4
+    #: Dispositivo del paso E del HMM finito (torch, float64), p. ej. "cuda"; None usa numpy.
+    finite_hmm_device: str | None = None
     # Truncacion de limite debil (Ishwaran & James 2001). El piloto ocupa 9-15 estados sea
     # cual sea K, asi que 24 deja mas del doble de holgura, y bajarlo desde 40 da 1.2x.
     # Ver docs/sources-and-methods.md, seccion 3.5.
