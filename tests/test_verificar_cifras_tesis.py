@@ -241,8 +241,8 @@ def _run(tmp_path: Path, datos=DATOS) -> Path:
     return run
 
 
-def _provenance(tmp_path: Path, table: str, entries, *, run: Path | None = None) -> Path:
-    """``entries``: (texto, valor, ruta) o (texto, valor, ruta, operacion)."""
+def _provenance(tmp_path: Path, table: str, entries, *, run: Path | None = None, tex: str | None = None) -> Path:
+    """``entries``: (texto, valor, ruta) o (texto, valor, ruta, operacion); ``tex``: el .tex que escribió el generador."""
 
     run = _run(tmp_path) if run is None else run
     sha = hashlib.sha256((run / "datos.json").read_bytes()).hexdigest()
@@ -255,8 +255,10 @@ def _provenance(tmp_path: Path, table: str, entries, *, run: Path | None = None)
         if op:
             item["operacion"] = op[0]
         cifras.append(item)
-    return _write(tmp_path / "prov" / table.replace(".tex", ".procedencia.json"), json.dumps(
-        {"tabla": table, "corrida": run.resolve().as_posix(), "fuentes_sha256": {"corrida_x/datos.json": sha}, "cifras": cifras}))
+    data = {"tabla": table, "corrida": run.resolve().as_posix(), "fuentes_sha256": {"corrida_x/datos.json": sha}, "cifras": cifras}
+    if tex is not None:
+        data["tex"] = tex
+    return _write(tmp_path / "prov" / table.replace(".tex", ".procedencia.json"), json.dumps(data))
 
 
 STANDARD = [("2.209", 2.2086, ("a", "b")), ("0.061", 0.061, ("a", "c")), ("-0.061", -0.061, ("a", "c"), "negado"),
@@ -330,7 +332,7 @@ def test_strict_mode_requires_a_citation_outside_generated_tables(ver, tmp_path)
     thesis = tmp_path / "tesis"
     _write(thesis / "tablas" / "t.tex", TABLE)
     _write(thesis / "cap.tex", "La NLL es 2.209, o \\cifra{t:a.b}{2.21}.\n")
-    prov = _provenance(tmp_path, "t.tex", STANDARD[:1] + STANDARD[2:])
+    prov = _provenance(tmp_path, "t.tex", STANDARD[:1] + STANDARD[2:], tex=TABLE)
     assert ver.verificar(thesis, procedencias=[prov])["errores"] == []
     report = ver.verificar(thesis, procedencias=[prov], exigir_cita=True)
     assert [(e["tipo"], e["archivo"], e["texto"]) for e in report["errores"]] == [("sin_cita", "cap.tex", "2.209")]
@@ -362,7 +364,7 @@ TABLE = ("% Generado por scripts/generar_tablas_tesis.py desde artefactos; no ed
 def _table_report(ver, tmp_path, name: str, text: str) -> dict:
     thesis = tmp_path / "tesis"
     _write(thesis / "tablas" / name, text)
-    return ver.verificar(thesis, procedencias=[_provenance(tmp_path, "t.tex", STANDARD[:1] + STANDARD[2:])])
+    return ver.verificar(thesis, procedencias=[_provenance(tmp_path, "t.tex", STANDARD[:1] + STANDARD[2:], tex=TABLE)])
 
 
 def test_an_untouched_generated_table_passes(ver, tmp_path):
@@ -376,10 +378,21 @@ def test_an_untouched_generated_table_passes(ver, tmp_path):
         ("t.tex", TABLE.replace("& 0.90 & 12", "& 12 & 0.90")),  # celdas permutadas
         ("otra.tex", TABLE.replace("0.487", "0.90").replace("& 0.90 & 12", "& 0.487 & 12")),  # renombrada y permutada
         ("otra.tex", TABLE.split("\n", 2)[2].replace("& 0.90 & 12", "& 12 & 0.90")),  # sin cabecera: se reconoce por contenido
+        ("t.tex", TABLE.replace("x &", "\0").replace("y &", "x &").replace("\0", "y &")),  # rótulos de fila intercambiados
+        ("t.tex", TABLE.replace("A & B & C", "A & C & B")),  # encabezado
+        ("otra.tex", TABLE.split("\n", 2)[2].replace("x &", "z &")),  # rótulo, en una tabla copiada sin cabecera
     ],
 )
 def test_an_edited_generated_table_is_an_error(ver, tmp_path, name, text):
     assert "tabla_editada" in {e["tipo"] for e in _table_report(ver, tmp_path, name, text)["errores"]}
+
+
+def test_a_table_whose_provenance_lacks_its_text_is_an_error(ver, tmp_path):
+    # sin el .tex en la procedencia no se pueden revisar rótulos ni veredictos
+    thesis = tmp_path / "tesis"
+    _write(thesis / "tablas" / "t.tex", TABLE)
+    report = ver.verificar(thesis, procedencias=[_provenance(tmp_path, "t.tex", STANDARD[:1] + STANDARD[2:])])
+    assert [e["tipo"] for e in report["errores"]] == ["procedencia_sin_texto"]
 
 
 # --- la procedencia se recalcula ---------------------------------------------------------

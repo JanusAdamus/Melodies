@@ -17,12 +17,19 @@ Emparejamiento (un número sin fuente es un error):
 * **número citado**: ``\\cifra{<id>}{<número>}`` (en la tesis, ``\\newcommand{\\cifra}[2]{#2}``)
   empareja sólo con esa cifra: su valor, redondeado a los decimales escritos (y por 100 si
   sigue ``\\%``), debe dar el número con su signo.  ``<id>`` es el ``id`` de la procedencia
-  o ``reporte:<archivo>:<línea>``.  Así se escribe una cifra redondeada en la prosa.
+  o ``reporte:<archivo>:<línea>``.  Así se escribe una cifra redondeada en la prosa.  Si
+  se verifican juntas dos corridas del generador (p. ej. truncamiento 20 y 40), un ``id``
+  que está en las dos se cita como ``<corrida>/<id>`` (la carpeta de la corrida); sin
+  ella es ``cita_ambigua``.
 * **tablas generadas**: una tabla se reconoce por la cabecera que escribe el generador
-  («Procedencia de cada número: X.procedencia.json»), por su nombre de archivo o, en
-  cualquier ``tabular``/``longtable``, porque al menos la mitad de sus números son los de
-  una tabla generada.  Sus números deben ser, en orden y con signo, los de la procedencia;
-  si no, es ``tabla_editada`` (editada, permutada o renombrada).
+  («Procedencia de cada número: X.procedencia.json (corrida C)»), por su nombre de archivo
+  o, en cualquier ``tabular``/``longtable``, porque al menos la mitad de sus números son los
+  de una tabla generada; cada una se compara con la procedencia de su corrida.  Sus
+  números deben ser, en orden y con signo, los de la procedencia, y su texto (rótulos,
+  veredictos, ids de obra, notas, encabezado; sin comentarios, espacios al final ni líneas
+  vacías) el ``.tex`` que la procedencia guarda en ``tex``; si no, es ``tabla_editada``
+  (editada, permutada o renombrada).  Una procedencia sin ``tex`` es
+  ``procedencia_sin_texto``.
 * **modo estricto** (``--exigir-cita``): todo número fuera de una tabla generada debe ir en
   ``\\cifra``; un número suelto es ``sin_cita`` aunque su texto coincida con alguna cifra.
   Sin él, una cifra inventada puede coincidir por azar con el texto exacto de otra (en el
@@ -196,7 +203,10 @@ REGLAS_ANIO = (
 LONGITUD = re.compile(
     r"(?<![\w.])\d+(?:\.\d+)?(?:\s?(?:pt|cm|mm|em|ex|bp)(?![A-Za-z])|\s*\\(?:textwidth|linewidth|columnwidth|textheight|paperwidth|baselineskip|hsize)(?![A-Za-z]))"
 )
-CABECERA_GENERADA = re.compile(r"%\s*Procedencia de cada número:\s*(\S+)\.procedencia\.json")
+CABECERA_GENERADA = re.compile(
+    r"%\s*Procedencia de cada número:\s*(?P<tabla>\S+)\.procedencia\.json(?:\s*\(corrida\s+(?P<corrida>[^)\s]+)\))?"
+)
+COMENTARIO = re.compile(r"(?<!\\)%[^\n]*")
 
 
 @dataclass(frozen=True)
@@ -611,13 +621,20 @@ def _decimal(text: str) -> Decimal | None:
         return None
 
 
+# una tabla generada se identifica por (corrida, tabla): dos corridas del generador
+# (p. ej. truncamiento 20 y 40) escriben tablas con el mismo nombre
+ClaveTabla = tuple  # (nombre de la corrida o None, nombre de la tabla)
+
+
 @dataclass
 class Fuentes:
     textos: dict[str, str] = field(default_factory=dict)  # texto con signo → etiqueta
     por_cien: dict[Decimal, str] = field(default_factory=dict)  # fuente × 100, exacta → etiqueta
-    ids: dict[str, dict] = field(default_factory=dict)
+    ids: dict[str, list[dict]] = field(default_factory=dict)  # id → cifras con ese id (una por corrida)
+    calificados: dict[str, dict] = field(default_factory=dict)  # «<corrida>/<id>» → cifra
     lineas_reporte: dict[str, list[float]] = field(default_factory=dict)
-    tablas: dict[str, list[str]] = field(default_factory=dict)  # tabla → textos con signo, en orden
+    tablas: dict[ClaveTabla, list[str]] = field(default_factory=dict)  # (corrida, tabla) → textos con signo, en orden
+    textos_tabla: dict[ClaveTabla, str | None] = field(default_factory=dict)  # (corrida, tabla) → .tex del generador
     procedencias: list[tuple[Path, dict]] = field(default_factory=list)
     duplicados: list[str] = field(default_factory=list)
 
@@ -640,8 +657,12 @@ class Fuentes:
         """(etiqueta, tipo de error) de un número citado con ``\\cifra``."""
 
         factor = 100.0 if numero.porcentaje else 1.0
-        if numero.cita in self.ids:
-            values = [float(self.ids[numero.cita]["valor"])]
+        if numero.cita in self.calificados:
+            values = [float(self.calificados[numero.cita]["valor"])]
+        elif numero.cita in self.ids:
+            if len(self.ids[numero.cita]) > 1:  # el mismo id en dos corridas: la cita debe nombrar la suya
+                return None, "cita_ambigua"
+            values = [float(self.ids[numero.cita][0]["valor"])]
         elif numero.cita in self.lineas_reporte:
             values = self.lineas_reporte[numero.cita]
         else:
@@ -651,20 +672,33 @@ class Fuentes:
         return None, "cita_no_coincide"
 
 
+def nombre_corrida(procedencia: dict) -> str | None:
+    """Nombre (la carpeta) de la corrida de una procedencia; ``None`` en una tabla pendiente."""
+
+    corrida = procedencia.get("corrida")
+    return Path(str(corrida)).name if corrida else None
+
+
 def cargar_fuentes(procedencias: Iterable[Path], reportes: Iterable[Path]) -> Fuentes:
     fuentes = Fuentes()
+    vistos: set[tuple[str | None, str]] = set()
     for path in procedencias:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         table = data.get("tabla", Path(path).name)
+        corrida = nombre_corrida(data)
         fuentes.procedencias.append((Path(path), data))
         for entry in data.get("cifras", []):
             label = f"procedencia:{entry.get('id') or table + ':' + str(entry.get('campo'))}"
             fuentes.agregar_texto(str(entry["texto"]), label)
             if entry.get("id"):
-                if entry["id"] in fuentes.ids:
+                if (corrida, entry["id"]) in vistos:  # repetido dentro de una misma corrida
                     fuentes.duplicados.append(entry["id"])
-                fuentes.ids[entry["id"]] = entry
-        fuentes.tablas[table] = [str(e["texto"]) for e in data.get("cifras", [])]
+                vistos.add((corrida, entry["id"]))
+                fuentes.ids.setdefault(entry["id"], []).append(entry)
+                if corrida:
+                    fuentes.calificados[f"{corrida}/{entry['id']}"] = entry
+        fuentes.tablas[(corrida, table)] = [str(e["texto"]) for e in data.get("cifras", [])]
+        fuentes.textos_tabla[(corrida, table)] = data.get("tex")
     for path in reportes:
         for number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), start=1):
             label = f"reporte:{Path(path).name}:{number}"
@@ -814,14 +848,61 @@ def recalcular(fuentes: Fuentes, corridas: Sequence[Path]) -> tuple[int, int, li
 # --- verificación ---------------------------------------------------------------------
 
 
-def _comparar_tabla(table: str, written: list[str], expected: list[str], relative: str, como: str) -> dict | None:
-    if written == expected:
+def _lineas_tex(text: str) -> list[str]:
+    """Líneas de un ``.tex`` sin comentarios, espacios al final ni líneas vacías (y sin retornos de carro)."""
+
+    text = COMENTARIO.sub("", text.replace("\r\n", "\n").replace("\r", "\n"))
+    return [line.rstrip() for line in text.split("\n") if line.strip()]
+
+
+def _bloque(text: str | None) -> str | None:
+    match = BLOQUE_TABLA.search(text or "")
+    return match.group(0) if match else None
+
+
+def _comparar_tabla(fuentes: Fuentes, key: ClaveTabla, written: list[str], escrito_tex: str, relative: str, como: str, *,
+                    bloque: bool = False) -> dict | None:
+    """Una tabla generada debe ser la que escribió el generador: sus números y todo su texto.
+
+    Primero los números (en orden y con signo); si cuadran, el texto entero (rótulos,
+    veredictos, ids de obra, notas, encabezado), sin comentarios ni espacios al final.
+    Con ``bloque``, sólo el ``tabular`` de la tabla, copiado dentro de un capítulo.
+    """
+
+    corrida, table = key
+    expected = fuentes.tablas[key]
+    base = {"tipo": "tabla_editada", "archivo": relative, "linea": None, "texto": None, "tabla": table, "corrida": corrida,
+            "reconocida_por": como}
+    if written != expected:
+        first = next((i for i, (w, e) in enumerate(zip(written, expected)) if w != e), min(len(written), len(expected)))
+        return {**base, "detalle": "números", "primera_diferencia": first, "escrito": written[first:first + 3],
+                "esperado": expected[first:first + 3], "sobran": sorted((Counter(written) - Counter(expected)).elements()),
+                "faltan": sorted((Counter(expected) - Counter(written)).elements())}
+    generado = fuentes.textos_tabla.get(key)
+    if generado is None:
+        return {**base, "tipo": "procedencia_sin_texto",
+                "detalle": "la procedencia no guarda el .tex de la tabla: no se pueden revisar sus rótulos ni veredictos"}
+    lines, esperadas = _lineas_tex(escrito_tex), _lineas_tex((_bloque(generado) or "") if bloque else generado)
+    if lines == esperadas:
         return None
-    first = next((i for i, (w, e) in enumerate(zip(written, expected)) if w != e), min(len(written), len(expected)))
-    return {"tipo": "tabla_editada", "archivo": relative, "linea": None, "texto": None, "tabla": table, "reconocida_por": como,
-            "primera_diferencia": first, "escrito": written[first:first + 3], "esperado": expected[first:first + 3],
-            "sobran": sorted((Counter(written) - Counter(expected)).elements()),
-            "faltan": sorted((Counter(expected) - Counter(written)).elements())}
+    first = next((i for i, (w, e) in enumerate(zip(lines, esperadas)) if w != e), min(len(lines), len(esperadas)))
+    return {**base, "detalle": "texto (rótulos, veredictos, ids, notas o encabezado)", "primera_diferencia": first,
+            "escrito": lines[first:first + 2], "esperado": esperadas[first:first + 2]}
+
+
+def _orden_tablas(key: ClaveTabla) -> tuple[str, str]:
+    return str(key[0]), key[1]
+
+
+def _elegir(fuentes: Fuentes, candidatos: list[ClaveTabla], written: list[str], text: str, *, bloque: bool = False) -> ClaveTabla:
+    """Entre tablas del mismo nombre (de corridas distintas), la que coincide; si ninguna, la primera."""
+
+    candidatos = sorted(candidatos, key=_orden_tablas)
+    for key in candidatos:
+        generado = fuentes.textos_tabla.get(key) or ""
+        if fuentes.tablas[key] == written and _lineas_tex(_bloque(generado) or "" if bloque else generado) == _lineas_tex(text):
+            return key
+    return next((key for key in candidatos if fuentes.tablas[key] == written), candidatos[0])
 
 
 def _expandir(paths: Sequence[Path] | None) -> list[Path]:
@@ -859,29 +940,36 @@ def verificar(tesis: Path, *, procedencias: Sequence[Path] | None = None, report
         # tablas generadas: por cabecera o nombre (todo el archivo) o por contenido (cada tabular)
         en_tabla: list[tuple[int, int]] = []
         header = CABECERA_GENERADA.search(original)
-        table = None
-        if header and f"{header.group(1)}.tex" in fuentes.tablas:
-            table, como = f"{header.group(1)}.tex", "cabecera"
-        elif path.name in fuentes.tablas:
-            table, como = path.name, "nombre"
-        if table is not None:
-            vistos.add(table)
+        written_all = [n.con_signo for n in result.numeros]
+        candidatos: list[ClaveTabla] = []
+        como = "cabecera"
+        if header:
+            candidatos = [k for k in fuentes.tablas if k[1] == f"{header.group('tabla')}.tex"
+                          and (header.group("corrida") is None or k[0] == header.group("corrida"))]
+        if not candidatos:
+            como = "nombre"
+            candidatos = [k for k in fuentes.tablas if k[1] == path.name]
+        if candidatos:
+            key = _elegir(fuentes, candidatos, written_all, original)
+            vistos.add(key)
             en_tabla.append((0, len(original)))
-            error = _comparar_tabla(table, [n.con_signo for n in result.numeros], fuentes.tablas[table], relative, como)
+            error = _comparar_tabla(fuentes, key, written_all, original, relative, como)
             if error:
                 errores.append(error)
         else:
             for block in BLOQUE_TABLA.finditer(original):
                 written = [n.con_signo for n in result.numeros if block.start() <= n.pos < block.end()]
                 best, overlap = None, 0
-                for name, expected in fuentes.tablas.items():
+                for key, expected in sorted(fuentes.tablas.items(), key=lambda item: _orden_tablas(item[0])):
                     common = sum((Counter(written) & Counter(expected)).values())
                     if len(expected) >= 3 and common >= max(3, len(expected) / 2) and common > overlap:
-                        best, overlap = name, common
+                        best, overlap = key, common
                 if best is not None:
+                    iguales = [k for k, expected in fuentes.tablas.items() if expected == fuentes.tablas[best]]
+                    best = _elegir(fuentes, iguales, written, block.group(0), bloque=True)
                     vistos.add(best)
                     en_tabla.append((block.start(), block.end()))
-                    error = _comparar_tabla(best, written, fuentes.tablas[best], relative, "contenido")
+                    error = _comparar_tabla(fuentes, best, written, block.group(0), relative, "contenido", bloque=True)
                     if error:
                         errores.append(error)
 
@@ -899,9 +987,9 @@ def verificar(tesis: Path, *, procedencias: Sequence[Path] | None = None, report
                                 "cita": numero.cita, "contexto": lines[numero.linea - 1].strip()[:200]})
             else:
                 emparejados.append({"archivo": relative, "linea": numero.linea, "texto": numero.con_signo, "fuente": source})
-    for table in sorted(set(fuentes.tablas) - vistos):
-        if fuentes.tablas[table]:
-            avisos.append(f"La tabla generada {table} no aparece en {tesis}.")
+    for corrida, table in sorted(set(fuentes.tablas) - vistos, key=_orden_tablas):
+        if fuentes.tablas[(corrida, table)]:
+            avisos.append(f"La tabla generada {table} (corrida {corrida}) no aparece en {tesis}.")
     return {
         "tesis": tesis.resolve().as_posix(),
         "n_archivos": len(archivos),

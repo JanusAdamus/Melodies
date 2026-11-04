@@ -6,11 +6,18 @@ Lee, sólo lectura:
   ``summary.json``, ``manifest.json``), preregistro sección A;
 * una corrida PDMX de ``Comparacion/runner.py`` (``results_summary.csv``,
   ``headline_estimates.json``, ``pairwise_comparisons.json``, ``pareto_summary.json``,
-  ``engineering_costs.csv``, ``hdp_chain_diagnostics.json``), preregistro sección B.
+  ``engineering_costs.csv``, ``hdp_chain_diagnostics.json``, ``config.json``,
+  ``preprocessing_report.json`` y las auditorías ``protocol_audit.json``,
+  ``training_exposure_audit.json`` y ``denominator_audit.json``), preregistro sección B.
+  Una corrida con el protocolo fallido o con evaluación traslapada no se escribe; una que
+  no es la principal de B (``DISENO_B_PRINCIPAL``: el smoke, las sensibilidades) o que es
+  exploratoria se escribe con «IC Holm (regla)», la nota y el aviso de que no decide.
 
 Escribe en un directorio de salida nuevo (o vacío) un ``.tex`` por tabla (sólo el
-``tabular``: el título y la etiqueta los pone el capítulo) y, junto a cada uno,
-``<tabla>.procedencia.json`` con cada número escrito, en el orden en que aparece: su
+``tabular``: el título y la etiqueta los pone el capítulo; la cabecera nombra la corrida) y,
+junto a cada uno, ``<tabla>.procedencia.json`` con el ``.tex`` completo (``tex``: el
+verificador compara también rótulos, veredictos, ids y notas) y cada número escrito, en el
+orden en que aparece: su
 ``id`` (para citarlo en la prosa con ``\\cifra{<id>}{<número>}``), su texto, su valor
 sin redondear, el archivo, el campo o columna y la fila, y cómo recalcularlo: ``ruta``
 (claves dentro del JSON; ``*`` recorre los valores de un diccionario) o ``columna`` y
@@ -342,8 +349,11 @@ class Tabla:
     def fila(self, celdas: Iterable[str]) -> None:
         self.filas.append(" & ".join(celdas) + r" \\")
 
-    def tex(self) -> str:
-        lines = [CABECERA, f"% Procedencia de cada número: {self.nombre.replace('.tex', '.procedencia.json')}\n"]
+    def tex(self, corrida: str | None = None) -> str:
+        """``corrida``: nombre de la corrida, en la cabecera (dos corridas escriben tablas del mismo nombre)."""
+
+        de = f" (corrida {corrida})" if corrida else ""
+        lines = [CABECERA, f"% Procedencia de cada número: {self.nombre.replace('.tex', '.procedencia.json')}{de}\n"]
         if self.vacia:
             lines.extend(f"\\pendiente{{{motivo}}}\n" for motivo in self.pendientes)
             return "".join(lines)
@@ -804,7 +814,8 @@ def tablas_porobra(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
 
     orden = {nombre: i for i, nombre in enumerate(TABLAS_POROBRA)}
     tablas.sort(key=lambda tabla: orden[tabla.nombre])
-    meta = {"confirmatoria": confirmatoria, "tipo": prereg.get("run_kind"), "auditoria": audit.get("status")}
+    meta = {"confirmatoria": confirmatoria, "decide": confirmatoria, "tipo": prereg.get("run_kind"),
+            "auditoria": audit.get("status")}
     return tablas, avisos, meta
 
 
@@ -825,6 +836,82 @@ NOTA_REGLA_A = ("Veredicto: regla del preregistro (sección A, Aclaración 2) so
 
 
 # --- corrida PDMX (preregistro B) -----------------------------------------------------
+
+
+#: Diseño de la corrida principal de la sección B en ``config.json`` (``asdict(LearningCurveConfig)``):
+#: partición con semilla 7, 3 semillas de datos × 2 de modelo, VOMM en la familia (Aclaración 2)
+#: y lo demás como la corrida original (comando de la tarea 2.2 del handoff, valores por
+#: omisión de ``Comparacion/config.py`` y de ``next_token_experiment/config.py`` en 9fbf714).
+#: Las sensibilidades de B (sólo frac = 1.0; ``--train-stride 128``; ``--split-seed`` 17 y 29)
+#: y el smoke difieren en alguno.
+DISENO_B_PRINCIPAL = (
+    (("split_seed",), 7),
+    (("data_seeds",), [1, 2, 3]),
+    (("model_seeds",), [1, 2]),
+    (("train_fractions",), [0.1, 0.25, 0.5, 0.75, 1.0]),
+    (("test_fraction",), 0.15),
+    (("validation_fraction",), 0.1),
+    (("include_vomm_control",), True),
+    (("experiment", "windows", "max_context_length"), 128),
+    (("experiment", "windows", "train_stride"), 64),
+    (("experiment", "windows", "eval_stride"), 128),
+    (("experiment", "transformer", "max_epochs"), 25),
+)
+#: partituras consideradas (``--max-files 3000``): preparadas + excluidas en preprocessing_report.json
+PARTITURAS_B = 3000
+
+
+def _igual(actual: Any, esperado: Any) -> bool:
+    if isinstance(esperado, bool):
+        return actual is esperado
+    if isinstance(esperado, list):
+        return isinstance(actual, list) and len(actual) == len(esperado) and all(_igual(a, e) for a, e in zip(actual, esperado))
+    if isinstance(actual, bool) or not isinstance(actual, (int, float)):
+        return False
+    return float(actual) == float(esperado)
+
+
+def _diferencias_con_la_principal_b(config: Mapping, preprocessing: Mapping) -> list[str]:
+    diferencias = []
+    for ruta, esperado in DISENO_B_PRINCIPAL:
+        actual: Any = config
+        for key in ruta:
+            actual = actual.get(key) if isinstance(actual, Mapping) else None
+        if not _igual(actual, esperado):
+            diferencias.append(f"{'.'.join(ruta)}={actual!r} (preregistro: {esperado!r})")
+    try:
+        partituras = int(preprocessing["n_prepared_pieces"]) + int(preprocessing["n_exclusions"])
+    except (KeyError, TypeError, ValueError):
+        partituras = None
+    if partituras != PARTITURAS_B:
+        diferencias.append(f"partituras={partituras!r} (preregistro: {PARTITURAS_B})")
+    return diferencias
+
+
+def _auditorias_pdmx(corrida: Corrida) -> list[str]:
+    """Las auditorías de la corrida PDMX: una que no pasó detiene el generador, como en la sección A."""
+
+    path, label = corrida.archivo("protocol_audit.json")
+    protocol = _leer_json(path)
+    if protocol.get("status") != "passed":
+        raise ArtefactoInconsistente(f"{label}: la auditoría de protocolo no pasó (status={protocol.get('status')!r}); "
+                                     "sus cifras no se escriben")
+    path, label = corrida.archivo("training_exposure_audit.json")
+    exposure = _leer_json(path)
+    if exposure.get("evaluation_is_non_overlapping") is not True:
+        raise ArtefactoInconsistente(f"{label}: la evaluación de validación o prueba no es sin traslape "
+                                     f"(evaluation_is_non_overlapping={exposure.get('evaluation_is_non_overlapping')!r})")
+    path, label = corrida.archivo("denominator_audit.json")
+    denominators = _leer_json(path)
+    if "status" in denominators and denominators["status"] not in ("ok", "passed"):
+        raise ArtefactoInconsistente(f"{label}: status={denominators['status']!r}")
+    avisos = []
+    sin_nll = denominators.get("unscored_test_files") or []
+    descartes = denominators.get("discards") or []
+    if sin_nll or descartes:
+        avisos.append(f"pdmx: {label}: {len(sin_nll)} archivo(s) de prueba sin NLL y {len(descartes)} fila(s) descartada(s); "
+                      "las comparaciones usan sólo lo evaluado.")
+    return avisos
 
 
 def _estado_analisis(status: Mapping | None, nombre: str) -> list[str]:
@@ -854,6 +941,14 @@ def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
 
     avisos = _estado_analisis(pairwise.get("analysis_status"), "pdmx")
     exploratoria = any("exploratoria" in aviso for aviso in avisos)
+    avisos += _auditorias_pdmx(corrida)
+    config_path, _ = corrida.archivo("config.json")
+    prep_path, _ = corrida.archivo("preprocessing_report.json")
+    diferencias = _diferencias_con_la_principal_b(_leer_json(config_path), _leer_json(prep_path))
+    if diferencias:
+        avisos.append(f"pdmx: {corrida.directorio.name} no es la corrida principal de la sección B (difiere en "
+                      f"{'; '.join(diferencias)}); sus veredictos no deciden.")
+    decide = not exploratoria and not diferencias
     orientation = pairwise.get("difference_orientation", "model_a_minus_model_b")
     if orientation != "model_a_minus_model_b":
         raise ArtefactoInconsistente(f"{pairwise_label}: orientación desconocida {orientation!r}")
@@ -890,10 +985,14 @@ def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
     tablas.append(t)
 
     # comparaciones pareadas
-    t = Tabla("pdmx_comparaciones.tex", "llrrllrrr", ENCABEZADO_COMPARACION)
+    t = Tabla("pdmx_comparaciones.tex", "llrrllrrr", _encabezado_comparacion(decide))
     _comparaciones(t, pairwise["comparisons"], archivo=pairwise_label, prefijo=["comparisons"], orientar_a="transformer")
     if exploratoria:
         t.notas.append("Corrida exploratoria: no evalúa la regla B del preregistro.")
+    nota_no_principal = ("Esta corrida no es la corrida principal de la sección B (detalle en generador\\_resumen.json): "
+                         "sus veredictos no deciden.")
+    if diferencias:
+        t.notas.append(nota_no_principal)
     t.notas.append("Veredicto: regla del preregistro (sección B, Aclaración 2) sobre el IC por obra ajustado por Holm por pasos "
                    "(familia de seis); con el transformador, A es el transformador.")
     tablas.append(t)
@@ -958,6 +1057,8 @@ def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
         t.notas.append("Pares con menos obras en común que el mínimo de la Enmienda 1: comparados con los marginales.")
     if frontier.get("devices_differ"):
         t.notas.append("Los modelos corren en dispositivos distintos (columna Dispositivo).")
+    if diferencias:
+        t.notas.append(nota_no_principal)
     tablas.append(t)
 
     # diagnóstico de cadenas del HDP
@@ -984,7 +1085,7 @@ def tablas_pdmx(corrida: Corrida) -> tuple[list[Tabla], list[str], dict]:
             "declarada" if diag.get("convergence_claimed") else "no declarada",
         ])
     tablas.append(t)
-    return tablas, avisos, {}
+    return tablas, avisos, {"decide": decide, "diferencias_con_la_principal": diferencias}
 
 
 # --- figuras y escritura --------------------------------------------------------------
@@ -1002,12 +1103,15 @@ def figuras(corrida: Corrida, salida: Path) -> list[dict]:
 
 
 def _escribir(salida: Path, tabla: Tabla, fuentes: Mapping[str, str], corrida: Path | None) -> None:
-    (salida / tabla.nombre).write_text(tabla.tex(), encoding="utf-8")
+    tex = tabla.tex(corrida.resolve().name if corrida else None)
+    (salida / tabla.nombre).write_text(tex, encoding="utf-8")
     procedencia = {
         "tabla": tabla.nombre,
         "corrida": corrida.resolve().as_posix() if corrida else None,
         "fuentes_sha256": dict(fuentes),
         "cifras": tabla.cifras,
+        # el .tex tal como se escribió: el verificador compara también rótulos, veredictos, ids y notas
+        "tex": tex,
     }
     if tabla.pendientes:
         procedencia["pendientes"] = list(tabla.pendientes)

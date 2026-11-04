@@ -656,3 +656,233 @@ def test_generated_tables_pass_the_verifier_which_recomputes_them(gen, ver, tmp_
     assert report["errores"] == []
     assert report["n_cifras_recalculadas"] == report["n_cifras_procedencia"] > 100
     assert report["n_numeros_con_fuente"] > 100
+
+
+# --- auditorías y diseño de la corrida PDMX (sección B) -----------------------------------
+
+
+def _pdmx_tex(out: Path) -> str:
+    return (out / "pdmx_comparaciones.tex").read_text(encoding="utf-8")
+
+
+def _avisos(out: Path) -> list[str]:
+    return json.loads((out / "generador_resumen.json").read_text(encoding="utf-8"))["avisos"]
+
+
+def test_pdmx_main_run_decides(gen, tmp_path):
+    out = _pdmx(gen, tmp_path)
+    tex = _pdmx_tex(out)
+    assert "IC Holm (decide)" in tex and "no es la corrida principal" not in tex
+    assert not any("no es la corrida principal" in aviso for aviso in _avisos(out))
+    summary = json.loads((out / "generador_resumen.json").read_text(encoding="utf-8"))
+    assert summary["corridas"]["pdmx"]["decide"] is True
+    # las auditorías entran en la procedencia: su sha256 queda registrado
+    fuentes = _provenance(out, "pdmx_comparaciones.tex")["fuentes_sha256"]
+    assert {"protocol_audit.json", "training_exposure_audit.json", "denominator_audit.json", "config.json",
+            "preprocessing_report.json"} <= {etiqueta.split("/", 1)[1] for etiqueta in fuentes}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "campo"),
+    [
+        ({"config": {"data_seeds": [1], "train_fractions": [0.5, 1.0]}, "n_files": 50}, "data_seeds"),  # el smoke
+        ({"config": {"split_seed": 17, "train_fractions": [1.0]}}, "split_seed"),  # sensibilidad de partición
+        ({"config": {"train_fractions": [1.0], "experiment": {"windows": {"train_stride": 128}}}}, "train_stride"),
+        ({"config": {"experiment": {"transformer": {"max_epochs": 3}}}}, "max_epochs"),
+        ({"n_files": 50}, "partituras"),
+    ],
+)
+def test_pdmx_run_that_is_not_the_main_one_does_not_decide(gen, tmp_path, kwargs, campo):
+    out = _pdmx(gen, tmp_path, **kwargs)
+    tex = _pdmx_tex(out)
+    assert "(decide)" not in tex and "IC Holm (regla)" in tex
+    assert "no es la corrida principal" in tex
+    # la frontera de Pareto también decide (dominancia, Enmienda 1): lleva la misma nota
+    assert "no es la corrida principal" in (out / "pdmx_pareto.tex").read_text(encoding="utf-8")
+    avisos =[aviso for aviso in _avisos(out) if "no es la corrida principal" in aviso]
+    assert len(avisos) == 1 and campo in avisos[0]
+    summary = json.loads((out / "generador_resumen.json").read_text(encoding="utf-8"))
+    assert summary["corridas"]["pdmx"]["decide"] is False
+
+
+def test_pdmx_exploratory_run_does_not_decide(gen, tmp_path):
+    out = _pdmx(gen, tmp_path, status="exploratory")
+    assert "(decide)" not in _pdmx_tex(out)
+
+
+def _rewrite_json(path: Path, update) -> None:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    update(data)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_pdmx_protocol_audit_that_did_not_pass_is_refused(gen, tmp_path):
+    run = write_pdmx_run(tmp_path / "runs")
+    _rewrite_json(run / "protocol_audit.json", lambda data: data.update(status="failed"))
+    with pytest.raises(gen.ArtefactoInconsistente, match="protocol_audit.json"):
+        gen.main(["--pdmx", str(run), "--salida", str(tmp_path / "out")])
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("archivo", ["protocol_audit.json", "training_exposure_audit.json", "denominator_audit.json",
+                                     "config.json", "preprocessing_report.json"])
+def test_pdmx_run_without_its_audits_is_refused(gen, tmp_path, archivo):
+    run = write_pdmx_run(tmp_path / "runs")
+    (run / archivo).unlink()
+    with pytest.raises(FileNotFoundError, match=archivo):
+        gen.main(["--pdmx", str(run), "--salida", str(tmp_path / "out")])
+
+
+def test_pdmx_overlapping_test_evaluation_is_refused(gen, tmp_path):
+    run = write_pdmx_run(tmp_path / "runs")
+    _rewrite_json(run / "training_exposure_audit.json", lambda data: data.update(evaluation_is_non_overlapping=False))
+    with pytest.raises(gen.ArtefactoInconsistente, match="training_exposure_audit.json"):
+        gen.main(["--pdmx", str(run), "--salida", str(tmp_path / "out")])
+
+
+def test_pdmx_denominator_audit_with_a_bad_status_is_refused(gen, tmp_path):
+    run = write_pdmx_run(tmp_path / "runs")
+    _rewrite_json(run / "denominator_audit.json", lambda data: data.update(status="incomplete"))
+    with pytest.raises(gen.ArtefactoInconsistente, match="denominator_audit.json"):
+        gen.main(["--pdmx", str(run), "--salida", str(tmp_path / "out")])
+
+
+def test_pdmx_unscored_test_files_are_warned(gen, tmp_path):
+    run = write_pdmx_run(tmp_path / "runs")
+    _rewrite_json(run / "denominator_audit.json", lambda data: data.update(unscored_test_files=["pdmx/sintetica.mxl"]))
+    out = tmp_path / "out"
+    gen.main(["--pdmx", str(run), "--salida", str(out)])
+    assert any("denominator_audit.json" in aviso and "1 archivo" in aviso for aviso in _avisos(out))
+
+
+# --- el verificador protege el texto de las tablas generadas ------------------------------
+
+
+def _both(gen, tmp_path) -> Path:
+    out = tmp_path / "out"
+    gen.main(["--porobra", str(write_porobra_run(tmp_path / "runs")), "--pdmx", str(write_pdmx_run(tmp_path / "runs")),
+              "--salida", str(out)])
+    return out
+
+
+def _thesis(out: Path, thesis: Path, tabla: str | None = None, editar=None) -> Path:
+    thesis.mkdir(parents=True)
+    for path in out.glob("*.tex"):
+        text = path.read_text(encoding="utf-8")
+        if path.name == tabla:
+            edited = editar(text)
+            assert edited != text, "la mutación no cambió nada"
+            text = edited
+        (thesis / path.name).write_text(text, encoding="utf-8")
+    return thesis
+
+
+def _swap(text: str, a: str, b: str) -> str:
+    return text.replace(a, "\0").replace(b, a).replace("\0", b)
+
+
+def _swap_first_ids(text: str) -> str:
+    import re
+
+    ids = re.findall(r"\\texttt\{[^}]*\}", text)
+    first, second = ids[0], ids[1]
+    return text.replace(first, "\0", 1).replace(second, first, 1).replace("\0", second, 1)
+
+
+def _without_notes(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.startswith(r"\multicolumn")) + "\n"
+
+
+MUTACIONES = {
+    "veredicto": ("porobra_comparaciones.tex", lambda t: t.replace("no hay evidencia", "mejora", 1)),
+    "rotulos_nll": ("porobra_nll.tex", lambda t: _swap(t, "Bigrama", "Unigrama")),
+    "ids_de_obra": ("porobra_por_obra.tex", _swap_first_ids),
+    "notas_borradas": ("porobra_sensibilidad_sin_techo_k.tex", _without_notes),
+    "no_decide_a_decide": ("porobra_comparaciones_sensibilidad.tex", lambda t: t.replace("(regla)", "(decide)")),
+    "pdmx_a_b": ("pdmx_comparaciones.tex", lambda t: t.replace("Transformador & HMM finito", "HMM finito & Transformador")),
+    "pdmx_veredicto": ("pdmx_comparaciones.tex", lambda t: t.replace("& mejora &", "& no hay evidencia &", 1)),
+}
+
+
+def test_untouched_tables_pass_even_with_windows_line_endings_and_comments(gen, ver, tmp_path):
+    out = _both(gen, tmp_path)
+    thesis = _thesis(out, tmp_path / "tesis")
+    path = thesis / "porobra_nll.tex"
+    path.write_bytes(("% copiada al capítulo\n" + path.read_text(encoding="utf-8")).replace("\n", "\r\n").encode("utf-8"))
+    report = ver.verificar(thesis, procedencias=[out], exigir_cita=True)
+    assert report["errores"] == []
+
+
+@pytest.mark.parametrize("mutacion", sorted(MUTACIONES))
+def test_an_edited_label_verdict_id_or_note_is_caught(gen, ver, tmp_path, mutacion):
+    out = _both(gen, tmp_path)
+    tabla, editar = MUTACIONES[mutacion]
+    thesis = _thesis(out, tmp_path / "tesis", tabla, editar)
+    errores = ver.verificar(thesis, procedencias=[out], exigir_cita=True)["errores"]
+    assert [(e["tipo"], e["tabla"]) for e in errores] == [("tabla_editada", tabla)]
+
+
+def test_an_edited_table_copied_into_a_chapter_is_caught(gen, ver, tmp_path):
+    import re
+
+    out = _both(gen, tmp_path)
+    thesis = tmp_path / "tesis"
+    thesis.mkdir()
+    tex = (out / "porobra_nll.tex").read_text(encoding="utf-8")
+    block = re.search(r"\\begin\{tabular\}.*?\\end\{tabular\}", tex, re.S).group(0)
+    (thesis / "cap4.tex").write_text("Texto.\n\\begin{table}\n" + block + "\n\\end{table}\n", encoding="utf-8")
+    procedencia = sorted(out.glob("porobra_nll.procedencia.json"))
+    assert ver.verificar(thesis, procedencias=procedencia, exigir_cita=True)["errores"] == []
+    (thesis / "cap4.tex").write_text("Texto.\n\\begin{table}\n" + _swap(block, "Bigrama", "Unigrama") + "\n\\end{table}\n",
+                                     encoding="utf-8")
+    errores = ver.verificar(thesis, procedencias=procedencia, exigir_cita=True)["errores"]
+    assert [e["tipo"] for e in errores] == ["tabla_editada"]
+
+
+# --- dos corridas del mismo generador (principal y sensibilidad de truncamiento 40) -------
+
+T40 = "porobra_heldout_t40_20261101_abcdef1"
+
+
+def _two_runs(gen, tmp_path) -> tuple[Path, Path]:
+    rows = porobra_rows()
+    r20 = write_porobra_run(tmp_path / "runs")
+    r40 = write_porobra_run(tmp_path / "runs", name=T40, rows=rows,
+                            summary=porobra_summary(rows, run_kind="sensibilidad_truncamiento_40", truncation=40),
+                            audit=porobra_audit(confirmatory=False, run_kind="sensibilidad_truncamiento_40"),
+                            config={"truncation": 40})
+    o20, o40 = tmp_path / "o20", tmp_path / "o40"
+    gen.main(["--porobra", str(r20), "--salida", str(o20)])
+    gen.main(["--porobra", str(r40), "--salida", str(o40)])
+    return o20, o40
+
+
+def test_two_runs_verify_together(gen, ver, tmp_path):
+    o20, o40 = _two_runs(gen, tmp_path)
+    thesis = tmp_path / "tesis"
+    _thesis(o20, thesis / "t20")
+    _thesis(o40, thesis / "t40")
+    report = ver.verificar(thesis, procedencias=[o20, o40], exigir_cita=True)
+    assert report["errores"] == [] and report["avisos"] == []
+    # cada tabla se compara con la procedencia de su corrida, aunque los números coincidan
+    path = thesis / "t40" / "porobra_comparaciones.tex"
+    path.write_text(path.read_text(encoding="utf-8").replace("(regla)", "(decide)"), encoding="utf-8")
+    errores = ver.verificar(thesis, procedencias=[o20, o40], exigir_cita=True)["errores"]
+    assert [(e["tipo"], e["archivo"]) for e in errores] == [("tabla_editada", "t40/porobra_comparaciones.tex")]
+
+
+def test_a_citation_shared_by_two_runs_must_name_its_run(gen, ver, tmp_path):
+    o20, o40 = _two_runs(gen, tmp_path)
+    entry = _provenance(o40, "porobra_comparaciones.tex")["cifras"][1]
+    assert entry["id"] == _provenance(o20, "porobra_comparaciones.tex")["cifras"][1]["id"]
+    thesis = tmp_path / "tesis"
+    thesis.mkdir()
+    cap = thesis / "cap.tex"
+    cap.write_text(f"Con el truncamiento mayor: \\cifra{{{entry['id']}}}{{{entry['texto']}}}.\n", encoding="utf-8")
+    errores = ver.verificar(thesis, procedencias=[o20, o40], exigir_cita=True)["errores"]
+    assert [e["tipo"] for e in errores] == ["cita_ambigua"]
+    cap.write_text(f"Con el truncamiento mayor: \\cifra{{{T40}/{entry['id']}}}{{{entry['texto']}}}.\n", encoding="utf-8")
+    assert ver.verificar(thesis, procedencias=[o20, o40], exigir_cita=True)["errores"] == []
+    # con una sola corrida, el id sin corrida basta
+    cap.write_text(f"Con el truncamiento mayor: \\cifra{{{entry['id']}}}{{{entry['texto']}}}.\n", encoding="utf-8")
+    assert ver.verificar(thesis, procedencias=[o40], exigir_cita=True)["errores"] == []

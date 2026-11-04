@@ -12,7 +12,10 @@ de tablas y el verificador de cifras de la tesis sin correr modelos.
   hashes de ``outputs`` y la auditoría la ruta de la corrida (``run_dir``), como el CLI.
 * PDMX: el de ``Comparacion/runner.py``: ``results_summary.csv``,
   ``headline_estimates.json``, ``pairwise_comparisons.json``, ``pareto_summary.json``,
-  ``engineering_costs.csv`` y ``hdp_chain_diagnostics.json``.
+  ``engineering_costs.csv`` y ``hdp_chain_diagnostics.json``, más ``config.json``,
+  ``preprocessing_report.json`` y las auditorías (``protocol_audit.json``,
+  ``training_exposure_audit.json``, ``denominator_audit.json``).  Por omisión, con el
+  diseño de la corrida principal de la sección B.
 """
 
 from __future__ import annotations
@@ -249,10 +252,42 @@ def pdmx_comparisons() -> list[dict]:
     ]
 
 
+#: Diseño de la corrida principal de B en ``config.json`` (``asdict(LearningCurveConfig)``): los valores por omisión
+#: de ``Comparacion/config.py`` y el comando de la tarea 2.2 del handoff.
+PDMX_MAIN_CONFIG = {
+    "split_seed": 7, "data_seeds": [1, 2, 3], "model_seeds": [1, 2], "train_fractions": [0.1, 0.25, 0.5, 0.75, 1.0],
+    "test_fraction": 0.15, "validation_fraction": 0.1, "include_vomm_control": True,
+    "experiment": {"windows": {"max_context_length": 128, "min_window_length": 32, "train_stride": 64, "eval_stride": 128},
+                   "transformer": {"max_epochs": 25, "n_layers": 3}},
+}
+
+
+def _merge(base: dict, update: dict) -> dict:
+    out = dict(base)
+    for key, value in update.items():
+        out[key] = _merge(out[key], value) if isinstance(value, dict) and isinstance(out.get(key), dict) else value
+    return out
+
+
 def write_pdmx_run(root: Path, *, name: str = "tesis_corregida_20261101_abcdef1", comparisons=None, status="preregistered",
-                   gaps=()) -> Path:
+                   gaps=(), config: dict | None = None, n_files: int = 3000) -> Path:
+    """``config`` cambia campos de ``config.json``; ``n_files``, las partituras consideradas (preparadas + excluidas)."""
+
     run = root / name
     run.mkdir(parents=True)
+    run_config = _merge({**PDMX_MAIN_CONFIG, "include_vomm_control": status == "preregistered"}, config or {})
+    (run / "config.json").write_text(json.dumps(run_config), encoding="utf-8")
+    (run / "preprocessing_report.json").write_text(json.dumps({"n_prepared_pieces": n_files - 3, "n_exclusions": 3,
+                                                               "n_total_tokens": 99, "n_total_events": 99}), encoding="utf-8")
+    (run / "protocol_audit.json").write_text(json.dumps({
+        "status": "passed", "policy": "every musical test event must be exposed by model evaluation exactly once",
+        "unexpected_piece_ids": [], "evidence": []}), encoding="utf-8")
+    (run / "training_exposure_audit.json").write_text(json.dumps({
+        "max_context_length": 128, "train_stride": 64, "eval_stride": 128, "splits": {},
+        "evaluation_is_non_overlapping": True}), encoding="utf-8")
+    (run / "denominator_audit.json").write_text(json.dumps({
+        "n_scored_files": 30, "n_canonical_works": 30, "unscored_test_files": [], "discards": [], "pairs": [],
+        "explanation": "files_equal_works"}), encoding="utf-8")
     analysis_status = {"status": status, "evaluates_preregistered_rule_B": status == "preregistered",
                        "preregistration_gaps": list(gaps)}
     fieldnames = ["model", "frac", "mean_n_train_tokens", "mean_test_nll", "runs", "n_distinct_runs",
