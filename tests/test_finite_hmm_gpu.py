@@ -130,15 +130,38 @@ def test_los_k_chicos_usan_numpy_aunque_haya_dispositivo(monkeypatch):
     assert {kind for kind, _ in used} == {"numpy"}
 
 
-def test_el_runner_rotula_el_dispositivo_y_mide_la_gpu_del_hmm_finito():
+def test_la_etiqueta_sale_de_lo_que_corrio_cada_candidato(monkeypatch):
+    from Comparacion import classical_models, runner
+
+    def fit(grid, device):
+        hmm = FiniteGlobalHMM(candidate_num_states=grid, max_iterations=1, tolerance=1e-4, seed=0,
+                              vocab_size=13, device=device)
+        return hmm.fit(_pieces(1, 6), _pieces(2, 3), bos_token_id=12)
+
+    monkeypatch.setattr(classical_models, "FINITE_HMM_GPU_MIN_STATES", 4)
+    only_small = fit((2, 3), "cpu")
+    assert [row["device"] for row in only_small.candidate_log] == ["cpu", "cpu"]
+    assert runner._finite_hmm_device_label(only_small) == "cpu"
+    mixed = fit((2, 4), DEVICES[-1])
+    assert [row["device"] for row in mixed.candidate_log] == ["cpu", DEVICES[-1]]
+    expected = "cpu" if DEVICES[-1] == "cpu" else "cpu+cuda"
+    assert runner._finite_hmm_device_label(mixed) == expected
+    assert runner._finite_hmm_device_label(fit((2,), None)) == "cpu"
+
+
+def test_el_runner_mide_la_gpu_cuando_se_pide_y_rotula_con_el_ajuste():
     from Comparacion import runner
 
     config = build_default_learning_curve_config()
-    assert runner._finite_hmm_device_label(config) == "cpu"
     assert runner._finite_hmm_measures_cuda(config) is False
-    gpu = replace(config, finite_hmm_device="cuda")
-    assert runner._finite_hmm_device_label(gpu) == "cuda"
-    assert runner._finite_hmm_measures_cuda(gpu) is True
+    assert runner._finite_hmm_measures_cuda(replace(config, finite_hmm_device="cuda")) is True
     source = open(runner.__file__, encoding="utf-8").read()
-    assert source.count("_finite_hmm_device_label(config)") >= 2
+    assert source.count("_finite_hmm_device_label(finite_hmm.fit_result)") == 2
     assert source.count("measure_cuda=_finite_hmm_measures_cuda(config)") == 2
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="sin CUDA")
+def test_un_numero_de_gpu_inexistente_falla_al_construir():
+    with pytest.raises(RuntimeError):
+        FiniteGlobalHMM(candidate_num_states=(2,), max_iterations=1, tolerance=1e-4, seed=0,
+                        device=f"cuda:{torch.cuda.device_count()}")

@@ -28,6 +28,8 @@ def _check_device(device: str | None) -> None:
     parsed = torch.device(device)
     if parsed.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError(f"El HMM finito pidió el dispositivo {device!r}, pero CUDA no está disponible.")
+    if parsed.type == "cuda" and parsed.index is not None and parsed.index >= torch.cuda.device_count():
+        raise RuntimeError(f"El HMM finito pidió el dispositivo {device!r}, que no existe en esta máquina.")
 BOS_TOKEN = "<BOS>"
 
 
@@ -302,6 +304,13 @@ class FiniteGlobalHMM:
         self.selected_states: int | None = None
         self.fit_result: FiniteHMMFitResult | None = None
 
+    def _estep_device(self, n_states: int) -> str:
+        """Dispositivo del paso E para ``n_states``: "cpu" si corre en numpy."""
+
+        if self.device is None or n_states < FINITE_HMM_GPU_MIN_STATES:
+            return "cpu"
+        return self.device
+
     def _initialize_parameters(self, n_states: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         initial_probs = rng.dirichlet(np.ones(n_states, dtype=float))
         transition_matrix = rng.dirichlet(np.ones(n_states, dtype=float), size=n_states)
@@ -458,6 +467,8 @@ class FiniteGlobalHMM:
             candidate_log.append(
                 {
                     "n_states": n_states,
+                    # Dónde corrió el paso E de este candidato (numpy = "cpu").
+                    "device": self._estep_device(n_states),
                     "validation_nll_per_token": validation_nll,
                     "fit_wall_clock_s": timing["fit_wall_clock_s"],
                     "validation_wall_clock_s": timing["validation_wall_clock_s"],

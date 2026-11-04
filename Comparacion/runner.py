@@ -125,14 +125,16 @@ def _file_sha256(path_value: str | None) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _finite_hmm_device_label(config: LearningCurveConfig) -> str:
-    """Dispositivo del paso E del HMM finito (los K chicos siguen en numpy)."""
+def _finite_hmm_device_label(fit_result: object) -> str:
+    """Dónde corrió de verdad el paso E de los candidatos: "cpu", "cuda" o "cpu+cuda"."""
 
-    return config.finite_hmm_device or "cpu"
+    log = getattr(fit_result, "candidate_log", None) or ()
+    kinds = sorted({"cpu" if str(row.get("device", "cpu")) == "cpu" else "cuda" for row in log})
+    return "+".join(kinds) if kinds else "cpu"
 
 
 def _finite_hmm_measures_cuda(config: LearningCurveConfig) -> bool:
-    return _finite_hmm_device_label(config).startswith("cuda")
+    return bool(config.finite_hmm_device) and str(config.finite_hmm_device).startswith("cuda")
 
 
 def _config_sha256(config: LearningCurveConfig) -> str:
@@ -2004,7 +2006,7 @@ def run_learning_curve_experiment(
                         "grid_extensions": finite_summary.get("grid_extensions"),
                         "effective_states": None,
                         "count_table_size": None,
-                        "device": _finite_hmm_device_label(config),
+                        "device": _finite_hmm_device_label(finite_hmm.fit_result),
                         "val_ppl": math.exp(float(finite_summary["validation_nll_per_token"])),
                         "test_ppl": finite_summary["test_perplexity"],
                         "test_nll": finite_summary["test_nll_per_token"],
@@ -2015,7 +2017,7 @@ def run_learning_curve_experiment(
                         **_search_cost_fields(
                             "finite_hmm",
                             selection_wall_clock_s=finite_summary.get("selection_wall_clock_s"),
-                            device=_finite_hmm_device_label(config),
+                            device=_finite_hmm_device_label(finite_hmm.fit_result),
                             config=config,
                         ),
                         **_protocol_cost_fields(
