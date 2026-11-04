@@ -133,6 +133,12 @@ def _finite_hmm_device_label(fit_result: object) -> str:
     return "+".join(kinds) if kinds else "cpu"
 
 
+def _finite_grid_limit_reason(config: LearningCurveConfig) -> str | None:
+    if not config.finite_hmm_final_ceiling:
+        return None
+    return f"Tope final de la rejilla en K = {config.finite_hmm_max_states} (Enmienda 14)."
+
+
 def _finite_hmm_measures_cuda(config: LearningCurveConfig) -> bool:
     return bool(config.finite_hmm_device) and str(config.finite_hmm_device).startswith("cuda")
 
@@ -1953,6 +1959,7 @@ def run_learning_curve_experiment(
                     vocab_size=comparison_vocabulary_size,
                     max_states=config.finite_hmm_max_states,
                     device=config.finite_hmm_device,
+                    final_ceiling=config.finite_hmm_final_ceiling,
                 )
                 with ResourceMonitor(measure_cuda=_finite_hmm_measures_cuda(config)) as finite_selection_resources:
                     finite_hmm.fit(
@@ -2004,6 +2011,7 @@ def run_learning_curve_experiment(
                         "selected_states": finite_summary["selected_states"],
                         "candidate_grid": json.dumps(finite_summary.get("candidate_grid")),
                         "grid_extensions": finite_summary.get("grid_extensions"),
+                        "hit_final_ceiling": finite_summary.get("hit_final_ceiling"),
                         "effective_states": None,
                         "count_table_size": None,
                         "device": _finite_hmm_device_label(finite_hmm.fit_result),
@@ -2302,7 +2310,9 @@ def run_learning_curve_experiment(
     )
     _write_json(
         output_root / "finite_hmm_grid_audit.json",
-        build_finite_hmm_grid_audit(raw_rows, grid=config.finite_hmm_states),
+        build_finite_hmm_grid_audit(
+            raw_rows, grid=config.finite_hmm_states, resource_limit_reason=_finite_grid_limit_reason(config)
+        ),
     )
     if config.include_vomm_control:
         _write_json(

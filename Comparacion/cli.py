@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--transformer-search-wall-clock-s", type=float, default=None, help="Wall-clock seconds of the Transformer architecture/hyperparameter search done outside this run. Without it the search cost is recorded as not measured.")
     parser.add_argument("--transformer-search-device", default=None, help="Device of the declared Transformer search, for example cuda or cpu.")
     parser.add_argument("--finite-hmm-max-states", type=int, default=None, help="Upper limit for the automatic growth of the finite HMM state grid while validation keeps selecting its maximum. Reaching it still at the maximum stops the run.")
+    parser.add_argument("--finite-hmm-final-ceiling", action="store_true", help="Treat --finite-hmm-max-states as final: a selection at it is marked instead of stopping the run (Enmienda 14).")
     parser.add_argument("--finite-hmm-device", default=None, help="Device for the finite HMM E-step (torch, float64), for example cuda. Same operations as the numpy path; without it numpy is used.")
     parser.add_argument("--vomm-max-order", type=int, default=None, help="Upper limit for the automatic growth of the VOMM order grid while validation keeps selecting its maximum.")
     parser.add_argument("--finite-hmm-max-iterations", type=int, default=None, help="Iteration budget of the finite HMM. Fitting stops early when the validation NLL stops improving, so reaching this cap means the budget was binding and not that the model converged.")
@@ -236,6 +237,8 @@ def main() -> None:
         updates["finite_hmm_max_iterations"] = args.finite_hmm_max_iterations
     if args.finite_hmm_max_states is not None:
         updates["finite_hmm_max_states"] = args.finite_hmm_max_states
+    if args.finite_hmm_final_ceiling:
+        updates["finite_hmm_final_ceiling"] = True
     if args.finite_hmm_device is not None:
         updates["finite_hmm_device"] = args.finite_hmm_device
     if args.vomm_max_order is not None:
