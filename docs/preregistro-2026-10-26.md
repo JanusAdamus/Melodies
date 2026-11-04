@@ -238,3 +238,64 @@ ya no vale. Son 7 obras expuestas. Las siete siguen en la métrica principal, y 
 análisis adicional sin ellas, que no decide, las excluye a todas. Ninguna regla de
 decisión cambia. Desde esta fecha, las pruebas y revisiones previas a la corrida
 confirmatoria no leen cifras de prueba de obras reales.
+
+## Aclaración 10, 2026-11-01 (exposición accidental después de la Aclaración 9)
+
+El 2026-11-01, una revisión de la tarea 1.4 hizo una búsqueda de texto en sus
+archivos temporales que, por accidente, mostró 3 líneas con un mismo valor numérico
+del `summary.json` de una corrida real corta (20 iteraciones, burn-in 10, 2 cadenas;
+commit 5f52884). El revisor lo reportó sin repetir el valor, no sabe a qué campo
+corresponde y dice no haberlo interpretado ni usado. Pudo ser una cifra derivada de
+las partes de prueba, así que se trata como tal. No se volvió a abrir para averiguarlo.
+
+Esa corrida usó sólo 3 obras: 12 Variaciones de Twinkle Twinkle, Arabesque L. 66 n.º 1
+y Ave Maria D 839, ya expuestas según la Aclaración 8. Siguen siendo 7 obras expuestas;
+ninguna regla de decisión cambia. Desde entonces, las revisiones tampoco hacen
+búsquedas de texto sobre las salidas de las corridas.
+
+## Enmienda 11, 2026-11-03 (antes de la corrida confirmatoria)
+
+Decisión de Adrián. Completa la sección A. Sus motivos usan sólo datos de ajuste y
+validación y simulaciones.
+
+**Tope de la rejilla del HMM finito.** La ampliación de la rejilla de K termina en
+K = 512. Elegir ese K ya no obliga a ampliar y no es una desviación. Motivo: en 3 de
+las 63 obras de hasta 300 eventos (Happy Birthday, Preludio Op. 28 n.º 4 y evcara
+sofyan, de 25 a 81 eventos), la NLL de validación baja casi siempre al crecer K y se
+acerca a la del modelo uniforme (ln 12 ≈ 2.4849), así que la regla de ampliar no
+terminaría con ningún techo. Esas obras siguen en la métrica principal y se marcan; su
+K no se interpreta como número de estados. Un análisis de sensibilidad, que no decide,
+repite la comparación sin ellas (`sensitivity_without_k_ceiling`).
+
+**Mínimo de obras para un veredicto (sección A).** Un bloque con menos de 10 obras
+reporta sus cifras, sin veredicto (`no_evaluable`), y eso no cuenta como cambio de
+veredicto. Por debajo de 30 obras el bloque lleva un aviso. Motivo: en una simulación
+de la revisión, con diferencias sin efecto real, sale algún veredicto en 88 % de los
+casos con 2 obras, 35 % con 5, 15 % con 10 y 8 % con 30. Es el mismo mínimo de 10 que la
+Enmienda 1 usa en la sección B. La regla de decisión no cambia.
+
+**Valores de implementación que el texto no fijaba.** Se fijan los que usa el código:
+5 inicios de Baum-Welch por K (semillas 0 a 4), 200 muestras para contar estados en el
+finito, semilla 0 de la estadística e hiperparámetros del HDP-HMM α = 8, α₀ = 4, γ = 2,
+κ = 0. El criterio de parada de Baum-Welch es la mejora del objetivo con previa que EM
+hace crecer, menor que 10⁻⁴.
+
+**Obras que no se pueden importar.** Una partitura que no se puede importar se excluye
+y se cuenta. Hoy es sólo Mozart, Sonata n.º 16, Allegro, por un error de importación
+(`MusicXMLImportException`). El destino esperado de los 169 candidatos queda fijado en
+el código, y cualquier diferencia es una desviación.
+
+**Dónde corre.** Por el plazo, lo que corre en CPU también se ejecuta en la computadora
+con GPU (Windows), no en la laptop Debian; esto sustituye la decisión 3. Todas las
+corridas salen de un mismo commit, que queda en cada manifiesto.
+
+## Aclaración 12, 2026-11-03 (precisa la Enmienda 11, antes de cualquier resultado)
+
+Por el plazo, la corrida principal de la sección B arrancó el 2026-11-03 desde el
+commit 9fbf714, sin esperar a que se mezclara el código final del análisis por obra.
+La frase «un mismo commit» de la Enmienda 11 se precisa así: cada corrida registra su
+commit en el manifiesto, y el código de cada sección no cambia entre sus corridas. Las
+sensibilidades y la medición de costo de la sección B salen de un commit cuyo
+`Comparacion/` y `next_token_experiment/` sean idénticos a los de 9fbf714, y eso se
+comprueba con `git diff` antes de lanzarlas. Las corridas de la sección A salen todas
+del mismo commit.
