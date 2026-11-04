@@ -15,6 +15,21 @@ from src.models.utils import length_buckets
 from .grid import grid_ceiling_message, next_grid_candidates
 
 EPSILON = 1e-12
+#: Con ``device``, sólo los candidatos con al menos estos estados usan torch: con K chico
+#: el costo fijo por paso temporal en la GPU supera al cálculo y numpy es más rápido.
+FINITE_HMM_GPU_MIN_STATES = 96
+
+
+def _check_device(device: str | None) -> None:
+    if device is None:
+        return
+    import torch
+
+    parsed = torch.device(device)
+    if parsed.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(f"El HMM finito pidió el dispositivo {device!r}, pero CUDA no está disponible.")
+    if parsed.type == "cuda" and parsed.index is not None and parsed.index >= torch.cuda.device_count():
+        raise RuntimeError(f"El HMM finito pidió el dispositivo {device!r}, que no existe en esta máquina.")
 BOS_TOKEN = "<BOS>"
 
 
@@ -136,6 +151,84 @@ def _expectation_batch(
     return initial_counts, transition_counts, emission_counts.T, log_likelihood
 
 
+def _expectation_batch_torch(
+    initial_probs: np.ndarray,
+    transition_matrix: np.ndarray,
+    emission_matrix: np.ndarray,
+    padded: np.ndarray,
+    lengths: np.ndarray,
+    *,
+    device: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """``_expectation_batch`` paso a paso en torch (float64) sobre ``device``.
+
+    Mismas operaciones y mismo orden que la versión de numpy; sólo cambia dónde se
+    calculan. Devuelve arreglos de numpy para que el paso M no cambie.
+    """
+
+    import torch
+
+    dtype = torch.float64
+    dev = torch.device(device)
+    transition = torch.as_tensor(transition_matrix, dtype=dtype, device=dev)
+    emission_table = torch.as_tensor(emission_matrix, dtype=dtype, device=dev)
+    initial = torch.as_tensor(initial_probs, dtype=dtype, device=dev)
+    tokens = torch.as_tensor(padded, dtype=torch.long, device=dev)
+    seq_lengths = torch.as_tensor(lengths, dtype=torch.long, device=dev)
+    n_sequences, max_steps = tokens.shape
+    n_states = transition.shape[0]
+    live = torch.arange(max_steps, device=dev)[None, :] < seq_lengths[:, None]
+    one = torch.ones((), dtype=dtype, device=dev)
+
+    emission = emission_table[:, tokens].permute(1, 0, 2)  # (B, K, T)
+
+    alpha = torch.zeros((n_sequences, max_steps, n_states), dtype=dtype, device=dev)
+    scale = torch.ones((n_sequences, max_steps), dtype=dtype, device=dev)
+
+    current = initial[None, :] * emission[:, :, 0]
+    scale[:, 0] = current.sum(dim=1).clamp_min(EPSILON)
+    current = current / scale[:, 0][:, None]
+    alpha[:, 0] = current
+    for step in range(1, max_steps):
+        moved = (current @ transition) * emission[:, :, step]
+        step_scale = moved.sum(dim=1).clamp_min(EPSILON)
+        moved = moved / step_scale[:, None]
+        mask = live[:, step]
+        current = torch.where(mask[:, None], moved, current)
+        scale[:, step] = torch.where(mask, step_scale, one)
+        alpha[:, step] = current
+
+    log_likelihood = float(torch.log(scale).sum().item())
+
+    beta = torch.ones((n_sequences, max_steps, n_states), dtype=dtype, device=dev)
+    for step in range(max_steps - 2, -1, -1):
+        nxt = live[:, step + 1]
+        weighted = emission[:, :, step + 1] * beta[:, step + 1] / scale[:, step + 1][:, None]
+        beta[:, step] = torch.where(nxt[:, None], weighted @ transition.T, one)
+
+    gamma = alpha * beta * live[:, :, None]
+
+    initial_counts = gamma[:, 0].sum(dim=0)
+
+    # Producto con one-hot en vez de index_add_: en CUDA éste suma con atómicos y su
+    # orden cambia entre corridas; el producto matricial es reproducible bit a bit.
+    one_hot = torch.nn.functional.one_hot(tokens[live], num_classes=emission_table.shape[1]).to(dtype)
+    emission_counts = one_hot.T @ gamma[live]
+
+    tail = live[:, 1:]
+    left = alpha[:, :-1] * tail[:, :, None]
+    right = (emission[:, :, 1:].permute(0, 2, 1) * beta[:, 1:]
+             / scale[:, 1:][:, :, None]) * tail[:, :, None]
+    transition_counts = transition * torch.einsum("bti,btj->ij", left, right)
+
+    return (
+        initial_counts.cpu().numpy(),
+        transition_counts.cpu().numpy(),
+        emission_counts.T.cpu().numpy(),
+        log_likelihood,
+    )
+
+
 def _piece_metrics_from_log_likelihood(
     piece: PreparedPiece,
     log_likelihood: float,
@@ -180,6 +273,8 @@ class FiniteHMMFitResult:
     #: Rejilla evaluada, incluidas las ampliaciones automáticas (C2).
     candidate_grid: tuple[int, ...] = ()
     grid_extensions: int = 0
+    #: Enmienda 14: la selección quedó en el tope final de la rejilla.
+    hit_final_ceiling: bool = False
 
 
 class FiniteGlobalHMM:
@@ -192,8 +287,16 @@ class FiniteGlobalHMM:
         seed: int,
         vocab_size: int = 13,
         max_states: int | None = None,
+        device: str | None = None,
+        final_ceiling: bool = False,
     ) -> None:
+        #: Enmienda 14: llegar a ``max_states`` sin dejar de tocarlo marca el ajuste y no falla.
+        self.final_ceiling = bool(final_ceiling)
         self.candidate_num_states = tuple(int(value) for value in candidate_num_states)
+        #: Dispositivo del paso E (torch, float64) para K >= FINITE_HMM_GPU_MIN_STATES;
+        #: ``None`` usa numpy en todos los K, como antes.
+        _check_device(device)
+        self.device = device
         #: Con límite, la rejilla se amplía mientras la selección toque su máximo (C2).
         self.max_states = None if max_states is None else int(max_states)
         self.max_iterations = int(max_iterations)
@@ -205,6 +308,13 @@ class FiniteGlobalHMM:
         self.emission_matrix: np.ndarray | None = None
         self.selected_states: int | None = None
         self.fit_result: FiniteHMMFitResult | None = None
+
+    def _estep_device(self, n_states: int) -> str:
+        """Dispositivo del paso E para ``n_states``: "cpu" si corre en numpy."""
+
+        if self.device is None or n_states < FINITE_HMM_GPU_MIN_STATES:
+            return "cpu"
+        return self.device
 
     def _initialize_parameters(self, n_states: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         initial_probs = rng.dirichlet(np.ones(n_states, dtype=float))
@@ -281,6 +391,11 @@ class FiniteGlobalHMM:
                     _expectation_batch(
                         initial_probs, transition_matrix, emission_matrix, padded, lengths
                     )
+                    if self.device is None or n_states < FINITE_HMM_GPU_MIN_STATES
+                    else _expectation_batch_torch(
+                        initial_probs, transition_matrix, emission_matrix, padded, lengths,
+                        device=self.device,
+                    )
                 )
                 initial_counts += batch_initial
                 transition_counts += batch_transition
@@ -342,6 +457,7 @@ class FiniteGlobalHMM:
         candidate_grid = list(self.candidate_num_states)
         pending = list(candidate_grid)
         grid_extensions = 0
+        hit_final_ceiling = False
 
         while pending:
             n_states = pending.pop(0)
@@ -357,6 +473,8 @@ class FiniteGlobalHMM:
             candidate_log.append(
                 {
                     "n_states": n_states,
+                    # Dónde corrió el paso E de este candidato (numpy = "cpu").
+                    "device": self._estep_device(n_states),
                     "validation_nll_per_token": validation_nll,
                     "fit_wall_clock_s": timing["fit_wall_clock_s"],
                     "validation_wall_clock_s": timing["validation_wall_clock_s"],
@@ -377,6 +495,9 @@ class FiniteGlobalHMM:
                 continue
             if best_candidate[0] == max(candidate_grid):
                 pending = [k for k in next_grid_candidates(max(candidate_grid)) if k <= self.max_states]
+                if not pending and self.final_ceiling:
+                    hit_final_ceiling = True
+                    break
                 if not pending:
                     raise ValueError(
                         grid_ceiling_message(
@@ -405,6 +526,7 @@ class FiniteGlobalHMM:
             candidate_log=tuple(candidate_log),
             candidate_grid=tuple(candidate_grid),
             grid_extensions=grid_extensions,
+            hit_final_ceiling=hit_final_ceiling,
         )
         return self.fit_result
 
@@ -458,6 +580,7 @@ class FiniteGlobalHMM:
                 "selected_validation_wall_clock_s": self.fit_result.selected_validation_wall_clock_s,
                 "candidate_grid": list(self.fit_result.candidate_grid),
                 "grid_extensions": self.fit_result.grid_extensions,
+                "hit_final_ceiling": self.fit_result.hit_final_ceiling,
             },
             "piece_metrics": piece_metrics,
             "train_log": self.fit_result.train_log,

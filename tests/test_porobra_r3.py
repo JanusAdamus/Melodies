@@ -53,3 +53,23 @@ def test_el_readme_nombra_las_fallas_de_extraccion():
            "extraction_failures": ["MuseTrainer:rota.musicxml"]}
     assert "MuseTrainer:rota.musicxml" in porobra_heldout._readme(run)
     assert "Enmienda 11" in porobra_heldout._readme(run)
+
+
+def test_la_marca_de_em_sale_del_reajuste_seleccionado(monkeypatch):
+    rng = np.random.default_rng(2)
+    tokens = rng.integers(0, 12, size=120)
+    real = porobra.baum_welch
+    monkeypatch.setattr(porobra, "baum_welch", lambda *a, **k: real(*a, **{**k, "max_iterations": 1}))
+    capped = porobra.fit_finite(tokens, porobra.split_tokens(tokens), grid=(2, 4), n_restarts=1, n_occupancy_samples=5)
+    assert capped["finite_em_hit_max_iterations"] is True
+    monkeypatch.setattr(porobra, "baum_welch", real)
+    free = porobra.fit_finite(tokens, porobra.split_tokens(tokens), grid=(2,), alphas=(1.0,), n_restarts=1,
+                              n_occupancy_samples=5)
+    assert free["finite_em_hit_max_iterations"] is False
+
+
+def test_el_readme_advierte_que_el_k_en_el_tope_no_es_numero_de_estados():
+    run = {"truncation": 20, "run_kind": "principal", "note": "candidata", "decides": "x"}
+    text = porobra_heldout._readme(run)
+    assert "K = 512" in text and "no se interpreta como número de estados" in text
+    assert "finite_k_hit_limit" in text
