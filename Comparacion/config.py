@@ -64,6 +64,11 @@ class LearningCurveConfig:
     transformer_search_device: str | None = None
 
     def __post_init__(self) -> None:
+        device = self.finite_hmm_device
+        if device is not None and not (
+            device in ("cpu", "cuda") or (device.startswith("cuda:") and device[5:].isdigit())
+        ):
+            raise ValueError("finite_hmm_device must be None, 'cpu', 'cuda' or 'cuda:<n>'.")
         if not isinstance(self.include_vomm_control, bool):
             raise TypeError("include_vomm_control must be a boolean.")
         if not isinstance(self.vomm_candidate_orders, tuple) or not self.vomm_candidate_orders:

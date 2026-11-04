@@ -15,6 +15,19 @@ from src.models.utils import length_buckets
 from .grid import grid_ceiling_message, next_grid_candidates
 
 EPSILON = 1e-12
+#: Con ``device``, sólo los candidatos con al menos estos estados usan torch: con K chico
+#: el costo fijo por paso temporal en la GPU supera al cálculo y numpy es más rápido.
+FINITE_HMM_GPU_MIN_STATES = 96
+
+
+def _check_device(device: str | None) -> None:
+    if device is None:
+        return
+    import torch
+
+    parsed = torch.device(device)
+    if parsed.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(f"El HMM finito pidió el dispositivo {device!r}, pero CUDA no está disponible.")
 BOS_TOKEN = "<BOS>"
 
 
@@ -195,8 +208,10 @@ def _expectation_batch_torch(
 
     initial_counts = gamma[:, 0].sum(dim=0)
 
-    emission_counts = torch.zeros((emission_table.shape[1], n_states), dtype=dtype, device=dev)
-    emission_counts.index_add_(0, tokens[live], gamma[live])
+    # Producto con one-hot en vez de index_add_: en CUDA éste suma con atómicos y su
+    # orden cambia entre corridas; el producto matricial es reproducible bit a bit.
+    one_hot = torch.nn.functional.one_hot(tokens[live], num_classes=emission_table.shape[1]).to(dtype)
+    emission_counts = one_hot.T @ gamma[live]
 
     tail = live[:, 1:]
     left = alpha[:, :-1] * tail[:, :, None]
@@ -271,7 +286,9 @@ class FiniteGlobalHMM:
         device: str | None = None,
     ) -> None:
         self.candidate_num_states = tuple(int(value) for value in candidate_num_states)
-        #: Dispositivo del paso E (torch, float64); ``None`` usa numpy, como antes.
+        #: Dispositivo del paso E (torch, float64) para K >= FINITE_HMM_GPU_MIN_STATES;
+        #: ``None`` usa numpy en todos los K, como antes.
+        _check_device(device)
         self.device = device
         #: Con límite, la rejilla se amplía mientras la selección toque su máximo (C2).
         self.max_states = None if max_states is None else int(max_states)
@@ -360,7 +377,7 @@ class FiniteGlobalHMM:
                     _expectation_batch(
                         initial_probs, transition_matrix, emission_matrix, padded, lengths
                     )
-                    if self.device is None
+                    if self.device is None or n_states < FINITE_HMM_GPU_MIN_STATES
                     else _expectation_batch_torch(
                         initial_probs, transition_matrix, emission_matrix, padded, lengths,
                         device=self.device,

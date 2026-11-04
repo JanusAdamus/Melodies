@@ -52,7 +52,13 @@ def _pieces(seed: int, n: int) -> list[PreparedPiece]:
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_el_ajuste_completo_en_torch_da_lo_mismo_que_en_numpy(device):
+def test_el_ajuste_completo_en_torch_da_lo_mismo_que_en_numpy(device, monkeypatch):
+    from Comparacion import classical_models
+
+    monkeypatch.setattr(classical_models, "FINITE_HMM_GPU_MIN_STATES", 1)
+    calls = []
+    real = classical_models._expectation_batch_torch
+    monkeypatch.setattr(classical_models, "_expectation_batch_torch", lambda *a, **k: calls.append(1) or real(*a, **k))
     train, validation = _pieces(1, 30), _pieces(2, 10)
     results = []
     for chosen in ("numpy", device):
@@ -61,6 +67,7 @@ def test_el_ajuste_completo_en_torch_da_lo_mismo_que_en_numpy(device):
         fit = hmm.fit(train, validation, bos_token_id=12)
         results.append((fit, hmm))
     (base_fit, base), (fit, hmm) = results
+    assert calls, "el ajuste con dispositivo no pasó por torch"
     assert fit.selected_states == base_fit.selected_states
     assert fit.validation_nll == pytest.approx(base_fit.validation_nll, rel=1e-9)
     assert [row["n_iterations"] for row in fit.candidate_log] == [row["n_iterations"] for row in base_fit.candidate_log]
@@ -78,3 +85,60 @@ def test_la_configuracion_y_la_cli_llevan_el_dispositivo_del_hmm_finito():
     assert replace(config, finite_hmm_device="cuda").finite_hmm_device == "cuda"
     assert build_parser().parse_args(["--finite-hmm-device", "cuda"]).finite_hmm_device == "cuda"
     assert build_parser().parse_args([]).finite_hmm_device is None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="sin CUDA")
+def test_el_paso_e_en_cuda_es_reproducible_bit_a_bit():
+    initial, transition, emission, batches = _random_problem(5, 24)
+    padded, lengths = batches[-1]
+    runs = [_expectation_batch_torch(initial, transition, emission, padded, lengths, device="cuda") for _ in range(4)]
+    for other in runs[1:]:
+        for a, b in zip(runs[0][:3], other[:3]):
+            assert np.array_equal(a, b)
+        assert runs[0][3] == other[3]
+
+
+def test_un_dispositivo_invalido_falla_al_construir_el_modelo():
+    with pytest.raises((ValueError, RuntimeError)):
+        FiniteGlobalHMM(candidate_num_states=(2,), max_iterations=1, tolerance=1e-4, seed=0, device="gpu")
+
+
+@pytest.mark.parametrize("bad", ["", "gpu", "CPU", "cuda:x", "tpu"])
+def test_la_configuracion_rechaza_dispositivos_mal_escritos(bad):
+    with pytest.raises(ValueError):
+        replace(build_default_learning_curve_config(), finite_hmm_device=bad)
+
+
+def test_los_k_chicos_usan_numpy_aunque_haya_dispositivo(monkeypatch):
+    from Comparacion import classical_models
+
+    used = []
+    real_numpy, real_torch = classical_models._expectation_batch, classical_models._expectation_batch_torch
+    monkeypatch.setattr(classical_models, "_expectation_batch",
+                        lambda *a, **k: used.append(("numpy", a[1].shape[0])) or real_numpy(*a, **k))
+    monkeypatch.setattr(classical_models, "_expectation_batch_torch",
+                        lambda *a, **k: used.append(("torch", a[1].shape[0])) or real_torch(*a, **k))
+    hmm = FiniteGlobalHMM(candidate_num_states=(4, classical_models.FINITE_HMM_GPU_MIN_STATES), max_iterations=1,
+                          tolerance=1e-4, seed=0, vocab_size=13, device="cpu")
+    hmm.fit(_pieces(1, 6), _pieces(2, 3), bos_token_id=12)
+    assert {kind for kind, k in used if k == 4} == {"numpy"}
+    assert {kind for kind, k in used if k == classical_models.FINITE_HMM_GPU_MIN_STATES} == {"torch"}
+    used.clear()
+    base = FiniteGlobalHMM(candidate_num_states=(classical_models.FINITE_HMM_GPU_MIN_STATES,), max_iterations=1,
+                           tolerance=1e-4, seed=0, vocab_size=13)
+    base.fit(_pieces(1, 6), _pieces(2, 3), bos_token_id=12)
+    assert {kind for kind, _ in used} == {"numpy"}
+
+
+def test_el_runner_rotula_el_dispositivo_y_mide_la_gpu_del_hmm_finito():
+    from Comparacion import runner
+
+    config = build_default_learning_curve_config()
+    assert runner._finite_hmm_device_label(config) == "cpu"
+    assert runner._finite_hmm_measures_cuda(config) is False
+    gpu = replace(config, finite_hmm_device="cuda")
+    assert runner._finite_hmm_device_label(gpu) == "cuda"
+    assert runner._finite_hmm_measures_cuda(gpu) is True
+    source = open(runner.__file__, encoding="utf-8").read()
+    assert source.count("_finite_hmm_device_label(config)") >= 2
+    assert source.count("measure_cuda=_finite_hmm_measures_cuda(config)") == 2
