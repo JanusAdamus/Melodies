@@ -1,4 +1,4 @@
-"""Análisis por obra held-out: preregistro 2026-10-26, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaraciones 7, 8 y 9.
+"""Análisis por obra held-out: preregistro 2026-10-26, sección A, Aclaración 2, Enmiendas 3, 5, 6 y 11, Aclaraciones 7, 8, 9 y 10.
 
 Por obra, partición contigua: el primer 80 % de los eventos ajusta y el último 20 % evalúa;
 dentro del 80 %, su último 20 % valida los hiperparámetros (α de los n-gramas, K del finito,
@@ -109,14 +109,13 @@ ALL_WORKS_RULE = (
     "Aclaración 2 y Enmienda 6: comparación con todas las obras analizadas de esta corrida; decide sólo en "
     "la corrida confirmatoria (bloque run de summary.json; confirmatory en porobra_audit.json)."
 )
+WITHOUT_K_CEILING_RULE = (
+    "Enmienda 11: sensibilidad sin las obras cuyo HMM finito eligió el tope K = 512; no decide."
+)
 CONVERGED_ONLY_RULE = "Enmienda 6, punto 3: sensibilidad con la regla original (R-hat de log L < 1.1); no decide."
-#: La sección A compara con las obras que haya y reporta n: el mínimo de 10 obras pareadas de
-#: la Enmienda 1 sólo rige la frontera de Pareto (sección B). Con una sola obra todas las
-#: réplicas bootstrap valen lo mismo y su p sería 0: no es evaluable. Con n = 2 ya hay veredicto
-#: y sigue siendo degenerado (dos obras del mismo signo: p bootstrap 0 y Wilcoxon 0.5). El
-#: preregistro no fija otro mínimo para A; subirlo es decisión de Adrián: mientras tanto, la
-#: advertencia de abajo lo dice sin cambiar ningún veredicto.
-MIN_PAIRED_WORKS = 2
+#: Enmienda 11: un bloque con menos de 10 obras reporta sus cifras, sin veredicto. Es el mismo
+#: mínimo que la Enmienda 1 usa en la sección B.
+MIN_PAIRED_WORKS = 10
 #: Debajo de este n el bloque lleva ``small_n_warning``: es un rótulo, no una regla.
 SMALL_N_WARNING_WORKS = 30
 SMALL_N_NOTE = (
@@ -682,8 +681,8 @@ def compare_hdp(
     IC bootstrap por obra ajustado por Holm por pasos sobre la familia de 3. La ponderada por
     notas de prueba y Wilcoxon (con Holm) son secundarias. Regla: «mejora» si el extremo
     superior del IC de Holm es < 0; «es_mejor_el_otro» si el inferior es > 0; si no, «no hay
-    evidencia». Se usan las obras que haya y se reporta n (``n_pairs``): el mínimo de 10 de la
-    Enmienda 1 sólo rige la sección B; con menos de ``MIN_PAIRED_WORKS`` (2), «no_evaluable».
+    evidencia». Se reporta n (``n_pairs``); con menos de ``MIN_PAIRED_WORKS`` (10), las cifras sin
+    veredicto: «no_evaluable» (Enmienda 11).
     ``exclude_work_ids`` quita esas obras (análisis adicional de la Aclaración 8).
     ``rule`` dice qué bloque es y queda en el resultado.
     """
@@ -786,11 +785,15 @@ def summary_blocks(
         "sensitivity_without_exposed": compare_hdp(
             records, bootstrap_samples=bootstrap_samples, seed=seed, exclude_work_ids=exposed, rule=WITHOUT_EXPOSED_RULE
         ),
+        "sensitivity_without_k_ceiling": compare_hdp(
+            records, bootstrap_samples=bootstrap_samples, seed=seed, rule=WITHOUT_K_CEILING_RULE,
+            exclude_work_ids=[record["work_id"] for record in records if record.get("finite_k_hit_limit")],
+        ),
     }
     # Aclaración 8: el resumen «indica si algún veredicto cambia» sin las obras expuestas.
     # «no_evaluable» no es un cambio (no hay veredicto con qué comparar): va aparte.
     principal = {c["model_b"]: c["verdict"] for c in blocks["comparisons"]["comparisons"]}
-    for key in ("sensitivity_converged_only", "sensitivity_without_exposed"):
+    for key in ("sensitivity_converged_only", "sensitivity_without_exposed", "sensitivity_without_k_ceiling"):
         block = blocks[key]
         pairs = [
             {"model_b": c["model_b"], "principal": principal[c["model_b"]], "sensitivity": c["verdict"]}

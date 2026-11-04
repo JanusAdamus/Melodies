@@ -226,7 +226,7 @@ def test_la_configuracion_por_defecto_del_cli_es_la_preregistrada():
     assert args.stats_seed == porobra_audit.PREREGISTERED_CONFIG["stats_seed"]
 
 
-def test_rejilla_del_finito_topada_no_pasa_por_preregistrada(run_dir, tmp_path, monkeypatch):
+def test_el_tope_de_k_de_la_enmienda_11_no_es_desviacion(run_dir, tmp_path, monkeypatch):
     copy = _as_preregistered(run_dir, tmp_path, monkeypatch)
     works = porobra_audit.read_per_work(copy / "per_work.csv")
     works["finite_k_hit_limit"] = False
@@ -234,11 +234,21 @@ def test_rejilla_del_finito_topada_no_pasa_por_preregistrada(run_dir, tmp_path, 
     works.loc[0, "finite_k_hit_limit"] = True
     works.loc[0, "finite_k"] = max(json.loads(works.loc[0, "finite_k_grid"]))
     _rewrite_per_work(copy, works)
+    # La sensibilidad sin techo depende de la marca: el resumen se recalcula con ella.
+    summary = json.loads((copy / "summary.json").read_text(encoding="utf-8"))
+    block = summary["sensitivity_without_k_ceiling"]
+    recomputed = porobra.summary_blocks(
+        porobra_audit.comparison_records(porobra_audit.read_per_work(copy / "per_work.csv")),
+        bootstrap_samples=block["bootstrap_samples"], seed=block["seed"], exposed_work_ids=porobra.TEST_EXPOSED_WORK_IDS,
+    )["sensitivity_without_k_ceiling"]
+    assert recomputed["excluded_work_ids"] == [str(works.loc[0, "work_id"])]
+    summary["sensitivity_without_k_ceiling"] = porobra_audit._jsonable(recomputed)
+    _rewrite_summary(copy, summary)
     audit = porobra_audit.audit_run_directory(copy)
     assert audit["status"] == "passed", audit
     deviations = audit["preregistration"]["deviations"]
-    assert deviations["finite_k_hit_limit"] == {"observed": [works.loc[0, "work_id"]], "expected": []}
-    assert audit["confirmatory"] is False
+    assert "finite_k_hit_limit" not in deviations
+    assert audit["confirmatory"] is True
 
 
 def test_arbol_sucio_o_corpus_incompleto_no_pasan(run_dir, tmp_path, monkeypatch):
@@ -278,8 +288,8 @@ def _flip_interval(interval):
 
 #: Ediciones del resumen en lo que decide; cada una deja el hash al día.
 SUMMARY_EDITS = {
-    "decision_ci": lambda s: s["comparisons"]["comparisons"][0].update(
-        work_mean_holm_decision_ci=_flip_interval(s["comparisons"]["comparisons"][0]["work_mean_holm_decision_ci"])),
+    # El corpus de prueba tiene menos de 10 obras: sin veredicto no hay IC de decisión que invertir.
+    "decision_ci": lambda s: s["comparisons"]["comparisons"][0].update(work_mean_holm_decision_ci=[-9.0, -8.0]),
     "rejects_zero": lambda s: s["comparisons"]["comparisons"][1].update(
         work_mean_holm_rejects_zero=not s["comparisons"]["comparisons"][1]["work_mean_holm_rejects_zero"]),
     "verdict": lambda s: s["comparisons"]["comparisons"][2].update(verdict="mejora"
@@ -303,8 +313,8 @@ def test_el_recalculo_reproduce_exacto_lo_que_decide(run_dir):
     # Con la misma semilla, recalcular desde per_work.csv da el resumen bit a bit.
     check = _check(porobra_audit.audit_run_directory(run_dir), "headline_recompute")
     assert check["status"] == "passed" and check["mismatches"] == []
-    assert set(check["recomputed_blocks"]) == {"comparisons", "sensitivity_converged_only",
-                                               "sensitivity_without_exposed", "convergence"}
+    assert set(check["recomputed_blocks"]) == {"comparisons", "sensitivity_converged_only", "sensitivity_without_exposed",
+                                               "sensitivity_without_k_ceiling", "convergence"}
 
 
 @pytest.mark.parametrize("edit", sorted(SUMMARY_EDITS))
@@ -725,7 +735,7 @@ def test_el_resumen_divulga_la_exposicion_y_repite_sin_esas_obras(corpus, tmp_pa
     without = summary["sensitivity_without_exposed"]
     assert without["n_works"] == summary["comparisons"]["n_works"] - 1
     assert without["excluded_work_ids"] == ["MuseTrainer:a.musicxml"]
-    assert summary["preregistro"].endswith("Enmiendas 3, 5 y 6, Aclaraciones 7, 8 y 9")
+    assert summary["preregistro"].endswith("Enmiendas 3, 5, 6 y 11, Aclaraciones 7, 8, 9 y 10")
     assert "Aclaración 8" in without["rule"] and "no decide" in without["rule"]
     # El recálculo de la auditoría usa la misma lista de obras expuestas.
     audit = json.loads((run_dir / porobra_audit.AUDIT_FILENAME).read_text(encoding="utf-8"))

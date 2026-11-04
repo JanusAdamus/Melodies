@@ -359,7 +359,7 @@ def main(argv: list[str] | None = None) -> Path:
                                     exposed_work_ids=porobra.TEST_EXPOSED_WORK_IDS)
 
     summary = {
-        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5 y 6, Aclaraciones 7, 8 y 9",
+        "preregistro": "docs/preregistro-2026-10-26.md, sección A, Aclaración 2, Enmiendas 3, 5, 6 y 11, Aclaraciones 7, 8, 9 y 10",
         "run": run,
         "corpus": corpus,
         "analysis_failures": analysis_failures,
@@ -373,6 +373,7 @@ def main(argv: list[str] | None = None) -> Path:
             "note": porobra.TEST_EXPOSURE_NOTE,
         },
         "sensitivity_without_exposed": blocks["sensitivity_without_exposed"],
+        "sensitivity_without_k_ceiling": blocks["sensitivity_without_k_ceiling"],
         "hdp_states_note": porobra.HDP_STATES_NOTE,
         "selected_hyperparameters": {
             "hdp_eta": _distribution(per_work["hdp_eta"]) if len(per_work) else {},

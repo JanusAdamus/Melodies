@@ -417,27 +417,26 @@ def test_estimando_que_decide_es_la_media_por_obra_no_la_ponderada():
     assert comparison["decision_estimand"] == "mean_over_works_of_work_nll_difference"
 
 
-def test_el_minimo_de_diez_obras_de_la_enmienda_1_no_rige_la_seccion_a():
-    # La Enmienda 1 fija 10 obras pareadas sólo para la frontera de Pareto (sección B).
-    # En A se compara con las obras que haya y se reporta n.
-    result = porobra.compare_hdp(_rows(5, -0.5), bootstrap_samples=500, seed=0)
+def test_con_diez_obras_la_seccion_a_ya_da_veredicto():
+    # Enmienda 11: el mínimo de la sección A es 10 obras pareadas.
+    result = porobra.compare_hdp(_rows(10, -0.5), bootstrap_samples=500, seed=0)
     for comparison in result["comparisons"]:
-        assert comparison["n_pairs"] == 5
+        assert comparison["n_pairs"] == 10
         assert comparison["work_mean_holm_status"] == "ok"
         assert comparison["wilcoxon_holm_status"] == "ok" and comparison["p_value_holm"] is not None
         assert comparison["token_weighted_holm_status"] == "ok"
         assert comparison["verdict"] == "mejora"
-    assert result["min_paired_works"] == 2
-    assert result["holm_family"]["work_mean_ci"]["min_paired_works"] == 2
+    assert result["min_paired_works"] == 10
+    assert result["holm_family"]["work_mean_ci"]["min_paired_works"] == 10
     assert result["holm_family"]["work_mean_ci"]["n_evaluable"] == 3
 
 
-def test_la_sensibilidad_con_pocas_obras_tambien_se_evalua():
-    rows = _rows(6, -0.5) + _rows(20, -0.5, converged=False)
-    for index, row in enumerate(rows[6:]):
+def test_la_sensibilidad_con_diez_obras_tambien_se_evalua():
+    rows = _rows(10, -0.5) + _rows(20, -0.5, converged=False)
+    for index, row in enumerate(rows[10:]):
         row["work_id"] = f"nc{index}"
     sensitivity = porobra.compare_hdp(rows, bootstrap_samples=500, seed=0, converged_only=True)
-    assert sensitivity["n_works"] == 6
+    assert sensitivity["n_works"] == 10
     assert {c["verdict"] for c in sensitivity["comparisons"]} == {"mejora"}
 
 
@@ -446,7 +445,7 @@ def test_con_pocas_obras_el_bloque_lleva_la_advertencia_y_el_veredicto_no_cambia
     small = porobra.compare_hdp(_rows(porobra.SMALL_N_WARNING_WORKS - 1, -0.5), bootstrap_samples=200, seed=0)
     assert small["small_n_warning"] is True and "no cambia" in small["small_n_note"]
     assert {c["verdict"] for c in small["comparisons"]} == {"mejora"}
-    assert small["min_paired_works"] == 2
+    assert small["min_paired_works"] == 10
     # Sin tasas escritas a mano: la advertencia es cualitativa.
     assert not any(character.isdigit() for character in small["small_n_note"])
     enough = porobra.compare_hdp(_rows(porobra.SMALL_N_WARNING_WORKS, -0.5), bootstrap_samples=200, seed=0)
@@ -457,14 +456,14 @@ def test_una_sensibilidad_con_pocas_obras_avisa_junto_al_cambio_de_veredicto():
     rows = _rows(20, -0.5) + _rows(25, 1.5)
     for index, row in enumerate(rows):
         row["work_id"] = f"w{index}"
-    # Sólo quedan 3 obras convergidas, con otro signo que el resto.
+    # Sólo quedan 12 obras convergidas, con otro signo que el resto.
     for row in rows:
         row["hdp_converged"] = False
-    for row in rows[:3]:
+    for row in rows[:12]:
         row["hdp_converged"] = True
     blocks = porobra.summary_blocks(rows, bootstrap_samples=300, seed=0, exposed_work_ids=[])
     converged = blocks["sensitivity_converged_only"]
-    assert converged["n_works"] == 3 and converged["any_verdict_changes"] is True
+    assert converged["n_works"] == 12 and converged["any_verdict_changes"] is True
     assert converged["small_n_warning"] is True
     assert blocks["comparisons"]["small_n_warning"] is False
 

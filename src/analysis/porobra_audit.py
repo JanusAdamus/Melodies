@@ -337,7 +337,8 @@ def comparison_records(works: pd.DataFrame) -> list[dict]:
 
     records = []
     for row in works.to_dict("records"):
-        record = {"work_id": str(row["work_id"]), "n_test": int(row["n_test"]), "hdp_converged": _as_bool(row["hdp_converged"])}
+        record = {"work_id": str(row["work_id"]), "n_test": int(row["n_test"]), "hdp_converged": _as_bool(row["hdp_converged"]),
+                  "finite_k_hit_limit": _as_bool(row.get("finite_k_hit_limit", False))}
         for model in porobra.MODELS:
             value = row.get(f"{model}_test_nll")
             record[f"{model}_test_nll"] = float(value) if value is not None else math.nan
@@ -399,7 +400,8 @@ def _recompute(works: pd.DataFrame, summary: dict) -> dict:
     ``exposed_in_run``, su intersección con las obras de la corrida.
     """
 
-    blocks = ("convergence", "comparisons", "sensitivity_converged_only", "sensitivity_without_exposed")
+    blocks = ("convergence", "comparisons", "sensitivity_converged_only", "sensitivity_without_exposed",
+              "sensitivity_without_k_ceiling")
     mismatches = [f"{key}: falta en el resumen" for key in blocks if not isinstance(summary.get(key), dict)]
     exposure = summary.get("test_exposure") or {}
     exposed = list(exposure.get("exposed_work_ids") or [])
@@ -435,13 +437,6 @@ def _same(observed, expected) -> bool:
 def _same_dict(observed, expected: dict) -> bool:
     return isinstance(observed, dict) and set(observed) == set(expected) and all(
         _same(observed[key], value) for key, value in expected.items())
-
-
-def _hit_limit(works: pd.DataFrame) -> list[str]:
-    if "finite_k_hit_limit" not in works:
-        return []
-    hit = works["finite_k_hit_limit"].astype(str).str.lower().isin(("true", "1"))
-    return sorted(works.loc[hit, "work_id"].astype(str))
 
 
 def _command_config(manifest: dict) -> dict:
@@ -486,7 +481,7 @@ def _summary_deviation(summary: dict, config: dict) -> dict | None:
     """Lo que el resumen dice de la configuración debe ser lo del manifiesto."""
 
     observed, expected = {}, {}
-    for key in ("comparisons", "sensitivity_converged_only", "sensitivity_without_exposed"):
+    for key in ("comparisons", "sensitivity_converged_only", "sensitivity_without_exposed", "sensitivity_without_k_ceiling"):
         block = summary.get(key) or {}
         for field, config_key in (("bootstrap_samples", "bootstrap_samples"), ("seed", "stats_seed")):
             if block.get(field) != config.get(config_key):
@@ -604,10 +599,8 @@ def _design_deviations(manifest: dict, summary: dict, works: pd.DataFrame, direc
     known = set(PREREGISTERED_CONFIG) | set(UNCHECKED_CONFIG_KEYS) | {"truncation"}
     for key in sorted(set(config) - known):
         deviations[key] = {"observed": config[key], "expected": "clave no prevista por la sección A"}
-    # Sección A: «si se elige el máximo, se amplía la rejilla antes de reportar».
-    hit_limit = _hit_limit(works)
-    if hit_limit:
-        deviations["finite_k_hit_limit"] = {"observed": hit_limit, "expected": []}
+    # Enmienda 11: la rejilla termina en K = 512 y llegar a ese tope no es desviación; las obras se
+    # marcan y hay una sensibilidad sin ellas. El techo mismo lo fija max_states en PREREGISTERED_CONFIG.
     truncation = config.get("truncation")
     if truncation not in PREREGISTERED_TRUNCATION:
         deviations["truncation"] = {"observed": truncation, "expected": sorted(PREREGISTERED_TRUNCATION)}
