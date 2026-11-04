@@ -125,6 +125,18 @@ def _file_sha256(path_value: str | None) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _finite_hmm_device_label(fit_result: object) -> str:
+    """Dónde corrió de verdad el paso E de los candidatos: "cpu", "cuda" o "cpu+cuda"."""
+
+    log = getattr(fit_result, "candidate_log", None) or ()
+    kinds = sorted({"cpu" if str(row.get("device", "cpu")) == "cpu" else "cuda" for row in log})
+    return "+".join(kinds) if kinds else "cpu"
+
+
+def _finite_hmm_measures_cuda(config: LearningCurveConfig) -> bool:
+    return bool(config.finite_hmm_device) and str(config.finite_hmm_device).startswith("cuda")
+
+
 def _config_sha256(config: LearningCurveConfig) -> str:
     """Hash de la configuración que cambia resultados, sin rutas absolutas.
 
@@ -1940,15 +1952,16 @@ def run_learning_curve_experiment(
                     seed=model_seed,
                     vocab_size=comparison_vocabulary_size,
                     max_states=config.finite_hmm_max_states,
+                    device=config.finite_hmm_device,
                 )
-                with ResourceMonitor() as finite_selection_resources:
+                with ResourceMonitor(measure_cuda=_finite_hmm_measures_cuda(config)) as finite_selection_resources:
                     finite_hmm.fit(
                         train_pieces,
                         fixed_splits.validation_pieces,
                         bos_token_id=bos_token_id,
                         max_context_length=max_context_length,
                     )
-                with ResourceMonitor() as finite_evaluation_resources:
+                with ResourceMonitor(measure_cuda=_finite_hmm_measures_cuda(config)) as finite_evaluation_resources:
                     finite_eval_start = time.perf_counter()
                     finite_eval = finite_hmm.evaluate(
                         fixed_splits.test_pieces,
@@ -1993,7 +2006,7 @@ def run_learning_curve_experiment(
                         "grid_extensions": finite_summary.get("grid_extensions"),
                         "effective_states": None,
                         "count_table_size": None,
-                        "device": "cpu",
+                        "device": _finite_hmm_device_label(finite_hmm.fit_result),
                         "val_ppl": math.exp(float(finite_summary["validation_nll_per_token"])),
                         "test_ppl": finite_summary["test_perplexity"],
                         "test_nll": finite_summary["test_nll_per_token"],
@@ -2004,7 +2017,7 @@ def run_learning_curve_experiment(
                         **_search_cost_fields(
                             "finite_hmm",
                             selection_wall_clock_s=finite_summary.get("selection_wall_clock_s"),
-                            device="cpu",
+                            device=_finite_hmm_device_label(finite_hmm.fit_result),
                             config=config,
                         ),
                         **_protocol_cost_fields(
