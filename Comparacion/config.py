@@ -31,6 +31,8 @@ class LearningCurveConfig:
     #: C2: la rejilla crece (×1.5, ×2) mientras la selección toque su máximo; al
     #: llegar a este límite sin dejar de tocarlo, la corrida falla.
     finite_hmm_max_states: int = 384
+    #: Enmienda 14: con True, tocar el límite marca la fila en vez de detener la corrida.
+    finite_hmm_final_ceiling: bool = False
     finite_hmm_max_iterations: int = 100
     finite_hmm_tolerance: float = 1e-4
     #: Dispositivo del paso E del HMM finito (torch, float64), p. ej. "cuda"; None usa numpy.

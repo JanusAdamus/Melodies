@@ -273,6 +273,8 @@ class FiniteHMMFitResult:
     #: Rejilla evaluada, incluidas las ampliaciones automáticas (C2).
     candidate_grid: tuple[int, ...] = ()
     grid_extensions: int = 0
+    #: Enmienda 14: la selección quedó en el tope final de la rejilla.
+    hit_final_ceiling: bool = False
 
 
 class FiniteGlobalHMM:
@@ -286,7 +288,10 @@ class FiniteGlobalHMM:
         vocab_size: int = 13,
         max_states: int | None = None,
         device: str | None = None,
+        final_ceiling: bool = False,
     ) -> None:
+        #: Enmienda 14: llegar a ``max_states`` sin dejar de tocarlo marca el ajuste y no falla.
+        self.final_ceiling = bool(final_ceiling)
         self.candidate_num_states = tuple(int(value) for value in candidate_num_states)
         #: Dispositivo del paso E (torch, float64) para K >= FINITE_HMM_GPU_MIN_STATES;
         #: ``None`` usa numpy en todos los K, como antes.
@@ -452,6 +457,7 @@ class FiniteGlobalHMM:
         candidate_grid = list(self.candidate_num_states)
         pending = list(candidate_grid)
         grid_extensions = 0
+        hit_final_ceiling = False
 
         while pending:
             n_states = pending.pop(0)
@@ -489,6 +495,9 @@ class FiniteGlobalHMM:
                 continue
             if best_candidate[0] == max(candidate_grid):
                 pending = [k for k in next_grid_candidates(max(candidate_grid)) if k <= self.max_states]
+                if not pending and self.final_ceiling:
+                    hit_final_ceiling = True
+                    break
                 if not pending:
                     raise ValueError(
                         grid_ceiling_message(
@@ -517,6 +526,7 @@ class FiniteGlobalHMM:
             candidate_log=tuple(candidate_log),
             candidate_grid=tuple(candidate_grid),
             grid_extensions=grid_extensions,
+            hit_final_ceiling=hit_final_ceiling,
         )
         return self.fit_result
 
@@ -570,6 +580,7 @@ class FiniteGlobalHMM:
                 "selected_validation_wall_clock_s": self.fit_result.selected_validation_wall_clock_s,
                 "candidate_grid": list(self.fit_result.candidate_grid),
                 "grid_extensions": self.fit_result.grid_extensions,
+                "hit_final_ceiling": self.fit_result.hit_final_ceiling,
             },
             "piece_metrics": piece_metrics,
             "train_log": self.fit_result.train_log,
