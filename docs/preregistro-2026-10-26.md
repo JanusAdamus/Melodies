@@ -288,3 +288,14 @@ el código, y cualquier diferencia es una desviación.
 **Dónde corre.** Por el plazo, lo que corre en CPU también se ejecuta en la computadora
 con GPU (Windows), no en la laptop Debian; esto sustituye la decisión 3. Todas las
 corridas salen de un mismo commit, que queda en cada manifiesto.
+
+## Aclaración 12, 2026-11-03 (precisa la Enmienda 11, antes de cualquier resultado)
+
+Por el plazo, la corrida principal de la sección B arrancó el 2026-11-03 desde el
+commit 9fbf714, sin esperar a que se mezclara el código final del análisis por obra.
+La frase «un mismo commit» de la Enmienda 11 se precisa así: cada corrida registra su
+commit en el manifiesto, y el código de cada sección no cambia entre sus corridas. Las
+sensibilidades y la medición de costo de la sección B salen de un commit cuyo
+`Comparacion/` y `next_token_experiment/` sean idénticos a los de 9fbf714, y eso se
+comprueba con `git diff` antes de lanzarlas. Las corridas de la sección A salen todas
+del mismo commit.
