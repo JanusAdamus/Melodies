@@ -299,3 +299,25 @@ sensibilidades y la medición de costo de la sección B salen de un commit cuyo
 `Comparacion/` y `next_token_experiment/` sean idénticos a los de 9fbf714, y eso se
 comprueba con `git diff` antes de lanzarlas. Las corridas de la sección A salen todas
 del mismo commit.
+
+## Aclaración 13, 2026-11-04 (cambia el commit de la corrida principal de la sección B, antes de cualquier resultado)
+
+Decisión de Adrián. La corrida que la Aclaración 12 arrancó desde 9fbf714
+(`tesis_corregida_20261103_9fbf714`) no cabe en el plazo. Terminó 1 de 15 celdas. En la
+celda 2 (fracción 0.25), el HMM finito pasó más de 3 horas sin terminar el primer modelo,
+porque la rejilla crece hasta 384 estados y el paso E corre en CPU. Esa corrida se detuvo,
+se conserva sin tocar y no se usa. De ella sólo se vieron el registro de avance y metadatos
+de la celda 1 (tiempos, rejilla y K elegido), no NLL ni otras cifras de prueba.
+
+La corrida principal de la sección B sale del commit 306652e, con
+`--finite-hmm-device cuda`. Ese commit calcula el paso E de Baum-Welch del HMM finito en
+la GPU, en float64 y con las mismas operaciones que la versión de numpy. Las pruebas
+comparan las dos versiones en CPU y en CUDA: el paso E coincide hasta 10⁻¹⁰ relativo, y
+el ajuste completo elige el mismo K, con el mismo número de iteraciones.  Los candidatos con menos de 96 estados siguen en numpy, y cada fila registra dónde corrió. El modelo, la
+rejilla, el tope de 384, las semillas, las particiones y la regla de decisión no cambian.
+El costo del HMM finito de esta corrida se mide con el paso E en la GPU.
+
+Lo que la Aclaración 12 pedía respecto de 9fbf714 se pide ahora respecto de 306652e:
+las sensibilidades y la medición de costo de la sección B salen de un commit cuyo
+`Comparacion/` y `next_token_experiment/` sean idénticos a los de 306652e, con la
+misma opción, y eso se comprueba con `git diff` antes de lanzarlas.
