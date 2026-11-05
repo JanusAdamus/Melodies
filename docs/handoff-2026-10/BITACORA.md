@@ -156,3 +156,12 @@ Una entrada por tarea cerrada (ver PROMPT_CLAUDE.md, «Bitácora»).
 - Revisión r3: `corpus_content` fija (obra, content_fingerprint) de las 164 analizadas (78d8b106…, Windows); `finite_em_hit_max_iterations` por obra y su lista en `summary.selected_hyperparameters`; README y `summary.run.extraction_failures` nombran las fallas de extracción.
 - Suite: 743 passed, 3 skipped.
 - PDMX principal lanzada el 2026-11-03 19:05 desde 9fbf714: `artifacts/Comparacion/tesis_corregida_20261103_9fbf714`, plan `preregistered` sin huecos, partición de referencia `reported`; log en `artifacts/logs/`.
+
+## 2026-11-04/05, corrida principal de PDMX y resultados preliminares
+
+- PDMX principal `tesis_corregida_20261104_9ee8dda`: 15 de 15 celdas el 2026-11-05 a las 06:25, sin errores. `artifact_audit` passed; `denominator_audit` ok; `analysis_status` preregistered, sin huecos.
+- La sección B no guarda el commit en su manifiesto, pese a la Aclaración 12. Constancia aparte en `artifacts/logs/tesis_corregida_20261104_9ee8dda.procedencia.json` (commit 9ee8dda, línea de comando, árbol limpio al registrar).
+- Interrupciones, las dos por cerrarse la sesión de Claude Code; con `--resume`, mismo commit y mismas opciones, se recalcula entera la celda en curso y no se repiten las terminadas: 8 de 15 celdas el 2026-11-04 a las 19:20 (reanudada 20:3x, `reanudacion1.json`) y de nuevo con 8 de 15 (reanudada hacia las 22:00, logs `resume2`). Pausa pedida por Adrián de 20:48:19 a 21:38:32 en el primer intento, que luego se perdió, así que no afecta a ningún tiempo registrado. Detalle en `.pausas.log`.
+- Sensibilidades lanzadas en serie desde 9ee8dda el 2026-11-05 hacia las 06:50, sólo `--fractions 1.0` y con las opciones de la principal: `sens_stride128_20261105_9ee8dda`, `sens_split17_20261105_9ee8dda`, `sens_split29_20261105_9ee8dda`. `git diff 9ee8dda HEAD` de `Comparacion/` y `next_token_experiment/` vacío. En serie porque un proceso llega a ocupar 7.8 GB de los 8 de la tarjeta.
+- **Fin del cegamiento, 2026-11-05.** A petición de Adrián («urge aunque sea algo ya»), se generaron y leyeron las tablas de las secciones A y B antes de terminar las sensibilidades y de la medición de costo. Las corridas pendientes ya tienen opciones fijas. Cifras preliminares en `RESULTADOS_PRELIMINARES_2026-11-05.md`; tablas en `artifacts/tablas_tesis_prelim_20261105_e270a04`.
+- `canonicalization_audit` no da estado: 6 de 418 grupos con `multiple_composers` en `review_required` y `manual_review` vacío. Pendiente la revisión manual.
