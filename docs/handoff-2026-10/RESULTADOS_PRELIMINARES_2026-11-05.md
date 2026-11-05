@@ -88,10 +88,19 @@ No se puede:
 
 ## Pendiente antes de que estas cifras sean finales
 
-1. Recálculo independiente de las cifras titulares (en curso).
+1. Recálculo independiente: hecho para medias, diferencias, veredictos y conteos titulares, desde
+   los datos por pieza y por obra, sin discrepancias mayores que redondeo. Los IC coinciden dentro
+   de ±0.005 con otro bootstrap. Sin comprobar: columnas por nota, Wilcoxon, IC de `pdmx_resultados`,
+   diagnósticos del HDP-HMM, costos y Pareto. La fila en K = 768 es de la fracción 0.25; en la
+   fracción 1.0 el K elegido va de 144 a 288.
 2. Revisión del generador de tablas, todavía sin mezclar.
 3. Sensibilidades de PDMX (`--train-stride 128`, `--split-seed 17`, `--split-seed 29`), en curso.
    Dejar sus huecos en la sección «Sensibilidad» del capítulo 4.
 4. Medición de costo aislada, sin lanzar. Dejar su hueco.
-5. Revisión manual de 6 grupos de 418 obras canónicas que la auditoría de canonicalización
-   marca por tener varios compositores bajo el mismo título.
+5. Canonicalización: la auditoría marca 6 de 418 grupos por tener varios compositores. Revisados
+   por título: 5 son la misma pieza con otro arreglo o ficha (p. ej., Paddy O'Rafferty). El grupo
+   `g graziani acc 250 jazz patterns 1 12` junta 3 archivos que no parecen la misma obra (Vivaldi,
+   Graziani y «Natale Mix»); causa sin determinar. Separarlos da 420 obras y mueve poco las medias
+   de la fracción 1.0: finito 1.7794 → 1.7774, HDP-HMM 2.0280 → 2.0282, transformador 1.7620 →
+   1.7614, VOMM 1.8896 → 1.8864; transformador − finito −0.0174 → −0.0160. Cálculo exploratorio sin
+   IC. La cifra oficial sigue con 418 obras; declárelo en una nota.
