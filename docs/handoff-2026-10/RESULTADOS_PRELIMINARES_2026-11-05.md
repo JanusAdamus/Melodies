@@ -82,7 +82,13 @@ No se puede:
   aprendizaje queda bloqueada (Enmienda 14), y el finito puede estar subestimado en esa fila.
 - **Usar tiempos o la frontera de Pareto como costo.** No hay medición aislada todavía; la
   auditoría del generador avisa `costos no aislados`.
-- **Afirmar que los estados son armonía** sin una prueba: la NLL mide predicción de la melodía.
+- **Afirmar que los estados son armonía.** Decisión de Adrián (2026-11-05): se presentan como
+  estructura oculta que ayuda a predecir la melodía. La armonía puede quedar como motivación o
+  trabajo futuro, no como resultado.
+- **Afirmar que los estados son musicalmente interpretables.** En PDMX, el K elegido en la fracción
+  1.0 va de 144 a 288 para 12 clases de altura: pueden funcionar como memoria de contexto.
+- **Dar un veredicto del HMM finito contra el bigrama en la sección A.** Esa comparación no está en
+  la familia preregistrada; las medias son descriptivas.
 - **Reutilizar cifras de la versión anterior** (agosto) como resultado: esa corrida usaba todas
   las partes, no la melodía.
 
