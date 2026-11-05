@@ -100,7 +100,38 @@ No se puede:
 5. Canonicalización: la auditoría marca 6 de 418 grupos por tener varios compositores. Revisados
    por título: 5 son la misma pieza con otro arreglo o ficha (p. ej., Paddy O'Rafferty). El grupo
    `g graziani acc 250 jazz patterns 1 12` junta 3 archivos que no parecen la misma obra (Vivaldi,
-   Graziani y «Natale Mix»); causa sin determinar. Separarlos da 420 obras y mueve poco las medias
+   Graziani y «Natale Mix»). Títulos y compositores difieren, así que la unión viene de la regla de
+   contenido compartido de `Comparacion/splits.py`, que es conservadora: no filtra datos entre
+   particiones. No se comprobó qué fragmentos comparten. Separarlos da 420 obras y mueve poco las medias
    de la fracción 1.0: finito 1.7794 → 1.7774, HDP-HMM 2.0280 → 2.0282, transformador 1.7620 →
    1.7614, VOMM 1.8896 → 1.8864; transformador − finito −0.0174 → −0.0160. Cálculo exploratorio sin
    IC. La cifra oficial sigue con 418 obras; declárelo en una nota.
+
+## Qué cambia en el borrador actual
+
+Comparación de solo lectura contra `origin/master` de JanusAdamus/Tesis (commit del 2026-10-16),
+con `scripts/verificar_cifras_tesis.py --exigir-cita`: de 812 números en `chapters/`, 786 no tienen
+fuente en estas tablas (168 en `chapter4.tex`, 121 en `chapter3.tex`, 76 en `chapter0.tex`, 67 en
+`chapter1.tex`, 49 en `chapter5.tex`, 45 en `chapter2.tex`, más tablas). No todos son resultados:
+hay definiciones, años y parámetros. Ninguna de las tablas nuevas aparece todavía en el borrador.
+
+Lo que más cambia, con líneas de ese commit:
+
+- **Métrica.** `chapter4.tex` y `chapter5.tex` hablan de *perplexity* por evento; decide la NLL
+  media por obra.
+- **La conclusión principal.** `chapter4.tex:158` da al transformador una ventaja de $0.2505$ nats
+  sobre el HMM finito, y `chapter5.tex:8`, perplexity de $5.823$ contra $7.356$. Ahora la ventaja es
+  de $0.017$ nats por obra, e incluye el cero por nota. El capítulo 5 no puede seguir diciendo que
+  el transformador gana con claridad.
+- **Orden de los modelos.** `chapter4.tex:143` y `chapter5.tex:8` ponen al HDP-HMM por delante del
+  VOMM; ahora el VOMM le gana. `chapter4.tex:162` (HDP-HMM contra VOMM según la unidad de análisis)
+  deja de aplicar tal como está.
+- **Curva de aprendizaje.** `chapter4.tex:141` afirma cuánto mejora cada modelo con más datos; para
+  el HMM finito la afirmación queda bloqueada.
+- **Sensibilidades y costo.** `chapter4.tex:195`, `:197` y `:231`, y `chapter5.tex:22-36`: cifras de
+  corridas anteriores. Dejar huecos.
+- **Experimentos por obra.** `chapter5.tex:16` dice que el HDP-HMM obtuvo mayor log-verosimilitud de
+  ajuste y usó menos estados que el finito. Eso es ajuste, no predicción: distíngalo de la NLL de
+  prueba de la sección A, donde el finito gana.
+
+No use la diferencia entre agosto y ahora como hallazgo: agosto usaba todas las partes.
