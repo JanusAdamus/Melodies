@@ -939,7 +939,8 @@ def _tope_final(corrida: Corrida, config: Mapping) -> dict[str, Any]:
     tocadas: list[int] = []
     if raw_path.is_file():
         filas = [r for r in _leer_csv(raw_path) if r.get("model") == "finite_hmm"]
-        tocadas.append(sum(_verdadero_csv(r.get("hit_final_ceiling")) for r in filas))
+        if filas and all(r.get("hit_final_ceiling") not in (None, "") for r in filas):
+            tocadas.append(sum(_verdadero_csv(r["hit_final_ceiling"]) for r in filas))
         info["filas_finito"] = len(filas)
     if audit_path.is_file():
         audit = _leer_json(audit_path)
@@ -952,7 +953,7 @@ def _tope_final(corrida: Corrida, config: Mapping) -> dict[str, Any]:
     if not tocadas:
         if config.get("finite_hmm_final_ceiling") is True:
             info["avisos"].append(f"pdmx: no se pudo comprobar el tope final de K = {tope} del HMM finito ({raw_label} y "
-                                  f"{audit_label} no existen); la afirmación de la curva de aprendizaje queda bloqueada.")
+                                  f"{audit_label} no lo registran); la afirmación de la curva de aprendizaje queda bloqueada.")
             info["bloqueada"] = True
         else:
             info["bloqueada"] = False

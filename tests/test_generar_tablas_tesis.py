@@ -1079,3 +1079,17 @@ def test_new_notes_pass_the_verifier(gen, ver, tmp_path):
     for nombre in ("pdmx_resultados.tex", "pdmx_costos.tex", "pdmx_pareto.tex", "pdmx_comparaciones.tex"):
         (thesis / nombre).write_text(_tex(out, nombre), encoding="utf-8")
     assert ver.verificar(tmp_path / "tesis", procedencias=[out], exigir_cita=True)["errores"] == []
+
+
+def test_sin_columna_de_tope_la_curva_queda_bloqueada(tmp_path):
+    """Revisión: una corrida con tope final sin la columna no cuenta como cero filas en el tope."""
+    from types import SimpleNamespace
+
+    import scripts.generar_tablas_tesis as generador
+
+    raw = tmp_path / "results_raw.csv"
+    raw.write_text("model,selected_states\nfinite_hmm,144\n", encoding="utf-8")
+    corrida = SimpleNamespace(archivo=lambda nombre: (tmp_path / nombre, nombre))
+    info = generador._tope_final(corrida, {"finite_hmm_max_states": 768, "finite_hmm_final_ceiling": True})
+    assert info["bloqueada"] is True
+    assert info["filas_en_tope_k"] is None
